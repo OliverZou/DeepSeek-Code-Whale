@@ -28,6 +28,11 @@ tmp/
 .whale/sessions/
 .whale/usage.jsonl
 .antigravitycli/
+
+# --- Team Engine runtime data ---
+team_engine.db
+team_engine.db-*
+team_tasks/
 .omx/
 .antigravitycli/
 .claude/

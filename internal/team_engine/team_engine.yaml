@@ -1,0 +1,54 @@
+# Team Engine configuration for Whale
+# See internal/team_engine/ for full documentation.
+#
+# This config file is optional.  When absent, hardcoded defaults are used.
+
+routing:
+  # Default tool profile when no rule matches.
+  default_profile: default
+
+  # Tool profile for the Verifier agent.
+  verifier_tools: read_only
+
+  # Role → tool profile + timeout mapping.
+  role_map:
+    developer:
+      profile: default
+      timeout: 600
+    tester:
+      profile: test
+      timeout: 600
+    reviewer:
+      profile: read_only
+      timeout: 600
+    researcher:
+      profile: research
+      timeout: 900
+    writer:
+      profile: content
+      timeout: 600
+    formatter:
+      profile: content
+      timeout: 600
+    evaluator:
+      profile: read_only
+      timeout: 600
+
+  # Keyword-based profile routing (regex, case-insensitive).
+  # Priority: keyword_rules > role_map > default_profile
+# Batch execution configuration.
+# Controls how tasks are grouped and executed in parallel.
+# CycleReport: after each batch, Engine reports to Leader for decision.
+# Leader can: accept (continue), reject (retry batch), escalate (ask human).
+# Set max_cycles per batch to limit retry iterations.
+batch:
+  # default_concurrency: 0      # Max parallel tasks per batch (0 = unlimited)
+  # default_max_cycles: 0       # Max retry cycles per batch (0 = unlimited)
+
+  keyword_rules:
+    - pattern: "rust|cargo"
+      profile: default
+    - pattern: "python|fastapi|django"
+      profile: default
+    - pattern: "go|golang"
+      profile: default
