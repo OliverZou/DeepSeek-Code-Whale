@@ -8,13 +8,22 @@ import (
 
 // mockSpawner is a minimal SubagentSpawner implementation for testing.
 type mockSpawner struct {
-	output string
-	err    error
+	output   string            // default output
+	roleOutputs map[string]string // output by role
+	err      error
 }
 
 func (m *mockSpawner) SpawnSubagent(_ context.Context, req SubagentRequest) (SubagentResponse, error) {
 	if m.err != nil {
 		return SubagentResponse{}, m.err
+	}
+	// Return role-specific output if available.
+	if out, ok := m.roleOutputs[req.Role]; ok {
+		return SubagentResponse{
+			Output:   out,
+			Success:  true,
+			ExitCode: 0,
+		}, nil
 	}
 	return SubagentResponse{
 		Output:   m.output,
@@ -95,7 +104,7 @@ func TestValidTransitions(t *testing.T) {
 		{TaskStateProduced, TaskStateVerifying, true},
 		{TaskStateVerifying, TaskStateVerified, true},
 		{TaskStateVerified, TaskStateDone, true},
-		{TaskStatePending, TaskStateFailed, false},
+		{TaskStatePending, TaskStateFailed, true},
 		{TaskStateDone, TaskStatePending, false},
 		{TaskStateFailed, TaskStateDone, false},
 		{TaskStateProduced, TaskStateDone, true}, // skip verification
@@ -138,8 +147,8 @@ func TestCancelTask(t *testing.T) {
 	}
 
 	updated, _ := eng.DB.GetTask(task.ID)
-	if updated.State != TaskStateFailed {
-		t.Errorf("expected FAILED, got %s", updated.State)
+	if updated.State != TaskStateSuspended {
+		t.Errorf("expected SUSPENDED, got %s", updated.State)
 	}
 }
 
@@ -277,12 +286,12 @@ func TestListTasksByState(t *testing.T) {
 		t.Errorf("expected 1 assigned task, got %d", len(assigned))
 	}
 
-	// Cancel t2 so it's FAILED
+	// Cancel t2 so it's SUSPENDED
 	eng.CancelTask(t2.ID)
 
-	failed, _ := eng.ListTasksByState(TaskStateFailed)
-	if len(failed) != 1 {
-		t.Errorf("expected 1 failed task, got %d", len(failed))
+	suspended, _ := eng.ListTasksByState(TaskStateSuspended)
+	if len(suspended) != 1 {
+		t.Errorf("expected 1 suspended task, got %d", len(suspended))
 	}
 }
 
@@ -389,8 +398,8 @@ func TestRouterResolveTimeout(t *testing.T) {
 	if got := r.ResolveTimeout(RoleResearcher, false); got != 900 {
 		t.Errorf("expected 900, got %d", got)
 	}
-	if got := r.ResolveTimeout(RoleDeveloper, true); got != 120 {
-		t.Errorf("expected 120 (verifier), got %d", got)
+	if got := r.ResolveTimeout(RoleDeveloper, true); got != 300 {
+		t.Errorf("expected 300 (verifier default), got %d", got)
 	}
 }
 
@@ -453,8 +462,8 @@ func TestAgentChannelKill(t *testing.T) {
 	}
 
 	updated, _ := eng.DB.GetTask(task.ID)
-	if updated.State != TaskStateFailed {
-		t.Errorf("expected FAILED, got %s", updated.State)
+	if updated.State != TaskStateSuspended {
+		t.Errorf("expected SUSPENDED, got %s", updated.State)
 	}
 }
 
@@ -468,8 +477,8 @@ func TestAgentChannelAbort(t *testing.T) {
 	}
 
 	updated, _ := eng.DB.GetTask(task.ID)
-	if updated.State != TaskStateFailed {
-		t.Errorf("expected FAILED, got %s", updated.State)
+	if updated.State != TaskStateSuspended {
+		t.Errorf("expected SUSPENDED, got %s", updated.State)
 	}
 }
 
@@ -603,5 +612,194 @@ func TestBuildInboxContext(t *testing.T) {
 	}
 	if !strings.Contains(ctx, "Add validation") {
 		t.Error("context should contain message content")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Suspend / Resume / Checkpoint
+// ---------------------------------------------------------------------------
+
+func TestSaveAndLoadCheckpoint(t *testing.T) {
+	eng := newTestEngine(t)
+	defer eng.Close()
+
+	mt, err := eng.CreateMasterTask("test goal", "/tmp")
+	if err != nil {
+		t.Fatalf("create master task: %v", err)
+	}
+
+	// Save a checkpoint.
+	checkJSON := `{"completed_batches":["batch-1"],"batch_cycles":{"batch-1":1}}`
+	if err := eng.DB.SaveMasterTaskProgress(mt.ID, checkJSON); err != nil {
+		t.Fatalf("save checkpoint: %v", err)
+	}
+
+	// Reload and verify.
+	loaded, err := eng.DB.GetMasterTaskProgress(mt.ID)
+	if err != nil {
+		t.Fatalf("get checkpoint: %v", err)
+	}
+	if loaded != checkJSON {
+		t.Errorf("checkpoint mismatch:\ngot:  %s\nwant: %s", loaded, checkJSON)
+	}
+}
+
+func TestSuspendAndResumeTransition(t *testing.T) {
+	eng := newTestEngine(t)
+	defer eng.Close()
+
+	task, err := eng.CreateTask("Test", "Resume test", RoleDeveloper, "", nil, 0, ".", "")
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+
+	// Transition to assigned then suspend (simulating Kill).
+	eng.DB.TransitionState(task.ID, TaskStateAssigned, "", "")
+	if err := eng.CancelTask(task.ID); err != nil {
+		t.Fatalf("cancel task: %v", err)
+	}
+	updated, _ := eng.DB.GetTask(task.ID)
+	if updated.State != TaskStateSuspended {
+		t.Fatalf("expected SUSPENDED, got %s", updated.State)
+	}
+
+	// Verify IsResumable.
+	if !updated.State.IsResumable() {
+		t.Error("suspended state should be resumable")
+	}
+
+	// Resume transition.
+	if err := eng.DB.TransitionState(task.ID, TaskStatePending, "resumed", ""); err != nil {
+		t.Fatalf("resume transition: %v", err)
+	}
+	updated, _ = eng.DB.GetTask(task.ID)
+	if updated.State != TaskStatePending {
+		t.Errorf("expected PENDING after resume, got %s", updated.State)
+	}
+}
+
+func TestListSuspendedMasterTasks(t *testing.T) {
+	eng := newTestEngine(t)
+	defer eng.Close()
+
+	// Create a master task with one subtask.
+	mt, err := eng.CreateMasterTask("suspended test", "/tmp")
+	if err != nil {
+		t.Fatalf("create master task: %v", err)
+	}
+	task, err := eng.CreateTask("Sub", "subtask", RoleDeveloper, "", nil, 0, ".", "")
+	if err != nil {
+		t.Fatalf("create subtask: %v", err)
+	}
+	task.MasterTaskID = mt.ID
+	eng.DB.UpdateTaskMasterTaskID(task.ID, mt.ID)
+
+	// No suspended tasks yet.
+	suspended, err := eng.ListSuspendedMasterTasks()
+	if err != nil {
+		t.Fatalf("list suspended: %v", err)
+	}
+	if len(suspended) != 0 {
+		t.Errorf("expected 0 suspended, got %d", len(suspended))
+	}
+
+	// Suspend the subtask.
+	task.State = TaskStateSuspended
+	eng.DB.TransitionState(task.ID, TaskStateSuspended, "suspended", "")
+
+	suspended, err = eng.ListSuspendedMasterTasks()
+	if err != nil {
+		t.Fatalf("list suspended: %v", err)
+	}
+	if len(suspended) != 1 {
+		t.Fatalf("expected 1 suspended master task, got %d", len(suspended))
+	}
+	if suspended[0].ID != mt.ID {
+		t.Errorf("expected master task %s, got %s", mt.ID, suspended[0].ID)
+	}
+}
+
+func newResumeTestEngine(t *testing.T) *TeamEngine {
+	t.Helper()
+	// Mock that returns valid accept JSON for the planner (review cycle),
+	// and "ok" for the worker.
+	spawner := &mockSpawner{
+		roleOutputs: map[string]string{
+			"planner":  `{"decision":"accept","reason":"good","feedback":""}`,
+			"worker":   "task output ok",
+			"verifier": "VERDICT: PASS\ndetails: looks good",
+		},
+	}
+	eng, err := New(":memory:", t.TempDir(), "", spawner)
+	if err != nil {
+		t.Fatalf("new engine: %v", err)
+	}
+	return eng
+}
+
+func TestResumeMasterTask(t *testing.T) {
+	eng := newResumeTestEngine(t)
+	defer eng.Close()
+
+	// Create master task with two subtasks, one already done, one suspended.
+	mt, err := eng.CreateMasterTask("resume test", t.TempDir())
+	if err != nil {
+		t.Fatalf("create master task: %v", err)
+	}
+
+	t1, _ := eng.CreateTask("Done task", "This task is done", RoleDeveloper, "", nil, 0, ".", "")
+	t1.MasterTaskID = mt.ID
+	t1.BatchID = "batch-research"
+	eng.DB.UpdateTaskMasterTaskID(t1.ID, mt.ID)
+	eng.DB.UpdateTask(t1.ID, map[string]interface{}{"batch_id": "batch-research"})
+	eng.DB.TransitionState(t1.ID, TaskStateAssigned, "", "")
+	eng.DB.TransitionState(t1.ID, TaskStateDone, "", "")
+
+	t2, _ := eng.CreateTask("Suspended task", "This task got killed", RoleDeveloper, "", nil, 0, ".", "")
+	t2.MasterTaskID = mt.ID
+	t2.BatchID = "batch-coding"
+	eng.DB.UpdateTaskMasterTaskID(t2.ID, mt.ID)
+	eng.DB.UpdateTask(t2.ID, map[string]interface{}{"batch_id": "batch-coding"})
+	eng.DB.TransitionState(t2.ID, TaskStateAssigned, "", "")
+	eng.DB.TransitionState(t2.ID, TaskStateSuspended, "killed", "")
+
+	// Save checkpoint: batch-research done, batch-coding not yet started.
+	checkJSON := `{"completed_batches":["batch-research"],"batch_cycles":{"batch-research":1}}`
+	eng.DB.SaveMasterTaskProgress(mt.ID, checkJSON)
+
+	// List suspended.
+	suspended, err := eng.ListSuspendedMasterTasks()
+	if err != nil {
+		t.Fatalf("list suspended: %v", err)
+	}
+	if len(suspended) != 1 {
+		t.Fatalf("expected 1 suspended master task, got %d", len(suspended))
+	}
+
+	// Resume — will run the suspended task via RunBatch -> RunTask -> mock spawner.
+	batches, err := eng.ResumeMasterTask(context.Background(), mt.ID, "resume test", t.TempDir())
+	if err != nil {
+		t.Fatalf("resume master task: %v", err)
+	}
+
+	// --- Debug: print final states ---
+	t.Logf("batches returned: %d", len(batches))
+	for _, b := range batches {
+		t.Logf("  batch %s: status=%s, %d tasks", b.ID, b.Status, len(b.Tasks))
+		for _, task := range b.Tasks {
+			st, _ := eng.DB.GetTask(task.ID)
+			t.Logf("    task %s: state=%s (title=%s)", task.ID, st.State, task.Title)
+		}
+	}
+
+	// Check t2 (the suspended-then-resumed task) reached done or failed.
+	updated2, _ := eng.DB.GetTask(t2.ID)
+	t.Logf("t2 final state: %s", updated2.State)
+	if updated2.State != TaskStateDone && updated2.State != TaskStateFailed {
+		t.Errorf("t2 expected DONE or FAILED after resume, got %s", updated2.State)
+	}
+
+	if len(batches) == 0 {
+		t.Error("expected at least one batch after resume")
 	}
 }

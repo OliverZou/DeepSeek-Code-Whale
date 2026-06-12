@@ -15,14 +15,25 @@ import (
 type Verifier struct {
 	runner     *AgentRunner
 	whiteboard *Whiteboard
+	timeout    time.Duration // subagent timeout (from config)
+	model      string        // LLM model name; "" = Whale default
 }
 
 // NewVerifier creates a Verifier that uses the given runner and whiteboard.
-func NewVerifier(wb *Whiteboard, runner *AgentRunner) *Verifier {
-	return &Verifier{
+// timeout is the subagent timeout (0 = use RunVerifier's default 120s).
+func NewVerifier(wb *Whiteboard, runner *AgentRunner, timeout time.Duration, model ...string) *Verifier {
+	if timeout <= 0 {
+		timeout = 120 * time.Second
+	}
+	v := &Verifier{
 		runner:     runner,
 		whiteboard: wb,
+		timeout:    timeout,
 	}
+	if len(model) > 0 {
+		v.model = model[0]
+	}
+	return v
 }
 
 // ---------------------------------------------------------------------------
@@ -167,7 +178,7 @@ func (v *Verifier) Verify(task *Task) (bool, string, error) {
 		workdir = "."
 	}
 
-	result := v.runner.RunVerifier(prompt, workdir, 120*time.Second)
+	result := v.runner.RunVerifier(prompt, workdir, v.timeout, v.model)
 
 	output := result.Stdout
 	// Persist the verifier result to the whiteboard.
@@ -176,10 +187,17 @@ func (v *Verifier) Verify(task *Task) (bool, string, error) {
 	}
 
 	// Parse the VERDICT line (case-insensitive).
-	verdictMatch := regexp.MustCompile(`(?i)VERDICT:\s*(PASS|FAIL)`).FindStringSubmatch(output)
+	// The verifier agent may embed markdown formatting like **VERDICT:** PASS
+	// or **VERDICT: PASS** — allow optional ** around/between the label and verdict.
+	verdictMatch := regexp.MustCompile(`(?i)VERDICT:\s*\*{0,2}\s*(PASS|FAIL)`).FindStringSubmatch(output)
 	passed := false
 	if len(verdictMatch) >= 2 {
 		passed = verdictMatch[1] == "PASS"
+	}
+	// Full-text fallback: search for "VERDICT: PASS" literally (ignores all formatting).
+	if !passed {
+		upper := strings.ToUpper(output)
+		passed = strings.Contains(upper, "VERDICT: PASS") || strings.Contains(upper, "VERDICT:  PASS")
 	}
 	// No clear verdict → treat as FAIL to be safe.
 

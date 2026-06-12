@@ -7,6 +7,7 @@ import (
 
 	"github.com/usewhale/whale/internal/agent"
 	"github.com/usewhale/whale/internal/core"
+	"github.com/usewhale/whale/internal/dashboard"
 	whalemcp "github.com/usewhale/whale/internal/mcp"
 	"github.com/usewhale/whale/internal/plugins"
 	"github.com/usewhale/whale/internal/policy"
@@ -148,6 +149,7 @@ type App struct {
 	workflowRunner        *workflow.ScriptRunner
 	workflowConfigOverlay workflowConfigOverlay
 	worktree              WorktreeSession
+	dashboardClient       *dashboard.Client
 	mcpInitMu             sync.Mutex
 	mcpInitStarted        bool
 	// toolMu guards mutable tool/plugin state (pluginManager, pluginTools,

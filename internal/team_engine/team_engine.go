@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/usewhale/whale/internal/team_engine/log"
 )
 
 const defaultTimeout = 300 * time.Second
@@ -56,6 +57,7 @@ type TeamEngine struct {
 	Router     *Router
 	Runner     *AgentRunner
 	Escalation *EscalationManager
+	Loggers    *log.Loggers
 	timeout    time.Duration
 
 	// Worktree integration for Coding Harness (场景2).
@@ -63,7 +65,41 @@ type TeamEngine struct {
 	worktreeDir     string // path to the repo for worktree creation
 	activeTrees     map[string]string // taskID → branch name
 
+	// activeCancels tracks cancel functions for running subagent spawns.
+	activeCancels map[string]context.CancelFunc // taskID → cancel
+
+	// shutdownCtx / shutdownCancel define the engine's lifecycle.
+	shutdownCtx    context.Context
+	shutdownCancel context.CancelFunc
+
+	// wg tracks goroutines spawned by RunBatch so Close() can drain them.
+	wg sync.WaitGroup
+
 	mu sync.Mutex
+
+	// eventCallbacks — 订阅者列表，状态变化时主动推送
+	eventCallbacks []TaskEventCallback
+
+	// Current team configuration (optional).
+	team *TeamConfig
+}
+
+// OnEvent 注册一个事件回调函数。
+func (e *TeamEngine) OnEvent(cb TaskEventCallback) func() {
+	e.mu.Lock()
+	e.eventCallbacks = append(e.eventCallbacks, cb)
+	idx := len(e.eventCallbacks) - 1
+	e.mu.Unlock()
+	return func() {
+		e.mu.Lock()
+		e.eventCallbacks = append(e.eventCallbacks[:idx], e.eventCallbacks[idx+1:]...)
+		e.mu.Unlock()
+	}
+}
+
+// SetTeam configures a team for the next PlanAndRun execution.
+func (e *TeamEngine) SetTeam(tc *TeamConfig) {
+	e.team = tc
 }
 
 // New creates a TeamEngine with the given dependencies.
@@ -92,6 +128,12 @@ func New(dbPath, whiteboardDir, configPath string, spawner SubagentSpawner) (*Te
 	}
 
 	runner := NewRunner(spawner)
+	loggers, err := log.New(whiteboardDir)
+	if err != nil {
+		database.Close()
+		return nil, fmt.Errorf("init loggers: %w", err)
+	}
+	shutdownCtx, shutdownCancel := context.WithCancel(context.Background())
 
 	return &TeamEngine{
 		DB:         database,
@@ -100,14 +142,63 @@ func New(dbPath, whiteboardDir, configPath string, spawner SubagentSpawner) (*Te
 		Router:     NewRouter(cfg),
 		Runner:     runner,
 		Escalation: NewEscalationManager(),
+		Loggers:    loggers,
 		timeout:    defaultTimeout,
-		activeTrees: make(map[string]string),
+		activeTrees:    make(map[string]string),
+		activeCancels:  make(map[string]context.CancelFunc),
+		shutdownCtx:    shutdownCtx,
+		shutdownCancel: shutdownCancel,
 	}, nil
 }
 
 // Close releases resources held by the engine.
 func (e *TeamEngine) Close() error {
+	e.shutdownCancel()
+
+	e.mu.Lock()
+	for taskID, cancel := range e.activeCancels {
+		cancel()
+		delete(e.activeCancels, taskID)
+	}
+	activeTrees := make(map[string]string, len(e.activeTrees))
+	for k, v := range e.activeTrees {
+		activeTrees[k] = v
+	}
+	e.mu.Unlock()
+
+	e.wg.Wait()
+
+	for taskID := range activeTrees {
+		e.cleanupWorktree(taskID)
+	}
+
 	return e.DB.Close()
+}
+
+// fireEvent 向所有订阅者广播事件。
+func (e *TeamEngine) fireEvent(event TaskEvent) {
+	e.mu.Lock()
+	cbs := make([]TaskEventCallback, len(e.eventCallbacks))
+	copy(cbs, e.eventCallbacks)
+	e.mu.Unlock()
+	for _, cb := range cbs {
+		func() {
+			defer func() { recover() }()
+			cb(event)
+		}()
+	}
+}
+
+// fireStateEvent 是状态转换的便捷触发方法。
+func (e *TeamEngine) fireStateEvent(taskID, title, oldState, newState string) {
+	e.fireEvent(TaskEvent{
+		Type:     EventStateChanged,
+		TaskID:   taskID,
+		Title:    title,
+		OldState: oldState,
+		NewState: newState,
+		Progress: GetProgress(TaskState(newState)),
+	})
 }
 
 // EnableWorktree activates git worktree-based isolation for coding tasks.
@@ -207,6 +298,296 @@ func filepathJoin(elem ...string) string {
 // Task creation & lifecycle
 // ---------------------------------------------------------------------------
 
+// CreateMasterTask creates a new master task record.
+func (e *TeamEngine) CreateMasterTask(goal, workspacePath string) (*MasterTask, error) {
+	mt := &MasterTask{
+		ID:            uuid.New().String(),
+		Goal:          goal,
+		WorkspacePath: workspacePath,
+		Status:        "running",
+	}
+	if err := e.DB.InsertMasterTask(mt); err != nil {
+		return nil, fmt.Errorf("insert master task: %w", err)
+	}
+	return mt, nil
+}
+
+// ListMasterTasks returns all master tasks.
+func (e *TeamEngine) ListMasterTasks() ([]*MasterTask, error) {
+	return e.DB.ListMasterTasks()
+}
+
+// ListTasksByMasterTask returns subtasks for a master task.
+func (e *TeamEngine) ListTasksByMasterTask(masterTaskID string) ([]*Task, error) {
+	return e.DB.ListTasksByMasterTask(masterTaskID)
+}
+
+// GetMasterTask retrieves a master task by ID.
+func (e *TeamEngine) GetMasterTask(id string) (*MasterTask, error) {
+	return e.DB.GetMasterTask(id)
+}
+
+// CompleteMasterTask marks a master task as done.
+func (e *TeamEngine) CompleteMasterTask(id string) error {
+	return e.DB.UpdateMasterTaskStatus(id, "done")
+}
+
+// ListSuspendedMasterTasks returns master tasks with suspended subtasks.
+func (e *TeamEngine) ListSuspendedMasterTasks() ([]*MasterTask, error) {
+	all, err := e.DB.ListMasterTasks()
+	if err != nil {
+		return nil, err
+	}
+	var result []*MasterTask
+	for _, mt := range all {
+		tasks, err := e.DB.ListTasksByMasterTask(mt.ID)
+		if err != nil {
+			continue
+		}
+		for _, t := range tasks {
+			if t.State == TaskStateSuspended {
+				result = append(result, mt)
+				break
+			}
+		}
+	}
+	return result, nil
+}
+
+// saveCheckpoint persists PlanAndRun progress for later Resume.
+func (e *TeamEngine) saveCheckpoint(masterTaskID string, completed map[string]bool, outputs map[string]string, batches []*Batch) {
+	type checkpoint struct {
+		CompletedBatches []string          `json:"completed_batches"`
+		BatchCycles      map[string]int    `json:"batch_cycles"`
+		CompletedOutputs map[string]string `json:"completed_outputs,omitempty"`
+	}
+	cp := checkpoint{
+		CompletedBatches: make([]string, 0),
+		BatchCycles:      make(map[string]int),
+		CompletedOutputs: outputs,
+	}
+	for id := range completed {
+		cp.CompletedBatches = append(cp.CompletedBatches, id)
+	}
+	for _, b := range batches {
+		cp.BatchCycles[b.ID] = b.CycleCount
+	}
+	data, _ := json.Marshal(cp)
+	_ = e.DB.SaveMasterTaskProgress(masterTaskID, string(data))
+}
+
+// ResumeMasterTask resumes a previously suspended master task.
+func (e *TeamEngine) ResumeMasterTask(ctx context.Context, masterTaskID, goal, workdir string) ([]*Batch, error) {
+	progressJSON, err := e.DB.GetMasterTaskProgress(masterTaskID)
+	if err != nil {
+		return nil, fmt.Errorf("load checkpoint: %w", err)
+	}
+	type checkpoint struct {
+		CompletedBatches []string          `json:"completed_batches"`
+		BatchCycles      map[string]int    `json:"batch_cycles"`
+		CompletedOutputs map[string]string `json:"completed_outputs,omitempty"`
+	}
+	var cp checkpoint
+	if progressJSON != "" {
+		if err := json.Unmarshal([]byte(progressJSON), &cp); err != nil {
+			return nil, fmt.Errorf("parse checkpoint: %w", err)
+		}
+	}
+	if cp.CompletedOutputs == nil {
+		cp.CompletedOutputs = make(map[string]string)
+	}
+	if cp.BatchCycles == nil {
+		cp.BatchCycles = make(map[string]int)
+	}
+	completedBatches := make(map[string]bool)
+	for _, id := range cp.CompletedBatches {
+		completedBatches[id] = true
+	}
+
+	allTasks, err := e.DB.ListTasksByMasterTask(masterTaskID)
+	if err != nil {
+		return nil, fmt.Errorf("list subtasks: %w", err)
+	}
+	for _, t := range allTasks {
+		if t.State == TaskStateSuspended {
+			_ = e.DB.TransitionState(t.ID, TaskStatePending, "resumed", "")
+			_ = e.Whiteboard.WriteStatus(t.ID, string(TaskStatePending))
+			_ = e.Whiteboard.AppendOutput(t.ID, "\n[RESUMED]\n")
+		}
+	}
+
+	batchMap := make(map[string]*Batch)
+	batchOrder := make([]string, 0)
+	for _, t := range allTasks {
+		bid := t.BatchID
+		if bid == "" {
+			bid = "default"
+		}
+		if _, ok := batchMap[bid]; !ok {
+			batchMap[bid] = &Batch{ID: bid, Label: bid, Status: BatchStatusPending, Tasks: make([]*Task, 0)}
+			batchOrder = append(batchOrder, bid)
+		}
+		batchMap[bid].Tasks = append(batchMap[bid].Tasks, t)
+	}
+	for _, b := range batchMap {
+		if cycles, ok := cp.BatchCycles[b.ID]; ok {
+			b.CycleCount = cycles
+		}
+	}
+
+	batches := make([]*Batch, 0, len(batchOrder))
+	for _, bid := range batchOrder {
+		batches = append(batches, batchMap[bid])
+	}
+
+	leader := NewLeader(e.Runner)
+	decomposerTimeout := time.Duration(e.Router.ResolveDecomposerTimeout()) * time.Second
+	leaderModel := e.Router.ResolveModel("planner")
+
+	for _, batch := range batches {
+		if completedBatches[batch.ID] {
+			continue
+		}
+		select {
+		case <-ctx.Done():
+			e.saveCheckpoint(masterTaskID, completedBatches, cp.CompletedOutputs, batches)
+			return batches, fmt.Errorf("resume cancelled: %w", ctx.Err())
+		default:
+		}
+
+		cycleLimit := batch.MaxCycles
+		if cycleLimit <= 0 {
+			cycleLimit = 1
+		}
+		for cycle := 0; cycle < cycleLimit; cycle++ {
+			batch.CycleCount = cycle + 1
+			if err := e.RunBatch(batch); err != nil {
+				return batches, fmt.Errorf("run batch %s cycle %d: %w", batch.ID, cycle, err)
+			}
+			if e.Loggers != nil {
+				e.Loggers.Engine("Resume: batch %s cycle %d/%d: status=%s", batch.LabelOrID(), cycle+1, cycleLimit, batch.Status)
+			}
+			if boardContent := e.Whiteboard.BuildBoardContent(batches); boardContent != "" {
+				_ = e.Whiteboard.WriteBoard(boardContent)
+			}
+			report := e.buildCycleReport(batch, cycle+1)
+			review, reviewOutput, err := leader.ReviewCycleFull(goal, report, workdir, decomposerTimeout, leaderModel)
+			if err != nil {
+				completedBatches[batch.ID] = true
+				break
+			}
+			if e.Loggers != nil && reviewOutput != "" {
+				e.Loggers.LogLeader("review", fmt.Sprintf("Batch: %s\nDecision: %s", batch.LabelOrID(), review.Decision), reviewOutput, decomposerTimeout, nil)
+			}
+			switch review.Decision {
+			case CycleAccept:
+				completedBatches[batch.ID] = true
+				e.saveCheckpoint(masterTaskID, completedBatches, cp.CompletedOutputs, batches)
+				cp.CompletedOutputs[batch.ID] = e.collectBatchOutputs(batch)
+				break
+			case CycleReject:
+				batch.Status = BatchStatusPending
+				for _, t := range batch.Tasks {
+					e.SendFeedback(t.ID, review.Feedback)
+					if !t.State.IsTerminal() && t.State != TaskStateSuspended {
+						_ = e.DB.TransitionState(t.ID, TaskStateAssigned, "", "")
+					}
+				}
+				continue
+			case CycleEscalated:
+				batch.Status = BatchStatusPending
+				for _, t := range batch.Tasks {
+					e.SendFeedback(t.ID, review.Feedback)
+					if t.State == TaskStateFailed || t.State == TaskStateSuspended {
+						_ = e.DB.TransitionState(t.ID, TaskStatePending, "escalated retry", "")
+					} else if !t.State.IsTerminal() {
+						_ = e.DB.TransitionState(t.ID, TaskStateAssigned, "", "")
+					}
+				}
+				continue
+			case CycleEscalate:
+				e.handleEscalation(batch, review)
+				completedBatches[batch.ID] = true
+				break
+			}
+		}
+	}
+
+	if delContent := e.Whiteboard.BuildDeliverableContent(batches); delContent != "" {
+		_ = e.Whiteboard.WriteDeliverable(delContent)
+	}
+	if e.Loggers != nil {
+		summary := e.buildExecutionSummary(batches, goal, workdir)
+		e.Loggers.LogLeader("summary", goal, summary, 0, nil)
+	}
+	e.saveCheckpoint(masterTaskID, completedBatches, cp.CompletedOutputs, batches)
+	return batches, nil
+}
+
+// leaderWatchLoop gives the Leader real-time oversight during execution.
+func (e *TeamEngine) leaderWatchLoop(ctx context.Context, leader *Leader, masterTaskID, goal, workdir string) {
+	eventCh := make(chan TaskEvent, 256)
+	cancel := e.OnEvent(func(event TaskEvent) {
+		select {
+		case eventCh <- event:
+		default:
+		}
+	})
+	defer cancel()
+	heartbeat := time.NewTicker(15 * time.Second)
+	defer heartbeat.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-heartbeat.C:
+			tasks, err := e.DB.ListTasksByMasterTask(masterTaskID)
+			if err != nil || len(tasks) == 0 {
+				continue
+			}
+			for _, t := range tasks {
+				if t.State.IsTerminal() || t.State == TaskStateSuspended || t.RetryCount <= 1 {
+					continue
+				}
+				output, _ := e.Whiteboard.ReadOutput(t.ID)
+				feedback, err := leader.ReviewProgress(goal, t.Title, string(t.Role), string(t.State), t.RetryCount, output, workdir, 30*time.Second)
+				if err != nil || feedback == "" {
+					continue
+				}
+				_ = e.SendFeedback(t.ID, feedback)
+			}
+		}
+	}
+}
+
+// buildExecutionSummary constructs a human-readable summary of batch execution results.
+func (e *TeamEngine) buildExecutionSummary(batches []*Batch, goal, workdir string) string {
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf("## ✅ 任务执行完成\n\n目标: %s\n\n", goal))
+	b.WriteString("### 执行结果\n\n")
+	b.WriteString("| 任务 | 角色 | 状态 | 工作目录 |\n")
+	b.WriteString("|------|------|------|----------|\n")
+	for _, batch := range batches {
+		for _, t := range batch.Tasks {
+			stateIcon := "✅"
+			if t.State == TaskStateFailed {
+				stateIcon = "❌"
+			}
+			dir := t.Workdir
+			if dir == "" {
+				dir = workdir
+			}
+			b.WriteString(fmt.Sprintf("| %s %s | %s | %s | `%s` |\n", stateIcon, t.Title, t.Role, t.State, dir))
+			artifacts, _ := e.Whiteboard.ListArtifacts(t.ID)
+			if len(artifacts) > 0 {
+				b.WriteString(fmt.Sprintf("  📎 产出文件: %v\n", artifacts))
+			}
+		}
+	}
+	b.WriteString(fmt.Sprintf("\n📁 工作目录: `%s`\n", workdir))
+	return b.String()
+}
+
 // CreateTask creates a new task and persists it to the database.
 func (e *TeamEngine) CreateTask(title, description string, role AgentRole, profile ToolProfile, parentIDs []string, maxRetries int, workdir, verifierFocus string) (*Task, error) {
 	id := uuid.New().String()
@@ -225,7 +606,7 @@ func (e *TeamEngine) CreateTask(title, description string, role AgentRole, profi
 			title, maxRetries, maxRetriesWarn)
 	}
 
-	task := NewTask(id, title, description, role, profile, maxRetries, workdir, parentIDs, "")
+	task := NewTask(id, title, description, role, profile, maxRetries, workdir, parentIDs, "", "")
 	task.VerifierFocus = verifierFocus
 
 	if err := e.DB.InsertTask(task); err != nil {
@@ -395,7 +776,7 @@ func (e *TeamEngine) RunTask(taskID string) (bool, error) {
 		}
 		task.State = TaskStateVerifying
 
-		v := NewVerifier(e.Whiteboard, e.Runner)
+		v := NewVerifier(e.Whiteboard, e.Runner, 0)
 		passed, feedback, err := v.Verify(task)
 		if err != nil {
 			return false, fmt.Errorf("verifier error: %w", err)
@@ -472,9 +853,11 @@ func (e *TeamEngine) RunTask(taskID string) (bool, error) {
 //                  → wait for all tasks to finish (sync.WaitGroup)
 //                  → gate: all PASS → next batch, any FAIL → abort
 //              → write board.md + deliverable.md
-func (e *TeamEngine) PlanAndRun(goal, workdir string) ([]*Batch, error) {
+func (e *TeamEngine) PlanAndRun(ctx context.Context, goal, workdir, masterTaskID string) ([]*Batch, error) {
 	leader := NewLeader(e.Runner)
-	planTasks, err := leader.Decompose(goal, workdir)
+	decomposerTimeout := time.Duration(e.Router.ResolveDecomposerTimeout()) * time.Second
+	leaderModel := e.Router.ResolveModel("planner")
+	planTasks, err := leader.Decompose(goal, workdir, decomposerTimeout, leaderModel)
 	if err != nil {
 		return nil, fmt.Errorf("decompose goal: %w", err)
 	}
@@ -597,7 +980,7 @@ func (e *TeamEngine) PlanAndRun(goal, workdir string) ([]*Batch, error) {
 
 			// Build and send CycleReport to Leader for review.
 			report := e.buildCycleReport(batch, cycle+1)
-			review, err := leader.ReviewCycle(goal, report, workdir)
+			review, err := leader.ReviewCycle(goal, report, workdir, decomposerTimeout, leaderModel)
 			if err != nil {
 				// If review fails, accept by default (don't block pipeline).
 				completedBatches[batch.ID] = true
@@ -825,7 +1208,9 @@ func (e *TeamEngine) RunBatch(batch *Batch) error {
 // Kept for backward compatibility.
 func (e *TeamEngine) PlanAndRunLegacy(goal, workdir string) ([]*Task, error) {
 	leader := NewLeader(e.Runner)
-	planTasks, err := leader.Decompose(goal, workdir)
+	decomposerTimeout := time.Duration(e.Router.ResolveDecomposerTimeout()) * time.Second
+	leaderModel := e.Router.ResolveModel("planner")
+	planTasks, err := leader.Decompose(goal, workdir, decomposerTimeout, leaderModel)
 	if err != nil {
 		return nil, fmt.Errorf("decompose goal: %w", err)
 	}
@@ -943,7 +1328,7 @@ func (e *TeamEngine) CancelTask(taskID string) error {
 		}
 	}
 
-	return e.DB.TransitionState(taskID, TaskStateFailed, "cancelled by user", "")
+	return e.DB.TransitionState(taskID, TaskStateSuspended, "cancelled by user", "")
 }
 
 // SendFeedback sends human feedback to a task via the AgentChannel.Prompt
@@ -1097,6 +1482,36 @@ func (e *TeamEngine) ExportTaskLog(taskID string) (map[string]interface{}, error
 }
 
 // ExportTaskLogJSON is like ExportTaskLog but returns a JSON string.
+// Stats captures aggregate statistics across all tasks for the dashboard.
+type Stats struct {
+	Total          int            `json:"total"`
+	ByState        map[string]int `json:"by_state"`
+	SuccessRate    float64        `json:"success_rate"`
+	AvgDurationSec float64        `json:"avg_duration_sec"`
+}
+
+// GetStats computes aggregate statistics across all tasks.
+func (e *TeamEngine) GetStats() (*Stats, error) {
+	tasks, err := e.DB.ListTasks()
+	if err != nil {
+		return nil, fmt.Errorf("list tasks: %w", err)
+	}
+	stats := &Stats{
+		Total:   len(tasks),
+		ByState: make(map[string]int),
+	}
+	for _, t := range tasks {
+		stats.ByState[string(t.State)]++
+	}
+	done := stats.ByState[string(TaskStateDone)]
+	failed := stats.ByState[string(TaskStateFailed)]
+	completed := done + failed
+	if completed > 0 {
+		stats.SuccessRate = float64(done) / float64(completed) * 100
+	}
+	return stats, nil
+}
+
 func (e *TeamEngine) ExportTaskLogJSON(taskID string) (string, error) {
 	log, err := e.ExportTaskLog(taskID)
 	if err != nil {

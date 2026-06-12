@@ -38,6 +38,7 @@ type SubagentProgress func(status, summary, toolName string)
 type SubagentRequest struct {
 	Task       string            // The prompt/description for the agent
 	Role       string            // Role name (e.g. "developer", "verifier")
+	Model      string            // LLM model name; "" = Whale default
 	Tools      []string          // Allowed tool names
 	Workdir    string            // Working directory
 	Timeout    time.Duration
@@ -78,6 +79,13 @@ func NewRunner(spawner SubagentSpawner) *AgentRunner {
 //
 // Returns a RunResult with the agent's output.
 func (ar *AgentRunner) Run(prompt, workdir, tools string, timeout time.Duration, onProgress SubagentProgress) *RunResult {
+	return ar.RunWithContext(context.Background(), prompt, workdir, tools, timeout, onProgress)
+}
+
+// RunWithContext is like Run but accepts an external context for cancellation.
+// The effective timeout is min(timeout, ctx deadline). If ctx is cancelled
+// (e.g. via Close()), the spawn is aborted.
+func (ar *AgentRunner) RunWithContext(ctx context.Context, prompt, workdir, tools string, timeout time.Duration, onProgress SubagentProgress, model ...string) *RunResult {
 	start := time.Now()
 
 	toolNames := parseToolList(tools)
@@ -91,11 +99,14 @@ func (ar *AgentRunner) Run(prompt, workdir, tools string, timeout time.Duration,
 		MaxCalls:   100,
 		OnProgress: onProgress,
 	}
+	if len(model) > 0 && model[0] != "" {
+		req.Model = model[0]
+	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	runCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	resp, err := ar.spawner.SpawnSubagent(ctx, req)
+	resp, err := ar.spawner.SpawnSubagent(runCtx, req)
 
 	elapsed := time.Since(start).Seconds()
 
@@ -120,7 +131,7 @@ func (ar *AgentRunner) Run(prompt, workdir, tools string, timeout time.Duration,
 
 // RunVerifier is a convenience wrapper for running a verifier subagent
 // with stricter limits (shorter timeout, read-only tools).
-func (ar *AgentRunner) RunVerifier(prompt, workdir string, timeout time.Duration) *RunResult {
+func (ar *AgentRunner) RunVerifier(prompt, workdir string, timeout time.Duration, model ...string) *RunResult {
 	toolNames := ProfileToToolNames(ProfileReadOnly)
 	req := SubagentRequest{
 		Task:     prompt,
@@ -130,6 +141,9 @@ func (ar *AgentRunner) RunVerifier(prompt, workdir string, timeout time.Duration
 		Timeout:  timeout,
 		MaxIters: 10,
 		MaxCalls: 30,
+	}
+	if len(model) > 0 && model[0] != "" {
+		req.Model = model[0]
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
@@ -160,7 +174,7 @@ func (ar *AgentRunner) RunVerifier(prompt, workdir string, timeout time.Duration
 
 // RunDecomposer is a convenience wrapper for running a leader/decomposer
 // subagent that produces a structured JSON plan.
-func (ar *AgentRunner) RunDecomposer(prompt, workdir string, timeout time.Duration) *RunResult {
+func (ar *AgentRunner) RunDecomposer(prompt, workdir string, timeout time.Duration, model ...string) *RunResult {
 	toolNames := ProfileToToolNames(ProfileReadOnly)
 	req := SubagentRequest{
 		Task:     prompt,
@@ -170,6 +184,9 @@ func (ar *AgentRunner) RunDecomposer(prompt, workdir string, timeout time.Durati
 		Timeout:  timeout,
 		MaxIters: 15,
 		MaxCalls: 40,
+	}
+	if len(model) > 0 && model[0] != "" {
+		req.Model = model[0]
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)

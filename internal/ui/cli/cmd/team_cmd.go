@@ -9,6 +9,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/usewhale/whale/internal/team_engine"
+	"github.com/usewhale/whale/internal/team_engine/server"
 )
 
 func newTeamCmd() *cobra.Command {
@@ -42,8 +43,8 @@ Subcommands:
 	}
 
 	// Global flags for the team engine.
-	teamCmd.PersistentFlags().StringVar(&dbPath, "db", "team_engine.db", "Path to SQLite database")
-	teamCmd.PersistentFlags().StringVar(&whiteboardDir, "whiteboard", "team_tasks", "Whiteboard directory for agent communication")
+	teamCmd.PersistentFlags().StringVar(&dbPath, "db", ".whale/team_engine.db", "Path to SQLite database")
+	teamCmd.PersistentFlags().StringVar(&whiteboardDir, "whiteboard", ".whale/team_tasks", "Whiteboard directory for agent communication")
 	teamCmd.PersistentFlags().StringVar(&configPath, "config", "", "Path to team_engine.yaml config")
 	teamCmd.PersistentFlags().StringVar(&workdir, "workdir", ".", "Working directory for agent execution")
 
@@ -147,7 +148,11 @@ Subcommands:
 			defer eng.Close()
 
 			fmt.Printf("📋 Planning goal: %s\n", goal)
-			batches, err := eng.PlanAndRun(goal, workdir)
+			masterTask, mtErr := eng.CreateMasterTask(goal, workdir)
+			if mtErr != nil {
+				return fmt.Errorf("create master task: %w", mtErr)
+			}
+			batches, err := eng.PlanAndRun(cmd.Context(), goal, workdir, masterTask.ID)
 			if err != nil {
 				return fmt.Errorf("plan and run: %w", err)
 			}
@@ -399,6 +404,36 @@ Subcommands:
 	teamCmd.AddCommand(escalationCmd)
 	teamCmd.AddCommand(historyCmd)
 	teamCmd.AddCommand(exportCmd)
+
+	// --- dashboard subcommand ---
+	dashboardCmd := &cobra.Command{
+		Use:   "dashboard",
+		Short: "Start real-time web dashboard",
+		Long: `Start a web server with SSE-based live task monitoring.
+
+Dashboard shows:
+  - Real-time task status (auto-refreshes every 2s via SSE)
+  - Aggregate statistics (total, success rate)
+  - Progress bars for producing/verifying stages
+  - Agent output preview
+  - Dark theme, modern UI
+
+Open http://localhost:8080 after starting.`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			addr, _ := cmd.Flags().GetString("addr")
+
+			eng, err := newTeamEngine(dbPath, whiteboardDir, configPath)
+			if err != nil {
+				return fmt.Errorf("init engine: %w", err)
+			}
+			defer eng.Close()
+
+			srv := server.NewDashboardServer(eng, addr)
+			return srv.Start()
+		},
+	}
+	dashboardCmd.Flags().String("addr", "localhost:8080", "Listen address (host:port)")
+	teamCmd.AddCommand(dashboardCmd)
 
 	return teamCmd
 }

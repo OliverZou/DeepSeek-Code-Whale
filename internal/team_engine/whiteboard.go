@@ -56,6 +56,8 @@ func (wb *Whiteboard) TaskDir(taskID string) string {
 }
 
 // InitTask creates the task directory and writes input.md.
+// NOTE: does NOT overwrite status.json — the caller is responsible for
+// updating task state via WriteStatus when the state machine transitions.
 func (wb *Whiteboard) InitTask(taskID, input string) error {
 	taskDir := wb.TaskDir(taskID)
 	if err := os.MkdirAll(taskDir, 0755); err != nil {
@@ -67,7 +69,12 @@ func (wb *Whiteboard) InitTask(taskID, input string) error {
 	if err := wb.writeFile(filepath.Join(taskDir, "input.md"), input); err != nil {
 		return fmt.Errorf("write input.md: %w", err)
 	}
-	return wb.WriteStatus(taskID, "initialised")
+	// Only write initial status.json if it doesn't already exist (first init).
+	statusPath := filepath.Join(taskDir, "status.json")
+	if _, err := os.Stat(statusPath); os.IsNotExist(err) {
+		return wb.WriteStatus(taskID, "initialised")
+	}
+	return nil
 }
 
 // ---------------------------------------------------------------------------

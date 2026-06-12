@@ -32,24 +32,58 @@ GOAL:
 %s
 
 RULES:
-1. Break the goal into 1-8 subtasks
+1. Break the goal into 1-12 subtasks
 2. Each subtask should be self-contained and produce a clear deliverable
 3. Order subtasks by dependency (earlier subtasks first)
-4. Assign an appropriate ROLE to each subtask:
-   - "developer" — writing code
-   - "tester" — writing tests
-   - "reviewer" — code review
-   - "researcher" — research/analysis
-   - "writer" — documentation/writing
-   - "formatter" — code formatting
-   - "evaluator" — quality evaluation
-   - "synthesizer" — merge multiple research results into structured conclusions (场景3)
-5. Set "depends_on_index" to the 0-based index of the subtask this one depends on, or -1 if no dependency
-6. For complex tasks with multiple dependencies, use "depends_on_indices" instead
 
-6. Group related subtasks into **batches** (stages). Use "batch_id" to group tasks
+4. Assign an appropriate ROLE to each subtask:
+   - "developer"   — writing code
+   - "tester"      — writing tests
+   - "reviewer"    — code review
+   - "researcher"  — research/analysis
+   - "writer"      — documentation/writing
+   - "formatter"   — code formatting
+   - "evaluator"   — quality evaluation
+   - "synthesizer" — merge multiple research results into structured conclusions
+
+5. Group related subtasks into **batches** (stages). Use "batch_id" to group tasks
    that can run in parallel. Use "depends_on_batch" to declare batch-level dependencies.
    Example: tasks in batch "research" must finish before tasks in batch "write" start.
+
+6. Use "depends_on_index" / "depends_on_indices" for task-level dependencies.
+
+7. ORCHESTRATION PATTERNS — Choose the best pattern for your goal:
+
+   a) PIPELINE (default): Sequential batches, each depending on the previous.
+      Use when tasks have clear dependencies (e.g. design → code → test → deploy).
+      Set depends_on_batch on later batches.
+
+   b) PARALLEL WITH AGGREGATION (Judge Panel): For high-risk review tasks,
+      assign MULTIPLE reviewers with different verifier_focus values in the same batch,
+      then add a "synthesizer" task in the next batch to aggregate their conclusions.
+      Example:
+        Batch 1: security-reviewer (focus:security), perf-reviewer (focus:performance)
+        Batch 2 (depends on Batch 1): synthesizer (aggregate all reviews)
+
+   c) EXPLORATION LOOP (Deep Research): For research/exploration goals,
+      set verifier_focus to "exploration" on research tasks. The engine will
+      keep re-running the batch until no new findings emerge (dry).
+      Set max_cycles to a reasonable limit (e.g. 3-5) to bound exploration depth.
+
+   d) COMPLETENESS CHECK: For goals requiring full coverage,
+      assign a reviewer with verifier_focus="completeness" in a subsequent batch.
+      This reviewer checks if the output covers all requirements from the goal.
+
+8. Use "verifier_focus" to control what the Verifier checks:
+   - "correctness"    — output is accurate (default)
+   - "security"       — security vulnerabilities
+   - "performance"    — performance implications
+   - "completeness"   — covers all requirements
+   - "exploration"    — whether there are still unexplored directions (for Loop-until-dry)
+   - "style"          — code style / conventions
+   - "sources"        — whether claims are properly sourced (for research)
+
+9. Use "max_cycles" per-batch to limit retry/exploration loops (default 1, max 10).
 
 OUTPUT FORMAT (pure JSON array, no markdown):
 [
@@ -61,27 +95,59 @@ OUTPUT FORMAT (pure JSON array, no markdown):
     "batch_label": "Research Phase",
     "depends_on_batch": [],
     "depends_on_index": -1,
-    "verifier_focus": "correctness"
+    "verifier_focus": "correctness",
+    "max_cycles": 1
   }
 ]`, goal)
 }
 
-// Decompose calls a Whale subagent to decompose a goal into subtasks.
-// Returns the parsed plan tasks.
-func (l *Leader) Decompose(goal string, workdir string) ([]PlanTask, error) {
+// decomposeInternal runs the leader agent and returns both parsed tasks
+// and the raw AI output text.
+func (l *Leader) decomposeInternal(goal string, workdir string, timeout time.Duration, model ...string) ([]PlanTask, string, error) {
+	if timeout <= 0 {
+		timeout = 180 * time.Second
+	}
 	prompt := DecomposePrompt(goal)
-	result := l.runner.RunDecomposer(prompt, workdir, 120*time.Second)
+	result := l.runner.RunDecomposer(prompt, workdir, timeout, model...)
 
 	if !result.Success {
-		return nil, fmt.Errorf("leader agent failed (exit %d): %s", result.ExitCode, result.Stderr)
+		return nil, "", fmt.Errorf("leader agent failed (exit %d): %s", result.ExitCode, result.Stderr)
 	}
 
 	output := strings.TrimSpace(result.Stdout)
 	if output == "" {
-		return nil, fmt.Errorf("leader returned empty output")
+		return nil, "", fmt.Errorf("leader returned empty output")
 	}
 
-	return ParsePlanTasks(output)
+	tasks, err := ParsePlanTasks(output)
+	if err != nil {
+		// Fallback: when the decomposer subagent returns non-JSON output
+		// (e.g. natural-language summary), create a single generic task
+		// that preserves the AI's natural-language output as its
+		// description so no information is lost.
+		return []PlanTask{{
+			Title:           goal,
+			Description:     output,
+			Role:            "developer",
+			BatchID:         "default",
+			BatchLabel:      "Execution",
+			DependsOnIndex:  -1,
+		}}, output, nil
+	}
+	return tasks, output, nil
+}
+
+// Decompose calls a Whale subagent to decompose a goal into subtasks.
+// timeout is the subagent timeout; if <= 0 defaults to 180s.
+// Returns the parsed plan tasks.
+func (l *Leader) Decompose(goal string, workdir string, timeout time.Duration, model ...string) ([]PlanTask, error) {
+	tasks, _, err := l.decomposeInternal(goal, workdir, timeout, model...)
+	return tasks, err
+}
+
+// DecomposeFull is like Decompose but also returns the raw AI output text.
+func (l *Leader) DecomposeFull(goal string, workdir string, timeout time.Duration, model ...string) ([]PlanTask, string, error) {
+	return l.decomposeInternal(goal, workdir, timeout, model...)
 }
 
 // ParsePlanTasks parses the AI agent's output into a slice of PlanTask.
@@ -140,9 +206,23 @@ TASKS:
 Board: ` + report.BoardPath + `
 
 DECIDE:
-- "accept"    → Results look good, proceed to next batch
-- "reject"    → Results need improvement, retry this batch
-- "escalate"  → Need human input (risk/ambiguity/cost)
+- "accept"     → Results look good or exploration is dry, proceed to next batch
+- "reject"     → Results need improvement or there are still unexplored directions, retry this batch
+- "escalated"  → Strategy needs adjustment. Failed tasks will be reset to pending
+                 and retried with escalated capabilities (different model/approach).
+                 Use when standard retries keep failing.
+- "escalate"   → Need human input (risk/ambiguity/cost)
+
+IMPORTANT — CONTEXT-DEPENDENT DECISIONS:
+- For EXPLORATION tasks (verifier_focus="exploration"): "reject" means
+  "there are still unexplored directions, keep digging". "accept" means
+  "the topic is exhausted, no new findings in this round".
+- For COMPLETENESS tasks (verifier_focus="completeness"): "reject" means
+  "not all requirements are covered yet".
+- For regular tasks: "reject" means "quality is insufficient, fix the issues".
+
+Use "feedback" to tell the Worker what to improve, fix, or explore next.
+For exploration tasks, point the Worker to specific unexplored angles.
 
 OUTPUT FORMAT (pure JSON, no markdown):
 {"decision": "accept|reject|escalate", "reason": "...", "feedback": "optional improvement suggestions"}
@@ -176,21 +256,99 @@ type CycleReviewJSON struct {
 	Feedback string `json:"feedback,omitempty"`
 }
 
-// ReviewCycle calls a Whale subagent to review a CycleReport and return a decision.
-func (l *Leader) ReviewCycle(goal string, report *CycleReport, workdir string) (*CycleReview, error) {
+// reviewCycleInternal runs the review subagent and returns both the parsed
+// decision and the raw AI output text.
+func (l *Leader) reviewCycleInternal(goal string, report *CycleReport, workdir string, timeout time.Duration, model ...string) (*CycleReview, string, error) {
+	if timeout <= 0 {
+		timeout = 60 * time.Second
+	}
 	prompt := ReviewCyclePrompt(goal, report)
-	result := l.runner.RunDecomposer(prompt, workdir, 60*time.Second)
+	result := l.runner.RunDecomposer(prompt, workdir, timeout, model...)
 
 	if !result.Success {
-		return nil, fmt.Errorf("leader review failed (exit %d): %s", result.ExitCode, result.Stderr)
+		return nil, "", fmt.Errorf("leader review failed (exit %d): %s", result.ExitCode, result.Stderr)
 	}
 
 	output := strings.TrimSpace(result.Stdout)
 	if output == "" {
-		return nil, fmt.Errorf("leader review returned empty output")
+		return nil, "", fmt.Errorf("leader review returned empty output")
 	}
 
-	return ParseCycleReview(output)
+	review, err := ParseCycleReview(output)
+	if err != nil {
+		return nil, output, err
+	}
+	return review, output, nil
+}
+
+// ReviewCycle calls a Whale subagent to review a CycleReport and return a decision.
+// timeout is the subagent timeout; if <= 0 defaults to 60s.
+func (l *Leader) ReviewCycle(goal string, report *CycleReport, workdir string, timeout time.Duration, model ...string) (*CycleReview, error) {
+	review, _, err := l.reviewCycleInternal(goal, report, workdir, timeout, model...)
+	return review, err
+}
+
+// ReviewCycleFull is like ReviewCycle but also returns the raw AI output text.
+func (l *Leader) ReviewCycleFull(goal string, report *CycleReport, workdir string, timeout time.Duration, model ...string) (*CycleReview, string, error) {
+	return l.reviewCycleInternal(goal, report, workdir, timeout, model...)
+}
+
+// ProactiveLeaderPrompt returns a prompt for the Leader to proactively
+// review a single task's progress and provide guidance.
+func ProactiveLeaderPrompt(goal string, taskTitle string, taskRole string, taskState string, retryCount int, lastOutput string) string {
+	outputPreview := lastOutput
+	if len(outputPreview) > 500 {
+		outputPreview = outputPreview[:500] + "..."
+	}
+	return fmt.Sprintf(`You are a proactive Team Leader overseeing a running pipeline.
+
+GOAL:
+%s
+
+A task needs your attention:
+
+Task:     %s
+Role:     %s
+State:    %s
+Retries:  %d
+
+Latest output:
+%s
+
+Decide if you need to intervene:
+- "none"       → Task is on track, no intervention needed
+- "guidance"   → Task is偏离方向 or stuck, provide course correction
+- "redirect"   → Task should be reprioritized or replaced
+
+OUTPUT FORMAT (pure JSON, no markdown):
+{"action": "none|guidance|redirect", "reason": "...", "feedback": "specific guidance for the worker"}
+`, goal, taskTitle, taskRole, taskState, retryCount, outputPreview)
+}
+
+// ReviewProgress calls the Leader to proactively review a single task's
+// progress and optionally send guidance via the inbox.
+func (l *Leader) ReviewProgress(goal, taskTitle, taskRole, taskState string, retryCount int, lastOutput, workdir string, timeout time.Duration, model ...string) (string, error) {
+	if timeout <= 0 {
+		timeout = 60 * time.Second
+	}
+	prompt := ProactiveLeaderPrompt(goal, taskTitle, taskRole, taskState, retryCount, lastOutput)
+	result := l.runner.RunDecomposer(prompt, workdir, timeout, model...)
+
+	if !result.Success {
+		return "", fmt.Errorf("leader review failed (exit %d): %s", result.ExitCode, result.Stderr)
+	}
+
+	output := strings.TrimSpace(result.Stdout)
+	if output == "" {
+		return "", nil
+	}
+
+	// Try to parse action; return raw feedback on failure.
+	action := extractJSONObject(output)
+	if action == "" {
+		return output, nil
+	}
+	return action, nil
 }
 
 // ParseCycleReview parses the Leader's JSON review output.
@@ -215,6 +373,8 @@ func ParseCycleReview(output string) (*CycleReview, error) {
 		cr.Decision = CycleAccept
 	case "reject":
 		cr.Decision = CycleReject
+	case "escalated":
+		cr.Decision = CycleEscalated
 	case "escalate":
 		cr.Decision = CycleEscalate
 	default:
@@ -275,5 +435,5 @@ func extractJSON(output string) string {
 		return match
 	}
 
-	return output
+	return ""
 }

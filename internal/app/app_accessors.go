@@ -134,7 +134,14 @@ func ViewModeToggleMessage(mode string) string {
 }
 
 func (a *App) Close() error {
-	if a == nil || a.mcpManager == nil {
+	if a == nil {
+		return nil
+	}
+	if a.dashboardClient != nil {
+		// Best-effort deregister — don't block shutdown.
+		go a.dashboardClient.Deregister()
+	}
+	if a.mcpManager == nil {
 		return nil
 	}
 	return a.mcpManager.Close()

@@ -1,0 +1,54 @@
+# Team configuration example
+# Place in .whale/teams/{team-name}.yaml
+# Use with: team_plan goal="..." team="team-name"
+
+label: "软件开发团队"
+
+# Team Leader configuration
+leader:
+  role: 项目经理
+  description: "负责项目计划、资源分配、风险管理和项目执行"
+  model: deepseek-v4-flash
+  prompt: |
+    你是经验丰富的项目经理，负责管理软件开发项目。
+    你需要制定合理的项目计划，分配任务给团队成员，
+    并确保项目按时交付。
+  rules:
+    - "必须提供覆盖率≥90%的单元测试"
+    - "代码必须通过 lint 检查"
+    - "所有 API 必须有自动化测试"
+    - "必须使用 Git 进行版本控制"
+
+# Team roles/members
+# Each role can:
+#   1. Reference an agent from .whale/agents/{name}.yaml via use_agent
+#   2. Define everything inline (prompt, tools, model, etc.)
+#   3. Mix both: use_agent + inline overrides
+roles:
+  产品经理:
+    description: "负责产品需求、功能定义和用户需求分析"
+    use_agent: "product-manager"
+    model: deepseek-v4-flash
+    timeout: 1800
+
+  架构师:
+    description: "负责系统架构设计和技术决策"
+    use_agent: "architect"
+    timeout: 1200
+
+  工程师:
+    description: "负责代码开发、单元测试和代码审查"
+    use_agent: "developer"
+    timeout: 1200
+    model: deepseek-v4-pro
+
+  QA工程师:
+    description: "负责软件测试、缺陷报告和用户验收"
+    prompt: |
+      你是资深的 QA 工程师，负责软件质量保障。
+      你需要编写和执行测试用例、报告缺陷、进行回归测试。
+      确保软件满足质量标准。
+    tools: [read_file, write, shell_run, web_search]
+    model: deepseek-v4-pro
+    timeout: 1200
+    maxRetries: 5

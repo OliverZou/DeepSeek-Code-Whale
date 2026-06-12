@@ -1,0 +1,19 @@
+{
+  "name": "whale-dashboard",
+  "outputfilename": "whale-dashboard",
+  "frontend:install": "",
+  "frontend:build": "",
+  "frontend:dev:watcher": "",
+  "frontend:dev:serverUrl": "",
+  "assetdir": "frontend",
+  "author": {
+    "name": "Whale",
+    "email": ""
+  },
+  "info": {
+    "productVersion": "1.0.0",
+    "productName": "Whale Dashboard",
+    "copyright": "Whale Team",
+    "comments": "Multi-workspace team-engine monitor"
+  }
+}

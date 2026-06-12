@@ -14,6 +14,7 @@ import (
 	"github.com/usewhale/whale/internal/core"
 	"github.com/usewhale/whale/internal/policy"
 	"github.com/usewhale/whale/internal/skills"
+	"github.com/usewhale/whale/internal/team_engine"
 	"github.com/usewhale/whale/internal/webfetch"
 )
 
@@ -37,6 +38,12 @@ type Toolset struct {
 	execApproval        policy.ApprovalFunc
 	sessionIDFunc       func() string
 	foregroundShellWait foregroundShellWaitConfig
+
+	// teamEngineSpawnFunc is an optional SubagentSpawner callback for Team Engine.
+	// When set, Team Engine tools use FuncSpawner instead of ShellSubagentSpawner,
+	// enabling full Whale runtime integration (context isolation, tool permissions).
+	// The callback should adapt tasks.Runner.SpawnSubagentWithProgress.
+	teamEngineSpawnFunc team_engine.SpawnFunc
 }
 
 type externalReadRootsKey struct{}
@@ -81,6 +88,10 @@ func NewToolset(root string) (*Toolset, error) {
 			Rules:   policy.DefaultRules(),
 		},
 	}, nil
+}
+
+func (b *Toolset) SetTeamEngineSpawnFunc(fn team_engine.SpawnFunc) {
+	b.teamEngineSpawnFunc = fn
 }
 
 func (b *Toolset) SetForegroundShellWait(defaultMS, maxMS int) {

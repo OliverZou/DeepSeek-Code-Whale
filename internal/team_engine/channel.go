@@ -170,8 +170,7 @@ func (e *TeamEngine) Abort(_ context.Context, taskID string) error {
 }
 
 // Kill implements AgentChannel. Forceful termination.
-// For now, delegates to CancelTask. A future version may add
-// OS-level process killing for running subagents.
+// Transitions the task to suspended so it can be resumed later.
 func (e *TeamEngine) Kill(_ context.Context, taskID string) error {
 	task, err := e.DB.GetTask(taskID)
 	if err != nil {
@@ -183,16 +182,24 @@ func (e *TeamEngine) Kill(_ context.Context, taskID string) error {
 	if task.State.IsTerminal() {
 		return fmt.Errorf("task %q is already in terminal state %s", taskID, task.State)
 	}
+	if task.State == TaskStateSuspended {
+		return fmt.Errorf("task %q is already suspended", taskID)
+	}
 
-	// Force to failed. Handle pending→assigned→failed if needed.
-	if task.State == TaskStatePending {
-		if err := e.DB.TransitionState(taskID, TaskStateAssigned, "", ""); err != nil {
-			return fmt.Errorf("kill: transition pending→assigned: %w", err)
-		}
+	// Cancel the active subagent context if one exists, so the spawn
+	// unblocks promptly instead of waiting for the full timeout.
+	e.mu.Lock()
+	if cancel, ok := e.activeCancels[taskID]; ok {
+		cancel()
+		delete(e.activeCancels, taskID)
 	}
-	if err := e.DB.TransitionState(taskID, TaskStateFailed, "killed", ""); err != nil {
-		return fmt.Errorf("kill task: %w", err)
+	e.mu.Unlock()
+
+	// Transition to suspended (not failed!) so the task can be resumed.
+	if err := e.DB.TransitionState(taskID, TaskStateSuspended, "suspended by user", ""); err != nil {
+		return fmt.Errorf("suspend task: %w", err)
 	}
-	_ = e.Whiteboard.AppendOutput(taskID, "\n[KILLED]")
+	_ = e.Whiteboard.WriteStatus(taskID, string(TaskStateSuspended))
+	_ = e.Whiteboard.AppendOutput(taskID, "\n[SUSPENDED by user]")
 	return nil
 }

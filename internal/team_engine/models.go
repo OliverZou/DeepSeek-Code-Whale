@@ -20,14 +20,22 @@ const (
 	TaskStateProduced  TaskState = "produced"
 	TaskStateVerifying TaskState = "verifying"
 	TaskStateVerified  TaskState = "verified"
-	TaskStateFailed    TaskState = "failed"
-	TaskStateDone      TaskState = "done"
+	TaskStateFailed     TaskState = "failed"
+	TaskStateDone       TaskState = "done"
+	TaskStateSuspended  TaskState = "suspended"
 )
 
 // IsTerminal reports whether the state is a terminal state
-// (no further transitions allowed).
+// (no further transitions allowed). Suspended is NOT terminal—
+// it can be resumed.
 func (s TaskState) IsTerminal() bool {
 	return s == TaskStateFailed || s == TaskStateDone
+}
+
+// IsResumable reports whether the task can be resumed.
+// Only suspended tasks can be resumed.
+func (s TaskState) IsResumable() bool {
+	return s == TaskStateSuspended
 }
 
 // AgentRole is the role an agent plays in the collaboration.
@@ -81,6 +89,7 @@ type Task struct {
 	VerifierFeedback string     `json:"verifier_feedback"` // Verifier 反馈
 	VerifierFocus    string     `json:"verifier_focus"`    // 验证重点 (correctness,security,sources,plausibility,...)
 	BatchID          string     `json:"batch_id"`          // 所属 Batch（stage）
+ 	MasterTaskID     string     `json:"master_task_id"`    // 所属总任务
 	CreatedAt        string     `json:"created_at"`        // ISO 8601
 	UpdatedAt        string     `json:"updated_at"`        // ISO 8601
 }
@@ -128,7 +137,7 @@ type PlanTask struct {
 
 // NewTask creates a Task with sensible defaults and auto-generated
 // timestamps.
-func NewTask(id, title, description string, role AgentRole, profile ToolProfile, maxRetries int, workdir string, parentIDs []string, batchID string) *Task {
+func NewTask(id, title, description string, role AgentRole, profile ToolProfile, maxRetries int, workdir string, parentIDs []string, batchID, masterTaskID string) *Task {
 	now := time.Now().UTC().Format(time.RFC3339)
 	if maxRetries <= 0 {
 		maxRetries = 9
@@ -140,32 +149,37 @@ func NewTask(id, title, description string, role AgentRole, profile ToolProfile,
 		parentIDs = []string{}
 	}
 	return &Task{
-		ID:          id,
-		Title:       title,
-		Description: description,
-		Role:        role,
-		Profile:     profile,
-		State:       TaskStatePending,
-		MaxRetries:  maxRetries,
-		RetryCount:  0,
-		Workdir:     workdir,
-		ParentIDs:   parentIDs,
-		BatchID:     batchID,
-		CreatedAt:   now,
-		UpdatedAt:   now,
+		ID:            id,
+		Title:         title,
+		Description:   description,
+		Role:          role,
+		Profile:       profile,
+		State:         TaskStatePending,
+		MaxRetries:    maxRetries,
+		RetryCount:    0,
+		Workdir:       workdir,
+		ParentIDs:     parentIDs,
+		BatchID:       batchID,
+		MasterTaskID:  masterTaskID,
+		CreatedAt:     now,
+		UpdatedAt:     now,
 	}
 }
 
 // ValidTransitions is the legal state-transition table.
 //
 // Terminal states (failed, done) have empty transition lists.
+// Backward transitions (Verified→Assigned, Produced→Assigned, Verifying→Assigned)
+// support CycleReject — the Leader may reject a batch and request retries even
+// after individual task verification passed.
 var ValidTransitions = map[TaskState][]TaskState{
-	TaskStatePending:   {TaskStateAssigned},
-	TaskStateAssigned:  {TaskStateProducing, TaskStateFailed},
-	TaskStateProducing: {TaskStateProduced, TaskStateFailed},
-	TaskStateProduced:  {TaskStateVerifying, TaskStateDone}, // done if no verifier
-	TaskStateVerifying: {TaskStateVerified, TaskStateProducing, TaskStateFailed},
-	TaskStateVerified:  {TaskStateDone, TaskStateFailed},
+	TaskStatePending:   {TaskStateAssigned, TaskStateSuspended, TaskStateFailed},
+	TaskStateAssigned:  {TaskStateProducing, TaskStateSuspended, TaskStateFailed},
+	TaskStateProducing: {TaskStateProduced, TaskStateSuspended, TaskStateFailed},
+	TaskStateProduced:  {TaskStateVerifying, TaskStateDone, TaskStateAssigned, TaskStateSuspended, TaskStateFailed},
+	TaskStateVerifying: {TaskStateVerified, TaskStateProducing, TaskStateSuspended, TaskStateAssigned, TaskStateFailed},
+	TaskStateVerified:  {TaskStateDone, TaskStateSuspended, TaskStateAssigned, TaskStateFailed},
+	TaskStateSuspended: {TaskStatePending}, // resume
 	TaskStateFailed:    {}, // terminal
 	TaskStateDone:      {}, // terminal
 }
@@ -213,9 +227,10 @@ func (b *Batch) LabelOrID() string {
 type CycleDecision string
 
 const (
-	CycleAccept   CycleDecision = "accept"   // 接受结果，继续下一 Batch
-	CycleReject   CycleDecision = "reject"   // 拒绝，重试当前 Batch
-	CycleEscalate CycleDecision = "escalate" // 需要用户介入
+	CycleAccept   CycleDecision = "accept"    // 接受结果，继续下一 Batch
+	CycleReject   CycleDecision = "reject"    // 拒绝，重试当前 Batch
+	CycleEscalate CycleDecision = "escalate"  // 需要用户介入
+	CycleEscalated CycleDecision = "escalated" // 升级策略后重试（换模型/调参数）
 )
 
 // TaskSummary is a lightweight view of a task for inclusion in reports.
@@ -248,6 +263,38 @@ type CycleReview struct {
 	PlanChanges string        `json:"plan_changes,omitempty"` // 如果需要改计划
 }
 
+// ---------------------------------------------------------------------------
+// TaskEvent — 主动事件推送，替代轮询
+// ---------------------------------------------------------------------------
+
+// TaskEventType 标识事件种类
+type TaskEventType int
+
+const (
+	// EventStateChanged — 任务状态转换（pending→assigned→producing→...）
+	EventStateChanged TaskEventType = iota
+	// EventWorkerOutput — Worker 产出了一段输出（流式）
+	EventWorkerOutput
+	// EventVerifierResult — Verifier 得出了结论（PASS/FAIL）
+	EventVerifierResult
+	// EventTaskDone — 任务最终完成（done 或 failed）
+	EventTaskDone
+)
+
+// TaskEvent 是 engine 向监听者推送的事件
+type TaskEvent struct {
+	Type     TaskEventType `json:"type"`
+	TaskID   string        `json:"task_id"`
+	Title    string        `json:"title,omitempty"`
+	OldState string        `json:"old_state,omitempty"`
+	NewState string        `json:"new_state,omitempty"`
+	Data     string        `json:"data,omitempty"`
+	Progress int           `json:"progress"`
+}
+
+// TaskEventCallback 是事件监听函数
+type TaskEventCallback func(event TaskEvent)
+
 // AllStates returns every TaskState in declaration order.
 func AllStates() []TaskState {
 	return []TaskState{
@@ -258,6 +305,7 @@ func AllStates() []TaskState {
 		TaskStateVerifying,
 		TaskStateVerified,
 		TaskStateFailed,
+		TaskStateSuspended,
 		TaskStateDone,
 	}
 }

@@ -47,5 +47,8 @@ bench-cost-live:
 run:
 	@go run ./cmd/dev run
 
+dashboard:
+	cd cmd/dashboard && wails build -o ../../bin/whale-dashboard$(shell go env GOEXE)
+
 clean:
 	@go run ./cmd/dev clean

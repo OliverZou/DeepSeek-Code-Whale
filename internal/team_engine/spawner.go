@@ -20,17 +20,49 @@ import (
 // This enforces the MiniMax Agent Team design principle that each role
 // (Leader, Worker, Verifier) operates in an isolated context:
 //
-//   Leader  → gets the goal           → outputs structured plan (JSON)
-//   Worker  → gets ONE subtask        → outputs work product
-//   Verifier→ gets task + output only → outputs PASS/FAIL verdict
+//   Leader    → gets the goal           → outputs structured plan (JSON)
+//   Worker    → gets ONE subtask        → outputs work product
+//   Verifier  → gets task + output only → outputs PASS/FAIL verdict
 //
 // The Worker NEVER sees the Verifier's critique. The Verifier NEVER sees
 // the Worker's internal reasoning — only the final output. This adversarial
 // isolation is what prevents context pollution and drives quality.
+//
+// Two spawner implementations are provided:
+//   - FuncSpawner: wraps a function callback; use with tasks.Runner's
+//     SpawnSubagentWithProgress for full Whale runtime integration.
+//   - ShellSubagentSpawner: process-level fallback via exec.Command.
+//     Prefer FuncSpawner in production.
 // =============================================================================
 
 // ---------------------------------------------------------------------------
-// ShellSubagentSpawner — standalone / CLI mode
+// FuncSpawner — wraps a function callback as SubagentSpawner
+// ---------------------------------------------------------------------------
+
+// SpawnFunc is the callback signature used by FuncSpawner.
+// Implementations should call tasks.Runner.SpawnSubagentWithProgress or an
+// equivalent Whale-native subagent mechanism for full context isolation.
+type SpawnFunc func(ctx context.Context, req SubagentRequest) (SubagentResponse, error)
+
+// FuncSpawner wraps a SpawnFunc as a SubagentSpawner.
+// Use this to integrate the Team Engine with Whale's native subagent runtime
+// instead of shelling out to the CLI.
+type FuncSpawner struct {
+	fn SpawnFunc
+}
+
+// NewFuncSpawner creates a FuncSpawner from the given callback.
+func NewFuncSpawner(fn SpawnFunc) *FuncSpawner {
+	return &FuncSpawner{fn: fn}
+}
+
+// SpawnSubagent implements SubagentSpawner by delegating to the wrapped function.
+func (s *FuncSpawner) SpawnSubagent(ctx context.Context, req SubagentRequest) (SubagentResponse, error) {
+	return s.fn(ctx, req)
+}
+
+// ---------------------------------------------------------------------------
+// ShellSubagentSpawner — standalone / CLI mode (fallback)
 // ---------------------------------------------------------------------------
 
 // ShellSubagentSpawner implements SubagentSpawner by calling `whale exec`
@@ -60,6 +92,9 @@ func (s *ShellSubagentSpawner) SpawnSubagent(ctx context.Context, req SubagentRe
 		"exec",
 		"--dangerously-skip-permissions",
 		"--timeout-sec", fmt.Sprintf("%d", int(req.Timeout.Seconds())),
+	}
+	if req.Model != "" {
+		args = append(args, "--model", req.Model)
 	}
 
 	prompt := req.Task
@@ -261,8 +296,8 @@ func NewWhaleSpawnAdapter(runner RunnerSpawner) SpawnSubagentFunc {
 // ---------------------------------------------------------------------------
 
 func ToolConfigFromEnv() (dbPath, whiteboardDir, configPath, workdir string) {
-	dbPath = envOrDefault("WHALE_TEAM_DB", "team_engine.db")
-	whiteboardDir = envOrDefault("WHALE_TEAM_WHITEBOARD", "team_tasks")
+	dbPath = envOrDefault("WHALE_TEAM_DB", ".whale/team_engine.db")
+	whiteboardDir = envOrDefault("WHALE_TEAM_WHITEBOARD", ".whale/team_tasks")
 	configPath = envOrDefault("WHALE_TEAM_CONFIG", "")
 	workdir = envOrDefault("WHALE_TEAM_WORKDIR", ".")
 	return

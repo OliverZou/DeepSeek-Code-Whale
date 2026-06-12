@@ -5,6 +5,7 @@ import (
 	"os"
 
 	"github.com/usewhale/whale/internal/core"
+	"github.com/usewhale/whale/internal/dashboard"
 	"github.com/usewhale/whale/internal/plugins"
 	"github.com/usewhale/whale/internal/policy"
 )
@@ -94,5 +95,13 @@ func New(ctx context.Context, cfg Config, start StartOptions) (*App, error) {
 		userInput:             defaultUserInputFunc(start.UserInputFunc),
 	}
 	appRef = app
+
+	// Register with the external whale-dashboard process if it's running.
+	// If it's not running, whale works normally without it.
+	app.dashboardClient = dashboard.NewClient(workspaceRoot)
+	if app.dashboardClient.IsRegistered() {
+		app.dashboardClient.StartHeartbeat()
+	}
+
 	return app, nil
 }

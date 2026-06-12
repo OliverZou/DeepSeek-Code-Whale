@@ -87,11 +87,22 @@ func (tdb *TaskDB) migrate() error {
 		created_at  TEXT NOT NULL
 	);
 
+	CREATE TABLE IF NOT EXISTS master_tasks (
+		id               TEXT PRIMARY KEY,
+		goal             TEXT NOT NULL,
+		workspace_path   TEXT NOT NULL DEFAULT '',
+		status           TEXT NOT NULL DEFAULT 'pending',
+		batch_progress   TEXT NOT NULL DEFAULT '',
+		created_at       TEXT NOT NULL,
+		updated_at       TEXT NOT NULL
+	);
+
 	CREATE INDEX IF NOT EXISTS idx_tasks_state   ON tasks(state);
 	CREATE INDEX IF NOT EXISTS idx_tasks_created ON tasks(created_at);
 	CREATE INDEX IF NOT EXISTS idx_history_task  ON state_history(task_id);
 	CREATE INDEX IF NOT EXISTS idx_memory_role   ON agent_memory(agent_role);
 	CREATE INDEX IF NOT EXISTS idx_memory_key    ON agent_memory(agent_role, mem_key);
+	CREATE INDEX IF NOT EXISTS idx_master_created ON master_tasks(created_at);
 	`
 	if _, err := tdb.db.Exec(schema); err != nil {
 		return fmt.Errorf("create tables: %w", err)
@@ -101,11 +112,24 @@ func (tdb *TaskDB) migrate() error {
 	autoCols := []string{
 		"batch_id	TEXT NOT NULL DEFAULT ''",
 		"profile	TEXT NOT NULL DEFAULT 'default'",
+		"master_task_id	TEXT NOT NULL DEFAULT ''",
+		"batch_progress	TEXT NOT NULL DEFAULT ''",
 	}
 	for _, col := range autoCols {
 		parts := strings.Fields(col)
 		if len(parts) > 0 {
 			tdb.db.Exec("ALTER TABLE tasks ADD COLUMN " + col)
+		}
+	}
+
+	// Auto-migration for master_tasks.
+	masterAutoCols := []string{
+		"batch_progress	TEXT NOT NULL DEFAULT ''",
+	}
+	for _, col := range masterAutoCols {
+		parts := strings.Fields(col)
+		if len(parts) > 0 {
+			tdb.db.Exec("ALTER TABLE master_tasks ADD COLUMN " + col)
 		}
 	}
 	return nil
@@ -163,6 +187,136 @@ func (tdb *TaskDB) GetTaskHistory(taskID string) ([]StateHistoryEntry, error) {
 }
 
 // ---------------------------------------------------------------------------
+// MasterTask — records a user's top-level goal (总任务)
+// ---------------------------------------------------------------------------
+
+// MasterTask represents a user's top-level goal (总任务).
+type MasterTask struct {
+	ID            string `json:"id"`
+	Goal          string `json:"goal"`
+	WorkspacePath string `json:"workspace_path"`
+	Status        string `json:"status"`
+	BatchProgress string `json:"batch_progress"` // JSON checkpoint: {"completed_batches":[...], "batch_cycles":{...}}
+	CreatedAt     string `json:"created_at"`
+	UpdatedAt     string `json:"updated_at"`
+}
+
+// InsertMasterTask creates a new master task record.
+func (tdb *TaskDB) InsertMasterTask(mt *MasterTask) error {
+	now := time.Now().UTC().Format(time.RFC3339)
+	mt.CreatedAt = now
+	mt.UpdatedAt = now
+	_, err := tdb.db.Exec(
+		`INSERT INTO master_tasks (id, goal, workspace_path, status, batch_progress, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		mt.ID, mt.Goal, mt.WorkspacePath, mt.Status, mt.BatchProgress, mt.CreatedAt, mt.UpdatedAt,
+	)
+	return err
+}
+
+// ListMasterTasks returns all master tasks ordered by creation time (newest first).
+func (tdb *TaskDB) ListMasterTasks() ([]*MasterTask, error) {
+	rows, err := tdb.db.Query(
+		`SELECT id, goal, workspace_path, status, batch_progress, created_at, updated_at
+		 FROM master_tasks ORDER BY created_at DESC`,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list master tasks: %w", err)
+	}
+	defer rows.Close()
+
+	var tasks []*MasterTask
+	for rows.Next() {
+		mt := &MasterTask{}
+		if err := rows.Scan(&mt.ID, &mt.Goal, &mt.WorkspacePath, &mt.Status, &mt.BatchProgress, &mt.CreatedAt, &mt.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("scan master task: %w", err)
+		}
+		tasks = append(tasks, mt)
+	}
+	return tasks, rows.Err()
+}
+
+// SaveMasterTaskProgress persists a JSON checkpoint for a master task.
+func (tdb *TaskDB) SaveMasterTaskProgress(masterTaskID, progressJSON string) error {
+	_, err := tdb.db.Exec(
+		`UPDATE master_tasks SET batch_progress = ?, updated_at = ? WHERE id = ?`,
+		progressJSON, time.Now().UTC().Format(time.RFC3339), masterTaskID,
+	)
+	return err
+}
+
+// GetMasterTaskProgress returns the JSON checkpoint for a master task.
+func (tdb *TaskDB) GetMasterTaskProgress(masterTaskID string) (string, error) {
+	var progress string
+	err := tdb.db.QueryRow(
+		`SELECT COALESCE(batch_progress, '') FROM master_tasks WHERE id = ?`, masterTaskID,
+	).Scan(&progress)
+	if err != nil {
+		return "", err
+	}
+	return progress, nil
+}
+
+// UpdateTaskMasterTaskID sets the master_task_id for a task.
+func (tdb *TaskDB) UpdateTaskMasterTaskID(taskID, masterTaskID string) error {
+	_, err := tdb.db.Exec(
+		`UPDATE tasks SET master_task_id = ? WHERE id = ?`,
+		masterTaskID, taskID,
+	)
+	return err
+}
+
+// ListTasksByMasterTask returns all tasks belonging to a master task.
+func (tdb *TaskDB) ListTasksByMasterTask(masterTaskID string) ([]*Task, error) {
+	rows, err := tdb.db.Query(
+		`SELECT id, title, description, role, profile, state, max_retries,
+		 retry_count, workdir, parent_ids, artifact_path, verifier_feedback,
+		 verifier_focus, batch_id, master_task_id, created_at, updated_at
+		FROM tasks WHERE master_task_id = ? ORDER BY created_at ASC`, masterTaskID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list tasks by master: %w", err)
+	}
+	defer rows.Close()
+
+	var tasks []*Task
+	for rows.Next() {
+		task, err := tdb.scanTaskFromRows(rows)
+		if err != nil {
+			return nil, err
+		}
+		tasks = append(tasks, task)
+	}
+	return tasks, rows.Err()
+}
+
+// GetMasterTask retrieves a master task by ID.
+func (tdb *TaskDB) GetMasterTask(id string) (*MasterTask, error) {
+	row := tdb.db.QueryRow(
+		`SELECT id, goal, workspace_path, status, created_at, updated_at
+		 FROM master_tasks WHERE id = ?`, id,
+	)
+	mt := &MasterTask{}
+	if err := row.Scan(&mt.ID, &mt.Goal, &mt.WorkspacePath, &mt.Status, &mt.CreatedAt, &mt.UpdatedAt); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("scan master task: %w", err)
+	}
+	return mt, nil
+}
+
+// UpdateMasterTaskStatus updates the status and updated_at.
+func (tdb *TaskDB) UpdateMasterTaskStatus(id, status string) error {
+	now := time.Now().UTC().Format(time.RFC3339)
+	_, err := tdb.db.Exec(
+		`UPDATE master_tasks SET status = ?, updated_at = ? WHERE id = ?`,
+		status, now, id,
+	)
+	return err
+}
+
+// ---------------------------------------------------------------------------
 // Task CRUD
 // ---------------------------------------------------------------------------
 
@@ -176,12 +330,12 @@ func (tdb *TaskDB) InsertTask(task *Task) error {
 		`INSERT INTO tasks
 		(id, title, description, role, profile, state, max_retries, retry_count,
 		 workdir, parent_ids, artifact_path, verifier_feedback, verifier_focus,
-		 batch_id, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 batch_id, master_task_id, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		task.ID, task.Title, task.Description, string(task.Role), string(task.Profile),
 		string(task.State), task.MaxRetries, task.RetryCount,
 		task.Workdir, string(parentJSON), task.ArtifactPath, task.VerifierFeedback,
-		task.VerifierFocus, task.BatchID, task.CreatedAt, task.UpdatedAt,
+		task.VerifierFocus, task.BatchID, task.MasterTaskID, task.CreatedAt, task.UpdatedAt,
 	)
 	if err != nil {
 		return fmt.Errorf("insert task: %w", err)
@@ -195,7 +349,7 @@ func (tdb *TaskDB) GetTask(id string) (*Task, error) {
 	row := tdb.db.QueryRow(
 		`SELECT id, title, description, role, profile, state, max_retries,
 		 retry_count, workdir, parent_ids, artifact_path, verifier_feedback,
-		 verifier_focus, batch_id, created_at, updated_at
+		 verifier_focus, batch_id, master_task_id, created_at, updated_at
 		FROM tasks WHERE id = ?`, id,
 	)
 	return tdb.scanTask(row)
@@ -205,7 +359,7 @@ func (tdb *TaskDB) ListTasks() ([]*Task, error) {
 	rows, err := tdb.db.Query(
 		`SELECT id, title, description, role, profile, state, max_retries,
 		 retry_count, workdir, parent_ids, artifact_path, verifier_feedback,
-		 verifier_focus, batch_id, created_at, updated_at
+		 verifier_focus, batch_id, master_task_id, created_at, updated_at
 		FROM tasks ORDER BY created_at DESC`,
 	)
 	if err != nil {
@@ -228,7 +382,7 @@ func (tdb *TaskDB) ListTasksByState(state TaskState) ([]*Task, error) {
 	rows, err := tdb.db.Query(
 		`SELECT id, title, description, role, profile, state, max_retries,
 		 retry_count, workdir, parent_ids, artifact_path, verifier_feedback,
-		 verifier_focus, batch_id, created_at, updated_at
+		 verifier_focus, batch_id, master_task_id, created_at, updated_at
 		FROM tasks WHERE state = ? ORDER BY created_at DESC`, string(state),
 	)
 	if err != nil {
@@ -314,6 +468,7 @@ func (tdb *TaskDB) scanTask(scanner interface {
 }) (*Task, error) {
 	var (
 		id, title, desc, role, profile, state, workdir, batchID string
+		masterTaskID                                             string
 		parentJSON, artifactPath, verifierFeedback              string
 		verifierFocus, createdAt, updatedAt                     string
 		maxRetries, retryCount                                  int
@@ -322,7 +477,7 @@ func (tdb *TaskDB) scanTask(scanner interface {
 		&id, &title, &desc, &role, &profile, &state,
 		&maxRetries, &retryCount, &workdir, &parentJSON,
 		&artifactPath, &verifierFeedback, &verifierFocus,
-		&batchID, &createdAt, &updatedAt,
+		&batchID, &masterTaskID, &createdAt, &updatedAt,
 	)
 	if err != nil {
 		if err == sql.ErrNoRows {
@@ -351,6 +506,7 @@ func (tdb *TaskDB) scanTask(scanner interface {
 		VerifierFeedback: verifierFeedback,
 		VerifierFocus:    verifierFocus,
 		BatchID:          batchID,
+		MasterTaskID:     masterTaskID,
 		CreatedAt:        createdAt,
 		UpdatedAt:        updatedAt,
 	}, nil

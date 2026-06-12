@@ -14,6 +14,7 @@ type toolFn struct {
 	readOnlyCheck func(args map[string]any) bool
 	capabilities  []string
 	fn            func(context.Context, core.ToolCall) (core.ToolResult, error)
+	fnWithProgress func(context.Context, core.ToolCall, func(core.ToolProgress)) (core.ToolResult, error)
 	preview       func(context.Context, core.ToolCall) (map[string]any, error)
 }
 
@@ -29,6 +30,14 @@ func (t toolFn) ReadOnlyCheck(args map[string]any) bool {
 	return t.readOnlyCheck(args)
 }
 func (t toolFn) Run(ctx context.Context, call core.ToolCall) (core.ToolResult, error) {
+	return t.fn(ctx, call)
+}
+
+func (t toolFn) RunWithProgress(ctx context.Context, call core.ToolCall, progress func(core.ToolProgress)) (core.ToolResult, error) {
+	if t.fnWithProgress != nil {
+		return t.fnWithProgress(ctx, call, progress)
+	}
+	// Fallback: if no progress version, use regular fn.
 	return t.fn(ctx, call)
 }
 

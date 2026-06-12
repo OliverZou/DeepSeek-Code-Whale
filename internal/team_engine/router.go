@@ -52,11 +52,18 @@ func (r *Router) ResolveProfile(role AgentRole, description string, isVerifier b
 	return toProfile(rt.DefaultProfile)
 }
 
-// ResolveTimeout returns the timeout duration for a task based on config rules.
+// ResolveTimeout returns the timeout duration (seconds) for a task based on
+// config rules.
+//
+// When isVerifier=true, it returns config's verifier_timeout_sec (default 300).
+// When isDecomposer=true, it returns config's decomposer_timeout_sec (default 180).
+// Otherwise it uses the per-role timeout from role_map (default 600).
 func (r *Router) ResolveTimeout(role AgentRole, isVerifier bool) int {
-	// Verifier — always 120s (lightweight check).
 	if isVerifier {
-		return 120
+		if r.cfg.Routing.VerifierTimeoutSec > 0 {
+			return r.cfg.Routing.VerifierTimeoutSec
+		}
+		return 300
 	}
 
 	rt := r.cfg.Routing
@@ -64,6 +71,23 @@ func (r *Router) ResolveTimeout(role AgentRole, isVerifier bool) int {
 		return re.Timeout
 	}
 	return 600
+}
+
+// ResolveModel returns the LLM model name for a given role.
+// Falls back to empty string (Whale default) when not configured.
+func (r *Router) ResolveModel(role AgentRole) string {
+	if re, ok := r.cfg.Routing.RoleMap[string(role)]; ok && re.Model != "" {
+		return re.Model
+	}
+	return ""
+}
+
+// ResolveDecomposerTimeout returns the decomposer (Leader) timeout in seconds.
+func (r *Router) ResolveDecomposerTimeout() int {
+	if r.cfg.Routing.DecomposerTimeoutSec > 0 {
+		return r.cfg.Routing.DecomposerTimeoutSec
+	}
+	return 180
 }
 
 // ProfileToToolNames maps a ToolProfile to the list of Whale tool names

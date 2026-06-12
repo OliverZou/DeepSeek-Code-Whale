@@ -10,32 +10,48 @@ routing:
   # Tool profile for the Verifier agent.
   verifier_tools: read_only
 
-  # Role → tool profile + timeout mapping.
+  # Role → tool profile + timeout + model mapping.
+  # model: LLM 模型名；"" 表示使用 Whale 默认模型
   role_map:
     developer:
       profile: default
       timeout: 600
+      model: deepseek-v4-pro      # 编码用强模型
     tester:
       profile: test
       timeout: 600
+      model: deepseek-v4-flash
     reviewer:
       profile: read_only
       timeout: 600
+      model: deepseek-v4-flash
     researcher:
       profile: research
       timeout: 900
+      model: deepseek-v4-flash
     writer:
       profile: content
       timeout: 600
+      model: deepseek-v4-flash
     formatter:
       profile: content
       timeout: 600
+      model: deepseek-v4-flash
     evaluator:
       profile: read_only
       timeout: 600
+      model: deepseek-v4-flash
 
   # Keyword-based profile routing (regex, case-insensitive).
   # Priority: keyword_rules > role_map > default_profile
+  keyword_rules:
+    - pattern: "rust|cargo"
+      profile: default
+    - pattern: "python|fastapi|django"
+      profile: default
+    - pattern: "go|golang"
+      profile: default
+
 # Batch execution configuration.
 # Controls how tasks are grouped and executed in parallel.
 # CycleReport: after each batch, Engine reports to Leader for decision.
@@ -44,11 +60,3 @@ routing:
 batch:
   # default_concurrency: 0      # Max parallel tasks per batch (0 = unlimited)
   # default_max_cycles: 0       # Max retry cycles per batch (0 = unlimited)
-
-  keyword_rules:
-    - pattern: "rust|cargo"
-      profile: default
-    - pattern: "python|fastapi|django"
-      profile: default
-    - pattern: "go|golang"
-      profile: default

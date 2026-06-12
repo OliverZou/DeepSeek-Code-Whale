@@ -284,6 +284,14 @@ func builtinAgentDefinition(name string) (AgentDefinition, bool) {
 			Tools:          []string{CapabilityWorkspaceRead, CapabilityShellRead},
 			PermissionMode: AgentPermissionReadOnly,
 		}, true
+	case "planner":
+		return AgentDefinition{
+			Name:           "planner",
+			Description:    "Structured planning child agent that outputs JSON task decompositions",
+			WhenToUse:      "Use for decomposing complex goals into structured subtask plans.",
+			Prompt:         "You are a planner agent. Your ONLY job is to output a valid JSON array of plan tasks. Do NOT write conversational text, summaries, markdown headers, or explanations. Your entire response must be a single JSON array parseable by a standard JSON parser. If you cannot produce a plan, output an empty JSON array: []",
+			PermissionMode: AgentPermissionReadOnly,
+		}, true
 	default:
 		return AgentDefinition{}, false
 	}

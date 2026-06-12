@@ -78,6 +78,7 @@ func initAppRuntime(cfg Config, sessionInit appSessionInit, toolInit appToolInit
 			DeepSeekMultimodal:       cfg.DeepSeekMultimodal,
 		})
 	}
+	var taskRunner *tasks.Runner
 	workspaceTools := func(workspace tasks.ToolWorkspace) (*core.ToolRegistry, error) {
 		toolset, err := tools.NewToolset(workspace.WorkspaceRoot)
 		if err != nil {
@@ -100,13 +101,18 @@ func initAppRuntime(cfg Config, sessionInit appSessionInit, toolInit appToolInit
 			APIKey:  apiKey,
 			BaseURL: cfg.APIBaseURL,
 		}))
+		// Inject native subagent spawner for Team Engine, replacing the
+		// ShellSubagentSpawner (whale exec subprocess) with Whale's own
+		// subagent spawning mechanism. Prevents cold-start hangs and enables
+		// proper context isolation, tool permissions, and audit logging.
+		toolset.SetTeamEngineSpawnFunc(teamEngineSpawnAdapter(taskRunner))
 		return core.NewToolRegistryChecked(toolset.Tools())
 	}
 	extraSkills := []*skills.Skill(nil)
 	if toolInit.pluginManager != nil {
 		extraSkills = toolInit.pluginManager.Skills()
 	}
-	taskRunner := tasks.NewRunner(tasks.RunnerConfig{
+	taskRunner = tasks.NewRunner(tasks.RunnerConfig{
 		ProviderFactory:            providerFactory,
 		ProviderFactoryWithOptions: providerFactoryWithOptions,
 		ParentTools:                toolInit.subagentToolRegistry,

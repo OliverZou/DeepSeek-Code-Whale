@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Whale Dashboard</title>
+<link rel="stylesheet" href="/src/style.css">
+</head>
+<body>
+
+<!-- Sidebar: Master Tasks -->
+<div id="sidebar">
+  <h2>🐳 总任务</h2>
+  <div id="mt-list"><div class="empty"><div class="icon">📋</div>No master tasks</div></div>
+</div>
+
+<!-- Resizer: sidebar ↔ main -->
+<div class="resizer" id="resizer-sidebar" data-target="sidebar" data-side="right"></div>
+
+<!-- Main -->
+<div id="main">
+  <div id="status-bar">
+    <span class="live-dot" id="live-dot"></span> live &nbsp;|&nbsp;
+    <span id="sse-time">--</span> &nbsp;|&nbsp;
+    <span id="mt-count">0 master tasks</span>
+  </div>
+
+  <div id="workspace-content">
+    <!-- Subtask list -->
+    <div id="task-list">
+      <div class="task-list-header">子任务</div>
+      <div id="task-tabs"></div>
+    </div>
+
+    <!-- Resizer: task-list ↔ agent-panel -->
+    <div class="resizer" id="resizer-tasks" data-target="task-list" data-side="right"></div>
+
+    <!-- Agent panel -->
+    <div id="agent-panel">
+      <!-- Tab bar: shown only for TeamLeader -->
+      <div id="tab-bar" style="display:none">
+        <div class="tab-btn active" data-tab="dialogue">📝 对话</div>
+        <div class="tab-btn" data-tab="flowchart">📊 流程图</div>
+      </div>
+      <div id="agent-header"></div>
+      <!-- Dialogue view -->
+      <div id="dialogue-view"><div class="empty"><div class="icon">💬</div>Select a subtask</div></div>
+      <!-- Flowchart view (hidden by default) -->
+      <div id="flowchart-view" style="display:none"><div class="empty"><div class="icon">📊</div>No flowchart</div></div>
+    </div>
+  </div>
+</div>
+
+<script src="/src/main.js"></script>
+</body>
+</html>

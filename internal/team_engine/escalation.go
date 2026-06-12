@@ -64,6 +64,15 @@ func NewEscalationManager() *EscalationManager {
 
 // Escalate creates a pending escalation and blocks until resolved.
 // Returns the user's decision.
+//
+// SAFETY: Escalate must NOT be called while holding TeamEngine.mu (or any
+// lock that could prevent Resolve from completing).  Escalate blocks on a
+// channel; if the engine mutex is held, no other goroutine can call Resolve
+// and the engine deadlocks.
+//
+// Callers in PlanAndRun's cycle loop do not hold TeamEngine.mu, so this is
+// safe in normal operation.  Adding new call sites: ensure any locks are
+// released before calling Escalate.
 func (em *EscalationManager) Escalate(req EscalationRequest) (EscalationDecision, error) {
 	key := req.BatchID
 	ch := make(chan EscalationDecision, 1)
