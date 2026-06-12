@@ -172,6 +172,10 @@ func (e *TeamEngine) Close() error {
 		e.cleanupWorktree(taskID)
 	}
 
+	if e.Loggers != nil {
+		_ = e.Loggers.Close()
+	}
+
 	return e.DB.Close()
 }
 
