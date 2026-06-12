@@ -107,7 +107,9 @@ func (b *Toolset) runTeamPlan(ctx context.Context, call core.ToolCall, progress 
 	}
 
 	// Register progress callback if we have one.
+	// Throttled to at most 1 update per 500ms to avoid TUI flickering.
 	if progress != nil {
+		var lastProgress time.Time
 		eng.OnEvent(func(event team_engine.TaskEvent) {
 			summary := ""
 			switch event.Type {
@@ -121,6 +123,12 @@ func (b *Toolset) runTeamPlan(ctx context.Context, call core.ToolCall, progress 
 				summary = fmt.Sprintf("✅ %s 完成", event.Title)
 			}
 			if summary != "" {
+				// Throttle: skip if last update was less than 500ms ago.
+				now := time.Now()
+				if now.Sub(lastProgress) < 500*time.Millisecond {
+					return
+				}
+				lastProgress = now
 				progress(core.ToolProgress{
 					Status:  "running",
 					Summary: summary,
