@@ -44,6 +44,7 @@ type SubagentRequest struct {
 	Timeout    time.Duration
 	MaxIters   int
 	MaxCalls   int
+	MaxTokens  int               // Completion token budget (0 = runner default)
 	OnProgress SubagentProgress  // Real-time progress callback (nil = no streaming)
 }
 
@@ -177,13 +178,14 @@ func (ar *AgentRunner) RunVerifier(prompt, workdir string, timeout time.Duration
 func (ar *AgentRunner) RunDecomposer(prompt, workdir string, timeout time.Duration, model ...string) *RunResult {
 	toolNames := ProfileToToolNames(ProfileReadOnly)
 	req := SubagentRequest{
-		Task:     prompt,
-		Role:     "planner",
-		Tools:    toolNames,
-		Workdir:  workdir,
-		Timeout:  timeout,
-		MaxIters: 15,
-		MaxCalls: 40,
+		Task:      prompt,
+		Role:      "planner",
+		Tools:     toolNames,
+		Workdir:   workdir,
+		Timeout:   timeout,
+		MaxIters:  15,
+		MaxCalls:  40,
+		MaxTokens: 4096, // reasoning models need headroom (default 800 too small)
 	}
 	if len(model) > 0 && model[0] != "" {
 		req.Model = model[0]

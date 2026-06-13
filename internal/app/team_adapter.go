@@ -21,6 +21,7 @@ func teamEngineSpawnAdapter(runner *tasks.Runner) team_engine.SpawnFunc {
 			Model:        req.Model,
 			MaxToolIters: req.MaxIters,
 			MaxToolCalls: req.MaxCalls,
+			MaxTokens:    req.MaxTokens,
 		}
 		if len(req.Tools) > 0 {
 			tasksReq.Tools = req.Tools

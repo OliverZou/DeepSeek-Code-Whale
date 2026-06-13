@@ -26,6 +26,7 @@ type SpawnSubagentRequest struct {
 	Model             string          `json:"model,omitempty"`
 	MaxToolIters      int             `json:"max_tool_iters,omitempty"`
 	MaxToolCalls      int             `json:"max_tool_calls,omitempty"`
+	MaxTokens         int             `json:"max_tokens,omitempty"`
 	Tools             []string        `json:"tools,omitempty"`
 	OutputSchema      map[string]any  `json:"output_schema,omitempty"`
 	ParentToolCallID  string          `json:"-"`
@@ -235,7 +236,11 @@ func (r *Runner) SpawnSubagentWithProgress(ctx context.Context, req SpawnSubagen
 			return SpawnSubagentResponse{}, err
 		}
 	}
-	provider, err := r.newProvider(model, 0, cfg.Effort)
+	maxTokens := r.defaultMaxTokens
+	if req.MaxTokens > 0 {
+		maxTokens = req.MaxTokens
+	}
+	provider, err := r.newProvider(model, maxTokens, cfg.Effort)
 	if err != nil {
 		return SpawnSubagentResponse{}, err
 	}
