@@ -38,7 +38,13 @@ func teamEngineSpawnAdapter(runner *tasks.Runner) team_engine.SpawnFunc {
 			}, fmt.Errorf("spawn subagent: %w", err)
 		}
 
-		success := resp.Status == "completed" || resp.Status == "done" || resp.Error == ""
+		success := resp.Status == "completed" || resp.Status == "done"
+		// If the subagent completed but produced no output at all, treat it as
+		// a failure rather than returning an empty Success=true response — the
+		// caller (e.g. Leader.Decompose) expects meaningful output.
+		if success && resp.Summary == "" && resp.StructuredResult == nil {
+			success = false
+		}
 		exitCode := 0
 		if !success {
 			exitCode = 1

@@ -6,6 +6,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/usewhale/whale/internal/team_engine/log"
 )
 
 // Leader provides AI-powered task decomposition.
@@ -16,12 +18,33 @@ import (
 // intelligent Worker/Verifier matching described in the MiniMax Agent Team
 // paper.
 type Leader struct {
-	runner *AgentRunner
+	runner  *AgentRunner
+	loggers *log.Loggers
+	team    *TeamConfig
+	onLog   func() // called after LogLeader writes a file
 }
 
 // NewLeader creates a Leader that uses the given AgentRunner.
 func NewLeader(runner *AgentRunner) *Leader {
 	return &Leader{runner: runner}
+}
+
+// WithLoggers attaches a Loggers for recording decompose/review output.
+func (l *Leader) WithLoggers(loggers *log.Loggers) *Leader {
+	l.loggers = loggers
+	return l
+}
+
+// WithTeam attaches a TeamConfig so the decompose prompt includes team role names.
+func (l *Leader) WithTeam(team *TeamConfig) *Leader {
+	l.team = team
+	return l
+}
+
+// WithOnLog sets a callback that fires after every LogLeader write.
+func (l *Leader) WithOnLog(fn func()) *Leader {
+	l.onLog = fn
+	return l
 }
 
 // DecomposePrompt returns the prompt template for task decomposition.
@@ -108,7 +131,24 @@ func (l *Leader) decomposeInternal(goal string, workdir string, timeout time.Dur
 		timeout = 180 * time.Second
 	}
 	prompt := DecomposePrompt(goal)
+	if l.team != nil {
+		prompt = l.team.BuildLeaderPrompt(prompt)
+	}
+	// Use team leader model when no explicit model is provided by the caller.
+	if (len(model) == 0 || model[0] == "") && l.team != nil && l.team.Leader.Model != "" {
+		model = []string{l.team.Leader.Model}
+	}
+	start := time.Now()
 	result := l.runner.RunDecomposer(prompt, workdir, timeout, model...)
+	dur := time.Since(start)
+
+	// Log decompose for dashboard visibility.
+	if l.loggers != nil {
+		l.loggers.LogLeader("decompose", prompt, result.Stdout, dur, nil)
+	}
+	if l.onLog != nil {
+		l.onLog()
+	}
 
 	if !result.Success {
 		return nil, "", fmt.Errorf("leader agent failed (exit %d): %s", result.ExitCode, result.Stderr)
