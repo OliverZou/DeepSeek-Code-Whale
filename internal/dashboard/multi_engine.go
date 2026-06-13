@@ -259,6 +259,8 @@ func NewMultiEngineManager(dashboardDir string) *MultiEngineManager {
 // If the engine cannot be opened (db doesn't exist yet), it still registers
 // but engine will be nil — it gets lazy-loaded on next heartbeat.
 func (m *MultiEngineManager) Register(workspacePath string) (*WorkspaceState, error) {
+	workspacePath = filepath.Clean(workspacePath)
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -399,13 +401,27 @@ func (m *MultiEngineManager) saveWorkspacePath(workspacePath string) {
 func (m *MultiEngineManager) LoadWorkspacePaths() []string {
 	paths, _ := m.readWorkspacePaths()
 
+	// Normalize and deduplicate (historical file may have stale paths).
+	seen := make(map[string]bool)
+	var clean []string
 	for _, p := range paths {
+		p = filepath.Clean(p)
+		if seen[p] || p == "" || p == "." {
+			continue
+		}
+		seen[p] = true
+		clean = append(clean, p)
+
 		// Register is idempotent and will try to open the engine db.
 		if _, err := m.Register(p); err != nil {
 			log.Printf("dashboard: load historical workspace %s: %v", p, err)
 		}
 	}
-	return paths
+	// Rewrite cleaned list back.
+	if len(clean) != len(paths) {
+		_ = m.writeWorkspacePaths(clean)
+	}
+	return clean
 }
 
 func (m *MultiEngineManager) readWorkspacePaths() ([]string, error) {
@@ -1157,7 +1173,7 @@ func DiscoverWhaleWorkspaces() []string {
 	var workspaces []string
 
 	for _, pid := range pids {
-		cwd := getProcessCwd(pid)
+		cwd := filepath.Clean(getProcessCwd(pid))
 		if cwd == "" {
 			continue
 		}
