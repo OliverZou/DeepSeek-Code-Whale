@@ -22,7 +22,27 @@ function init() {
 
 // 处理 engine 推过来的实时任务事件。
 function onTaskEvent(event) {
-  if (!event || !event.task_id) return;
+  if (!event) return;
+
+  // EventLeaderLog: leader 写入了新对话，刷新对话视图。
+  if (event.type === 4) { // EventLeaderLog = 4
+    if (state.selStId === '__leader__') {
+      const mt = getSelMt();
+      if (mt) loadDialogue(mt.workspace_id, '__leader__');
+    }
+    return;
+  }
+
+  // EventAgentLog: worker/verifier 写入了新对话，刷新匹配的子任务对话。
+  if (event.type === 5) { // EventAgentLog = 5
+    if (event.task_id && state.selStId === event.task_id) {
+      const mt = getSelMt();
+      if (mt) loadDialogue(mt.workspace_id, event.task_id);
+    }
+    return;
+  }
+
+  if (!event.task_id) return;
 
   // 刷新 master task 列表（状态/进度变化）
   loadMasterTasks();
@@ -81,8 +101,12 @@ function refreshDialogueIfNeeded() {
   const mt = getSelMt();
   if (!mt) return;
   // Check if subtask is still active (not in terminal state).
+  // Exception: __leader__ dialogue grows over time (decompose → review → summary),
+  // so always keep refreshing it.
   const st = state.subtasks.find(s => s.id === state.selStId);
-  if (!st || st.state === 'done' || st.state === 'failed') return;
+  if (state.selStId !== '__leader__') {
+    if (!st || st.state === 'done' || st.state === 'failed') return;
+  }
   // Only refresh if dialogue has been loaded at least once.
   const dialogueView = document.getElementById('dialogue-view');
   if (!dialogueView || dialogueView.querySelector('.empty')) return;
@@ -139,16 +163,15 @@ function renderSidebar() {
     const active = state.selMtId === mt.id ? ' active' : '';
     const goalShort = esc(mt.goal).length > 50 ? esc(mt.goal).slice(0, 50) + '…' : esc(mt.goal);
     const pct = mt.task_count > 0 ? Math.round(mt.done_count / mt.task_count * 100) : 0;
-    const hasRunning = (mt.active_count || 0) > 0;
-    const hasSuspended = (mt.suspended_count || 0) > 0;
-    html += `<div class="mt${active}" data-id="${mt.id}">
-      <div class="goal">${goalShort}</div>
+    const isPlanning = mt.status === 'running' && (mt.task_count || 0) === 0;
+    const hasRunning = !isPlanning && (mt.active_count || 0) > 0;
+    html += `<div class="mt${active}" data-id="${mt.id}" data-goal="${esc(mt.goal)}" data-wsid="${esc(mt.workspace_id)}">
+      <div class="goal" title="${esc(mt.goal)}">${goalShort}</div>
       <div class="meta">
         <span class="ws-label">📁 ${esc(mt.workspace_label)}</span>
         <span>${mt.done_count}/${mt.task_count}</span>
         <span>${fmtTime(mt.created_at)}</span>
-        ${hasRunning ? `<button class="stop-btn" data-wsid="${esc(mt.workspace_id)}" data-mtid="${mt.id}">⏹</button>` : ''}
-        ${hasSuspended ? `<button class="resume-btn" data-wsid="${esc(mt.workspace_id)}" data-mtid="${mt.id}">▶ 恢复</button>` : ''}
+        ${isPlanning ? `<span class="planning-indicator">⏳ 规划中...</span>` : hasRunning ? `<button class="stop-btn" data-wsid="${esc(mt.workspace_id)}" data-mtid="${mt.id}">⏹ 停止</button>` : mt.workspace_online ? `<button class="resume-btn" data-wsid="${esc(mt.workspace_id)}" data-mtid="${mt.id}">▶ 运行</button>` : ''}
       </div>
       <div class="progress-bar-wrap"><div class="progress-bar-fill" style="width:${pct}%"></div></div>
     </div>`;
@@ -159,6 +182,10 @@ function renderSidebar() {
       if (!e.target.closest('.stop-btn') && !e.target.closest('.resume-btn')) {
         selectMasterTask(el.dataset.id);
       }
+    };
+    el.oncontextmenu = (e) => {
+      e.preventDefault();
+      showMasterTaskContextMenu(e.clientX, e.clientY, el.dataset.id, el.dataset.wsid, el.dataset.goal);
     };
   });
   // Bind stop buttons for master tasks.
@@ -230,17 +257,13 @@ function renderSubtasks() {
       : st.state === 'suspended' ? 'suspended'
       : st.state === 'failed' ? 'failed' : 'pending';
     const icon = st.id === '__leader__' ? '📋' : '🎭';
-    // 停止按钮：只在真正运行中的任务显示（producing/verifying/assigned）
+    // 停止按钮：只在 agent 真正干活时显示（producing/verifying）
     const canStop = st.id !== '__leader__'
-      && st.state !== 'done'
-      && st.state !== 'failed'
-      && st.state !== 'verified'
-      && st.state !== 'pending'
-      && st.state !== 'suspended';
+      && (st.state === 'producing' || st.state === 'verifying');
     // 恢复按钮：只对 suspended 的任务显示
     const canResume = st.id !== '__leader__' && st.state === 'suspended';
     html += `<div class="st${active}${leader}" data-id="${st.id}">
-      <div class="st-title">
+      <div class="st-title" title="${esc(st.title)}">
         <span class="state-dot ${stateDot}"></span>
         ${icon} ${esc(st.title)}
       </div>
@@ -457,6 +480,42 @@ function initResizers() {
   });
 }
 
+// ---------- Context Menu (右键删除总任务) ----------
+function showMasterTaskContextMenu(x, y, mtId, wsId, goal) {
+  removeCtxMenu();
+
+  const menu = document.createElement('div');
+  menu.className = 'ctx-menu';
+  menu.style.left = x + 'px';
+  menu.style.top = y + 'px';
+  menu.innerHTML = `<div class="ctx-menu-item danger" data-action="delete">🗑️ 删除总任务</div>`;
+  menu.querySelector('[data-action="delete"]').onclick = async () => {
+    removeCtxMenu();
+    if (!confirm(`确认删除总任务「${goal}」及其所有子任务?`)) return;
+    const err = await window.go.main.App.DeleteMasterTask(wsId, mtId);
+    state.selMtId = null;
+    state.subtasks = [];
+    state.selStId = null;
+    await loadMasterTasks();
+    clearAgentPanel();
+    if (err) {
+      // Show error after UI refresh so the list is still updated.
+      console.error('删除总任务失败:', err);
+    }
+  };
+  document.body.appendChild(menu);
+
+  // Dismiss on any click outside.
+  setTimeout(() => {
+    document.addEventListener('click', removeCtxMenu, { once: true });
+  }, 0);
+}
+
+function removeCtxMenu() {
+  document.querySelectorAll('.ctx-menu').forEach(el => el.remove());
+  document.removeEventListener('click', removeCtxMenu);
+}
+
 // ---------- Boot ----------
 // Register tab click handlers
 document.addEventListener('DOMContentLoaded', () => {
@@ -471,15 +530,8 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 init();
-// Periodic subtask refresh — every 5s when a master task is selected.
-setInterval(() => {
-  if (state.selMtId) {
-    const mt = getSelMt();
-    if (mt) loadSubtasks(mt.workspace_id, mt.id);
-  }
-}, 5000);
-// Periodic dialogue refresh — every 3s for the currently selected running subtask.
-// This ensures verifier results and worker output appear in real time.
-setInterval(() => {
-  refreshDialogueIfNeeded();
-}, 3000);
+// All real-time updates are now event-driven via the engine event system.
+// Master task list:  task-event → loadMasterTasks + update push (2s fallback)
+// Subtask list:      task-event → loadSubtasks
+// Leader dialogue:   EventLeaderLog → loadDialogue
+// Subtask dialogue:  EventAgentLog → loadDialogue

@@ -4,16 +4,27 @@ package dashboard
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
+	"unsafe"
 
+	"github.com/gorilla/websocket"
 	"github.com/usewhale/whale/internal/team_engine"
+	"golang.org/x/sys/windows"
 )
+    
+var wsUpgrader = websocket.Upgrader{
+	CheckOrigin: func(r *http.Request) bool { return true },
+}
 
 // WorkspaceState tracks one registered workspace and its TeamEngine.
 type WorkspaceState struct {
@@ -50,6 +61,7 @@ type MasterTaskJSON struct {
 	DoneCount      int    `json:"done_count"`
 	ActiveCount    int    `json:"active_count"`
 	SuspendedCount int    `json:"suspended_count"`
+	WorkspaceOnline bool  `json:"workspace_online"`
 }
 
 // SubtaskJSON is a subtask in a master task's plan.
@@ -95,6 +107,17 @@ type MultiEngineManager struct {
 	states       map[string]*WorkspaceState
 	seq          int64
 	eventHandler func(event team_engine.TaskEvent) // 可选的事件回调
+
+	// pendingResume maps wsID → masterTaskID for commands waiting to be
+	// picked up by the main Whale CLI via heartbeat response.
+	pendingResume map[string]string
+    
+	// wsConns tracks active WebSocket connections keyed by workspace ID.
+	wsConns map[string]*websocket.Conn
+
+	// dashboardDir is the directory containing the dashboard executable,
+	// used for persisting workspace discovery data (workspaces.json).
+	dashboardDir string
 }
 
 // OnEngineEvent 注册一个事件回调，当 engine 有任务状态变化时触发。
@@ -103,6 +126,103 @@ func (m *MultiEngineManager) OnEngineEvent(handler func(event team_engine.TaskEv
 	m.mu.Lock()
 	m.eventHandler = handler
 	m.mu.Unlock()
+}
+
+// QueueResume pushes a resume command to the workspace's WebSocket
+// connection immediately.  Falls back to heartbeat-based delivery
+// if the client is not connected via WebSocket.
+func (m *MultiEngineManager) QueueResume(wsID, masterTaskID string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	msg, _ := json.Marshal(map[string]string{
+		"command":         "resume",
+		"master_task_id": masterTaskID,
+	})
+
+	// Push via WebSocket if connected (millisecond delivery).
+	if conn, ok := m.wsConns[wsID]; ok {
+		if err := conn.WriteMessage(websocket.TextMessage, msg); err == nil {
+			return
+		}
+		// Connection dead, remove it.
+		delete(m.wsConns, wsID)
+	}
+
+	// Fallback: store for heartbeat-based delivery.
+	if m.pendingResume == nil {
+		m.pendingResume = make(map[string]string)
+	}
+	m.pendingResume[wsID] = masterTaskID
+}
+
+// DequeueResume returns and clears any pending resume command for wsID.
+func (m *MultiEngineManager) DequeueResume(wsID string) (masterTaskID string, ok bool) {
+    m.mu.Lock()
+    defer m.mu.Unlock()
+    if m.pendingResume == nil {
+        return "", false
+    }
+    mtID, exists := m.pendingResume[wsID]
+    if !exists {
+        return "", false
+    }
+    delete(m.pendingResume, wsID)
+    return mtID, true
+}
+
+// RegisterWSConn registers a WebSocket connection for a workspace.
+func (m *MultiEngineManager) RegisterWSConn(wsID string, conn *websocket.Conn) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.wsConns == nil {
+		m.wsConns = make(map[string]*websocket.Conn)
+	}
+	// Close any existing connection for this workspace.
+	if old, ok := m.wsConns[wsID]; ok {
+		old.Close()
+	}
+	m.wsConns[wsID] = conn
+}
+
+// UnregisterWSConn removes a WebSocket connection for a workspace.
+func (m *MultiEngineManager) UnregisterWSConn(wsID string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.wsConns, wsID)
+}
+
+// HandleWebSocket upgrades an HTTP connection to WebSocket and registers
+// it for the workspace identified by ?wsid= query parameter.
+func (m *MultiEngineManager) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
+	wsID := r.URL.Query().Get("wsid")
+	if wsID == "" {
+		http.Error(w, "missing wsid", http.StatusBadRequest)
+		return
+	}
+
+	conn, err := wsUpgrader.Upgrade(w, r, nil)
+	if err != nil {
+		log.Printf("dashboard: ws upgrade for %s: %v", wsID, err)
+		return
+	}
+
+	m.RegisterWSConn(wsID, conn)
+	log.Printf("dashboard: ws connected for workspace %s", wsID)
+
+	// Read loop — keep connection alive and detect disconnects.
+	go func() {
+		defer func() {
+			conn.Close()
+			m.UnregisterWSConn(wsID)
+			log.Printf("dashboard: ws disconnected for workspace %s", wsID)
+		}()
+		for {
+			if _, _, err := conn.ReadMessage(); err != nil {
+				return
+			}
+		}
+	}()
 }
 
 // wireEngine 将 m.eventHandler 注册到 engine 上。
@@ -128,9 +248,10 @@ func (m *MultiEngineManager) fireEngineEvent(event team_engine.TaskEvent) {
 }
 
 // NewMultiEngineManager creates an empty manager.
-func NewMultiEngineManager() *MultiEngineManager {
+func NewMultiEngineManager(dashboardDir string) *MultiEngineManager {
 	return &MultiEngineManager{
-		states: make(map[string]*WorkspaceState),
+		states:       make(map[string]*WorkspaceState),
+		dashboardDir: dashboardDir,
 	}
 }
 
@@ -186,6 +307,7 @@ func (m *MultiEngineManager) Register(workspacePath string) (*WorkspaceState, er
 		LastSeen:   time.Now(),
 	}
 	m.states[id] = ws
+	m.saveWorkspacePath(workspacePath)
 	log.Printf("dashboard: registered workspace %s → %s", id, workspacePath)
 	return ws, nil
 }
@@ -235,21 +357,82 @@ func (m *MultiEngineManager) Deregister(wsID string) error {
 	return nil
 }
 
-// PruneStale removes workspaces that haven't heartbeated within timeout.
+// PruneStale is a no-op: workspaces are never removed from the dashboard.
+// When a whale process exits and heartbeat stops, the workspace simply becomes
+// offline (Online=false via ListWorkspaces/GetMasterTasks).  The engine stays
+// open so historical master task data remains available for reading from the
+// .whale/team_engine.db bolt store.
 func (m *MultiEngineManager) PruneStale(timeout time.Duration) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	// Workspaces are persisted in workspaces.json and never pruned.
+}
 
-	cutoff := time.Now().Add(-timeout)
-	for id, ws := range m.states {
-		if ws.LastSeen.Before(cutoff) {
-			log.Printf("dashboard: pruning stale workspace %s (%s)", id, ws.Label)
-			if ws.Engine != nil {
-				_ = ws.Engine.Close()
-			}
-			delete(m.states, id)
+// ---------------------------------------------------------------------------
+// Workspace discovery persistence (workspaces.json)
+// ---------------------------------------------------------------------------
+
+func (m *MultiEngineManager) workspacesFilePath() string {
+	if m.dashboardDir == "" {
+		return filepath.Join(".", "workspaces.json")
+	}
+	return filepath.Join(m.dashboardDir, "workspaces.json")
+}
+
+// saveWorkspacePath appends a workspace path to workspaces.json if it's not
+// already recorded there.  Callers must hold m.mu.
+func (m *MultiEngineManager) saveWorkspacePath(workspacePath string) {
+	paths, _ := m.readWorkspacePaths()
+
+	// Deduplicate.
+	for _, p := range paths {
+		if p == workspacePath {
+			return
 		}
 	}
+
+	paths = append(paths, workspacePath)
+	m.writeWorkspacePaths(paths)
+}
+
+// LoadWorkspacePaths reads workspaces.json and registers each path that is
+// not already tracked.  Historical paths whose whale process is not running
+// will be loaded without an engine (offline).
+func (m *MultiEngineManager) LoadWorkspacePaths() []string {
+	paths, _ := m.readWorkspacePaths()
+
+	for _, p := range paths {
+		// Register is idempotent and will try to open the engine db.
+		if _, err := m.Register(p); err != nil {
+			log.Printf("dashboard: load historical workspace %s: %v", p, err)
+		}
+	}
+	return paths
+}
+
+func (m *MultiEngineManager) readWorkspacePaths() ([]string, error) {
+	data, err := os.ReadFile(m.workspacesFilePath())
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	var paths []string
+	if err := json.Unmarshal(data, &paths); err != nil {
+		return nil, fmt.Errorf("parse workspaces.json: %w", err)
+	}
+	return paths, nil
+}
+
+func (m *MultiEngineManager) writeWorkspacePaths(paths []string) error {
+	if len(paths) == 0 {
+		return nil
+	}
+	data, err := json.MarshalIndent(paths, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(m.workspacesFilePath(), data, 0644)
 }
 
 // ListWorkspaces returns all registered workspaces as JSON.
@@ -443,14 +626,15 @@ func (m *MultiEngineManager) GetMasterTasks() []MasterTaskJSON {
 			activeCount := 0
 			suspendedCount := 0
 			for _, t := range subtasks {
-				if t.State == team_engine.TaskStateDone {
+				if t.State == team_engine.TaskStateDone || t.State == team_engine.TaskStateFailed {
 					doneCount++
 				}
 				if t.State == team_engine.TaskStateSuspended {
 					suspendedCount++
 				}
-				// 正在运行中（非终止状态）才算 active
-				if !t.State.IsTerminal() && t.State != team_engine.TaskStateSuspended {
+				// Only producing/verifying is truly active (agent is working).
+				// assigned/pending/produced/verified are waiting states.
+				if t.State == team_engine.TaskStateProducing || t.State == team_engine.TaskStateVerifying {
 					activeCount++
 				}
 			}
@@ -466,6 +650,7 @@ func (m *MultiEngineManager) GetMasterTasks() []MasterTaskJSON {
 				DoneCount:      doneCount,
 				ActiveCount:    activeCount,
 				SuspendedCount: suspendedCount,
+				WorkspaceOnline: time.Since(ws.LastSeen) < 90*time.Second,
 			})
 		}
 	}
@@ -526,22 +711,40 @@ func (m *MultiEngineManager) GetAgentDialogue(wsID, taskID string) []AgentDialog
 	logsDir := filepath.Join(wbDir, "logs", "tasks", taskID)
 	var dialogue []AgentDialogueJSON
 
+	// Resolve task role name for dialogue display.
+	roleName := "worker"
+	verifierName := "verifier"
+	if task, _ := ws.Engine.GetTask(taskID); task != nil {
+		roleName = string(task.Role)
+		verifierName = "审查: " + roleName
+	}
+
 	// 1. Task input (prompt from the system)
 	if input, err := readFileString(filepath.Join(taskDir, "input.md")); err == nil && input != "" {
 		dialogue = append(dialogue, AgentDialogueJSON{Role: "input", Content: input})
 	}
 
-	// 2. Multi-round Worker ⟷ Verifier logs
+	// 2. Multi-round Worker ⟷ Verifier logs (with interleaved leader feedback)
 	for round := 1; round <= 99; round++ {
 		workerFile := fmt.Sprintf("worker_%03d.md", round)
 		verifierFile := fmt.Sprintf("verifier_%03d.md", round)
+		leaderFbFile := fmt.Sprintf("leader_feedback_%03d.md", round)
 		workerPath := filepath.Join(logsDir, workerFile)
 		verifierPath := filepath.Join(logsDir, verifierFile)
+		leaderFbPath := filepath.Join(logsDir, leaderFbFile)
+
+		// Leader feedback (before re-attempt) — appears between rounds.
+		if fb, ferr := readFileString(leaderFbPath); ferr == nil && fb != "" {
+			dialogue = append(dialogue, AgentDialogueJSON{
+				Role:    fmt.Sprintf("📋 任务主管反馈 (round %d)", round),
+				Content: fb,
+			})
+		}
 
 		workerContent, werr := readFileString(workerPath)
 		if werr == nil && workerContent != "" {
 			dialogue = append(dialogue, AgentDialogueJSON{
-				Role:    fmt.Sprintf("worker (round %d)", round),
+				Role:    fmt.Sprintf("%s (round %d)", roleName, round),
 				Content: workerContent,
 			})
 		}
@@ -549,7 +752,7 @@ func (m *MultiEngineManager) GetAgentDialogue(wsID, taskID string) []AgentDialog
 		verifierContent, verr := readFileString(verifierPath)
 		if verr == nil && verifierContent != "" {
 			dialogue = append(dialogue, AgentDialogueJSON{
-				Role:    fmt.Sprintf("verifier (round %d)", round),
+				Role:    fmt.Sprintf("%s (round %d)", verifierName, round),
 				Content: verifierContent,
 			})
 		}
@@ -795,8 +998,9 @@ func escSVG(s string) string {
 	return result
 }
 
-// ResumeMasterTask resumes a suspended master task execution.
-// Returns empty string on success, or error message.
+// ResumeMasterTask transitions subtasks to ready state so the main
+// Whale CLI engine can pick them up.  The dashboard engine has no
+// subagent spawner, so it cannot execute tasks itself.
 func (m *MultiEngineManager) ResumeMasterTask(wsID, masterTaskID string) error {
 	m.mu.RLock()
 	ws, ok := m.states[wsID]
@@ -814,10 +1018,32 @@ func (m *MultiEngineManager) ResumeMasterTask(wsID, masterTaskID string) error {
 		return fmt.Errorf("master task %s not found", masterTaskID)
 	}
 
-	_, err = ws.Engine.ResumeMasterTask(context.Background(), masterTaskID, mt.Goal, mt.WorkspacePath)
-	if err != nil {
-		return fmt.Errorf("resume: %w", err)
+	// Set master task status to running.
+	if err := ws.Engine.DB.UpdateMasterTaskStatus(masterTaskID, "running"); err != nil {
+		return fmt.Errorf("update master task status: %w", err)
 	}
+
+	// Transition all non-terminal subtasks to assigned so the main
+	// engine can pick them up.
+	subtasks, err := ws.Engine.DB.ListTasksByMasterTask(masterTaskID)
+	if err != nil {
+		return fmt.Errorf("list subtasks: %w", err)
+	}
+	for _, t := range subtasks {
+		if t.State.IsTerminal() {
+			continue
+		}
+		if t.State == team_engine.TaskStateSuspended || t.State == team_engine.TaskStatePending {
+			if err := ws.Engine.DB.TransitionState(t.ID, team_engine.TaskStateAssigned, "dashboard-resume", ""); err != nil {
+				return fmt.Errorf("transition task %s: %w", t.ID, err)
+			}
+		}
+	}
+
+	// Queue a resume command so the main Whale CLI picks it up and
+	// actually executes the tasks (dashboard itself has no spawner).
+	m.QueueResume(wsID, masterTaskID)
+
 	return nil
 }
 
@@ -862,6 +1088,21 @@ func (m *MultiEngineManager) CancelSubtask(wsID, taskID string) error {
 	return nil
 }
 
+// DeleteMasterTask deletes a master task and all its subtasks.
+// Returns an error if any subtask is still running.
+func (m *MultiEngineManager) DeleteMasterTask(wsID, masterTaskID string) error {
+	m.mu.RLock()
+	ws, ok := m.states[wsID]
+	m.mu.RUnlock()
+	if !ok {
+		return fmt.Errorf("workspace %s not found", wsID)
+	}
+	if ws.Engine == nil {
+		return fmt.Errorf("engine not open for %s", wsID)
+	}
+	return ws.Engine.DeleteMasterTask(masterTaskID)
+}
+
 // CancelMasterTask cancels all non-terminal subtasks of a master task.
 // Returns the number of subtasks cancelled and any error.
 func (m *MultiEngineManager) CancelMasterTask(wsID, masterTaskID string) (int, error) {
@@ -904,6 +1145,221 @@ func (m *MultiEngineManager) Shutdown() {
 		}
 		delete(m.states, id)
 	}
+}
+
+// DiscoverWhaleWorkspaces scans running Whale processes and returns their
+// workspace paths by reading each process's current working directory (CWD).
+// On Windows this uses the native API to read the process PEB; on Unix it
+// reads /proc/<pid>/cwd.  Handles crash/force-kill gracefully — no cleanup.
+func DiscoverWhaleWorkspaces() []string {
+	pids := findWhalePids()
+	seen := make(map[string]bool)
+	var workspaces []string
+
+	for _, pid := range pids {
+		cwd := getProcessCwd(pid)
+		if cwd == "" {
+			continue
+		}
+		if seen[cwd] {
+			continue
+		}
+		seen[cwd] = true
+		// Verify the workspace has a team_engine.db.
+		dbPath := filepath.Join(cwd, ".whale", "team_engine.db")
+		if _, err := os.Stat(dbPath); err == nil {
+			workspaces = append(workspaces, cwd)
+		}
+	}
+	return workspaces
+}
+
+// findWhalePids returns the PIDs of all running whale/whale.exe processes.
+func findWhalePids() []int {
+	switch runtime.GOOS {
+	case "windows":
+		return findWhalePidsWindows()
+	default:
+		return findWhalePidsUnix()
+	}
+}
+
+func findWhalePidsWindows() []int {
+	// Use Windows Toolhelp API to enumerate processes — no cmd window flashing.
+	snapshot, err := windows.CreateToolhelp32Snapshot(windows.TH32CS_SNAPPROCESS, 0)
+	if err != nil {
+		return nil
+	}
+	defer windows.CloseHandle(snapshot)
+
+	type procEntry struct{ pid, ppid int }
+	var entries []procEntry
+
+	var entry windows.ProcessEntry32
+	entry.Size = uint32(unsafe.Sizeof(entry))
+	if err := windows.Process32First(snapshot, &entry); err != nil {
+		return nil
+	}
+
+	for {
+		exeName := windows.UTF16ToString(entry.ExeFile[:])
+		if strings.EqualFold(exeName, "whale.exe") {
+			entries = append(entries, procEntry{
+				pid:  int(entry.ProcessID),
+				ppid: int(entry.ParentProcessID),
+			})
+		}
+		if err := windows.Process32Next(snapshot, &entry); err != nil {
+			break
+		}
+	}
+
+	// Build set of all whale PIDs for quick lookup.
+	whalePids := make(map[int]bool)
+	for _, e := range entries {
+		whalePids[e.pid] = true
+	}
+
+	// Filter: only include top-level whale processes (parent is NOT a whale).
+	var pids []int
+	for _, e := range entries {
+		if !whalePids[e.ppid] {
+			pids = append(pids, e.pid)
+		}
+	}
+	return pids
+}
+
+func findWhalePidsUnix() []int {
+	cmd := exec.Command("ps", "-e", "-o", "pid=,ppid=,comm=")
+	out, err := cmd.Output()
+	if err != nil {
+		return nil
+	}
+
+	type procEntry struct{ pid, ppid int }
+	var entries []procEntry
+	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+	for _, line := range lines {
+		fields := strings.Fields(line)
+		if len(fields) < 3 {
+			continue
+		}
+		base := filepath.Base(fields[2])
+		if base != "whale" && base != "whale.exe" {
+			continue
+		}
+		var pid, ppid int
+		if _, err := fmt.Sscanf(fields[0], "%d", &pid); err != nil {
+			continue
+		}
+		if _, err := fmt.Sscanf(fields[1], "%d", &ppid); err != nil {
+			continue
+		}
+		entries = append(entries, procEntry{pid, ppid})
+	}
+
+	whalePids := make(map[int]bool)
+	for _, e := range entries {
+		whalePids[e.pid] = true
+	}
+	var pids []int
+	for _, e := range entries {
+		if !whalePids[e.ppid] {
+			pids = append(pids, e.pid)
+		}
+	}
+	return pids
+}
+
+// getProcessCwd returns the current working directory of a process by PID.
+// Uses OS-specific APIs; returns "" on failure.
+func getProcessCwd(pid int) string {
+	switch runtime.GOOS {
+	case "windows":
+		return getProcessCwdWindows(pid)
+	default:
+		return getProcessCwdUnix(pid)
+	}
+}
+
+func getProcessCwdUnix(pid int) string {
+	path, err := os.Readlink(fmt.Sprintf("/proc/%d/cwd", pid))
+	if err != nil {
+		return ""
+	}
+	return path
+}
+
+func getProcessCwdWindows(pid int) string {
+	h, err := windows.OpenProcess(
+		windows.PROCESS_QUERY_INFORMATION|windows.PROCESS_VM_READ,
+		false, uint32(pid))
+	if err != nil {
+		return ""
+	}
+	defer windows.CloseHandle(h)
+
+	// Get PEB address via NtQueryInformationProcess.
+	var pbi windows.PROCESS_BASIC_INFORMATION
+	status := ntQueryInfoProcess(h, &pbi)
+	if status != 0 {
+		return ""
+	}
+
+	// Read ProcessParameters pointer from PEB (offset 0x20 on x64).
+	var paramsAddr uintptr
+	if err := readProcessMem(h, uintptr(unsafe.Pointer(pbi.PebBaseAddress))+0x20, unsafe.Pointer(&paramsAddr), 8); err != nil {
+		return ""
+	}
+	if paramsAddr == 0 {
+		return ""
+	}
+
+	// Read RTL_USER_PROCESS_PARAMETERS.CurrentDirectory.DosPath as UNICODE_STRING.
+	// Offset 0x38 = CurrentDirectory.DosPath on x64 Windows (verified experimentally).
+	type unicodeStr struct {
+		Length    uint16
+		MaxLength uint16
+		_         [4]byte // padding to align Buffer to 8 bytes on x64
+		Buffer    uintptr
+	}
+	var us unicodeStr
+	if err := readProcessMem(h, paramsAddr+0x38, unsafe.Pointer(&us), unsafe.Sizeof(us)); err != nil {
+		return ""
+	}
+	if us.Length == 0 || us.Buffer == 0 {
+		return ""
+	}
+
+	// Read the actual UTF-16 path string.
+	b := make([]byte, us.Length+2)
+	if err := windows.ReadProcessMemory(h, us.Buffer, &b[0], uintptr(us.Length), nil); err != nil {
+		return ""
+	}
+	return windows.UTF16ToString(unsafe.Slice((*uint16)(unsafe.Pointer(&b[0])), us.Length/2))
+}
+
+// ntQueryInfoProcess lazily loads NtQueryInformationProcess from ntdll.dll.
+var ntQueryInfoProcess = func() func(windows.Handle, *windows.PROCESS_BASIC_INFORMATION) uint32 {
+	ntdll := windows.NewLazySystemDLL("ntdll.dll")
+	proc := ntdll.NewProc("NtQueryInformationProcess")
+	return func(h windows.Handle, pbi *windows.PROCESS_BASIC_INFORMATION) uint32 {
+		var retLen uint32
+		status, _, _ := proc.Call(
+			uintptr(h),
+			0, // ProcessBasicInformation
+			uintptr(unsafe.Pointer(pbi)),
+			unsafe.Sizeof(*pbi),
+			uintptr(unsafe.Pointer(&retLen)),
+		)
+		return uint32(status)
+	}
+}()
+
+// readProcessMem reads size bytes from a remote process's memory at addr.
+func readProcessMem(h windows.Handle, addr uintptr, ptr unsafe.Pointer, size uintptr) error {
+	return windows.ReadProcessMemory(h, addr, (*byte)(ptr), size, nil)
 }
 
 func readFileString(path string) (string, error) {

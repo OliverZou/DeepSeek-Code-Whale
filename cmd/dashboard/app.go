@@ -6,6 +6,8 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -24,8 +26,12 @@ type App struct {
 }
 
 func NewApp() *App {
+	dashboardDir := "."
+	if exe, err := os.Executable(); err == nil {
+		dashboardDir = filepath.Dir(exe)
+	}
 	return &App{
-		mgr:  dashboard.NewMultiEngineManager(),
+		mgr:  dashboard.NewMultiEngineManager(dashboardDir),
 		done: make(chan struct{}),
 	}
 }
@@ -46,6 +52,23 @@ func (a *App) startup(ctx context.Context) {
 		defer a.wg.Done()
 		a.startRegistrationServer()
 	}()
+
+	// Discover running Whale instances by scanning processes, then
+	// auto-register their workspaces.  This works even if Whale started
+	// before the Dashboard, and handles crashes gracefully (no cleanup).
+	for _, path := range dashboard.DiscoverWhaleWorkspaces() {
+		if ws, err := a.mgr.Register(path); err != nil {
+			log.Printf("dashboard: auto-register %s: %v", path, err)
+		} else {
+			log.Printf("dashboard: auto-registered workspace %s (%s)", ws.ID, path)
+		}
+	}
+
+	// Load previously-registered workspace paths from workspaces.json.
+	// Paths already discovered above are skipped (Register is idempotent).
+	// Historical paths whose whale process is not running will appear offline.
+	a.mgr.LoadWorkspacePaths()
+
 	// Push workspace updates to the frontend every 2 seconds (replaces SSE).
 	a.wg.Add(1)
 	go func() {
@@ -67,6 +90,7 @@ func (a *App) startRegistrationServer() {
 	mux.HandleFunc("/api/register", a.handleRegister)
 	mux.HandleFunc("/api/heartbeat", a.handleHeartbeat)
 	mux.HandleFunc("/api/deregister", a.handleDeregister)
+	mux.HandleFunc("/ws", a.mgr.HandleWebSocket)
 
 	ln, err := net.Listen("tcp", "127.0.0.1:8520")
 	if err != nil {
@@ -128,7 +152,14 @@ func (a *App) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
 	}
-	w.WriteHeader(http.StatusNoContent)
+	// Check for pending commands and return them in the response.
+	resp := map[string]interface{}{}
+	if mtID, ok := a.mgr.DequeueResume(req.ID); ok {
+		resp["command"] = "resume"
+		resp["master_task_id"] = mtID
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(resp)
 }
 
 func (a *App) handleDeregister(w http.ResponseWriter, r *http.Request) {
@@ -223,6 +254,15 @@ func (a *App) RegisterWorkspace(path string) string {
 // Returns empty string on success, or an error message.
 func (a *App) CancelSubtask(wsID, taskID string) string {
 	if err := a.mgr.CancelSubtask(wsID, taskID); err != nil {
+		return err.Error()
+	}
+	return ""
+}
+
+// DeleteMasterTask deletes a master task and all its subtasks.
+// Returns an error message if any subtask is still running; empty string on success.
+func (a *App) DeleteMasterTask(wsID, masterTaskID string) string {
+	if err := a.mgr.DeleteMasterTask(wsID, masterTaskID); err != nil {
 		return err.Error()
 	}
 	return ""
