@@ -117,6 +117,7 @@ type Batch struct {
 	Concurrency   int          `json:"concurrency"`  // max parallel tasks (0 = all)
 	MaxCycles     int          `json:"max_cycles"`   // 0 = unlimited
 	CycleCount    int          `json:"cycle_count"`
+	UseDW         bool         `json:"use_dw"`        // use DW pipeline execution (multi-verifier per task, no Leader review)
 	TotalTokens   int          `json:"total_tokens"`  // cumulative prompt+completion across all cycles
 	TotalDuration float64      `json:"total_duration"` // cumulative seconds across all cycles
 }

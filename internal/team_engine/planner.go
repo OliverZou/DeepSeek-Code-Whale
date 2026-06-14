@@ -119,6 +119,17 @@ RULES:
     - When verifier_focus includes multiple dimensions (security,correctness,completeness)
     - DEFAULT: false (single verifier is sufficient for simple/formatting/minor tasks)
 
+12. BATCH-LEVEL DW EXECUTION: When you mark ANY task in a batch with
+    "use_dw": true, the ENTIRE batch switches to DW pipeline mode:
+    - Each task gets multiple verifiers (parallel perspectives + Synthesizer)
+    - Tasks complete independently — no batch-wide Leader review
+    - Failed tasks are re-decomposed individually, passed tasks stay done
+    - Best for: Judge Panel patterns (multi-perspective review batches),
+      high-risk batches where every task needs thorough verification,
+      or batches where task independence maximizes throughput.
+    - Do NOT use for: simple sequential pipelines where Leader oversight
+      is essential, or batches with strong inter-task coordination needs.
+
 OUTPUT FORMAT (pure JSON array, no markdown):
 [
   {

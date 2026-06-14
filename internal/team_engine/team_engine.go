@@ -543,6 +543,7 @@ func (e *TeamEngine) ResumeMasterTask(ctx context.Context, masterTaskID, goal, w
 	leader := NewLeader(e.Runner).WithLoggers(e.Loggers).WithTeam(e.team).WithOnLog(func() {
 		e.fireEvent(TaskEvent{Type: EventLeaderLog})
 	})
+	escalator := NewEscalator(leader.planner).WithLoggers(e.Loggers)
 	decomposerTimeout := time.Duration(e.Router.ResolveDecomposerTimeout()) * time.Second
 	leaderModel := e.Router.ResolveModel("planner")
 
@@ -561,82 +562,88 @@ func (e *TeamEngine) ResumeMasterTask(ctx context.Context, masterTaskID, goal, w
 		if cycleLimit <= 0 {
 			cycleLimit = 1
 		}
-		for cycle := 0; cycle < cycleLimit; cycle++ {
-			batch.CycleCount = cycle + 1
-			if err := e.RunBatch(ctx, batch); err != nil {
-				e.saveCheckpoint(masterTaskID, completedBatches, cp.CompletedOutputs, batches)
-				return batches, fmt.Errorf("run batch %s cycle %d: %w", batch.ID, cycle, err)
-			}
-			if e.Loggers != nil {
-				e.Loggers.Engine("Resume: batch %s cycle %d/%d: status=%s", batch.LabelOrID(), cycle+1, cycleLimit, batch.Status)
-			}
-			if boardContent := e.Whiteboard.BuildBoardContent(batches); boardContent != "" {
-				_ = e.Whiteboard.WriteBoard(boardContent)
-			}
-			report := e.buildCycleReport(batch, cycle+1)
-			review, reviewOutput, err := leader.ReviewCycleFull(goal, report, workdir, decomposerTimeout, leaderModel)
-			if err != nil {
-				completedBatches[batch.ID] = true
-				e.saveCheckpoint(masterTaskID, completedBatches, cp.CompletedOutputs, batches)
-				break
-			}
-			if e.Loggers != nil && reviewOutput != "" {
-				e.Loggers.LogLeader("review", fmt.Sprintf("Batch: %s\nDecision: %s", batch.LabelOrID(), review.Decision), reviewOutput, decomposerTimeout, nil)
-				e.fireEvent(TaskEvent{Type: EventLeaderLog})
-			}
-			switch review.Decision {
-			case CycleAccept:
-				completedBatches[batch.ID] = true
-				e.saveCheckpoint(masterTaskID, completedBatches, cp.CompletedOutputs, batches)
-				cp.CompletedOutputs[batch.ID] = e.collectBatchOutputs(batch)
-				break
-			case CycleReject:
-				batch.Status = BatchStatusPending
-				for _, t := range batch.Tasks {
-					e.SendFeedback(t.ID, review.Feedback)
-					if !t.State.IsTerminal() && t.State != TaskStateSuspended {
-						_ = e.DB.TransitionState(t.ID, TaskStateAssigned, "", "")
-					}
+
+		if batch.UseDW {
+			// DW pipeline execution: multi-verifier per task, no Leader review.
+			e.runDWCycle(ctx, batch, cycleLimit, masterTaskID, completedBatches, cp.CompletedOutputs, batches, escalator, workdir, decomposerTimeout, leaderModel)
+		} else {
+			for cycle := 0; cycle < cycleLimit; cycle++ {
+				batch.CycleCount = cycle + 1
+				if err := e.RunBatch(ctx, batch); err != nil {
+					e.saveCheckpoint(masterTaskID, completedBatches, cp.CompletedOutputs, batches)
+					return batches, fmt.Errorf("run batch %s cycle %d: %w", batch.ID, cycle, err)
 				}
-				continue
-			case CycleEscalated:
-				batch.Status = BatchStatusPending
-				for _, t := range batch.Tasks {
-					e.SendFeedback(t.ID, review.Feedback)
-					if t.State == TaskStateFailed || t.State == TaskStateSuspended {
-						_ = e.DB.TransitionState(t.ID, TaskStatePending, "escalated retry", "")
-					} else if !t.State.IsTerminal() {
-						_ = e.DB.TransitionState(t.ID, TaskStateAssigned, "", "")
-					}
+				if e.Loggers != nil {
+					e.Loggers.Engine("Resume: batch %s cycle %d/%d: status=%s", batch.LabelOrID(), cycle+1, cycleLimit, batch.Status)
 				}
-				continue
-			case CycleEscalate:
-				e.handleEscalation(batch, review)
-				completedBatches[batch.ID] = true
-				break
+				if boardContent := e.Whiteboard.BuildBoardContent(batches); boardContent != "" {
+					_ = e.Whiteboard.WriteBoard(boardContent)
+				}
+				report := e.buildCycleReport(batch, cycle+1)
+				review, reviewOutput, err := leader.ReviewCycleFull(goal, report, workdir, decomposerTimeout, leaderModel)
+				if err != nil {
+					completedBatches[batch.ID] = true
+					e.saveCheckpoint(masterTaskID, completedBatches, cp.CompletedOutputs, batches)
+					break
+				}
+				if e.Loggers != nil && reviewOutput != "" {
+					e.Loggers.LogLeader("review", fmt.Sprintf("Batch: %s\nDecision: %s", batch.LabelOrID(), review.Decision), reviewOutput, decomposerTimeout, nil)
+					e.fireEvent(TaskEvent{Type: EventLeaderLog})
+				}
+				switch review.Decision {
+				case CycleAccept:
+					completedBatches[batch.ID] = true
+					e.saveCheckpoint(masterTaskID, completedBatches, cp.CompletedOutputs, batches)
+					cp.CompletedOutputs[batch.ID] = e.collectBatchOutputs(batch)
+					break
+				case CycleReject:
+					batch.Status = BatchStatusPending
+					for _, t := range batch.Tasks {
+						e.SendFeedback(t.ID, review.Feedback)
+						if !t.State.IsTerminal() && t.State != TaskStateSuspended {
+							_ = e.DB.TransitionState(t.ID, TaskStateAssigned, "", "")
+						}
+					}
+					continue
+				case CycleEscalated:
+					batch.Status = BatchStatusPending
+					for _, t := range batch.Tasks {
+						e.SendFeedback(t.ID, review.Feedback)
+						if t.State == TaskStateFailed || t.State == TaskStateSuspended {
+							_ = e.DB.TransitionState(t.ID, TaskStatePending, "escalated retry", "")
+						} else if !t.State.IsTerminal() {
+							_ = e.DB.TransitionState(t.ID, TaskStateAssigned, "", "")
+						}
+					}
+					continue
+				case CycleEscalate:
+					e.handleEscalation(batch, review)
+					completedBatches[batch.ID] = true
+					break
+				}
 			}
 		}
-	}
+}
 
-	if delContent := e.Whiteboard.BuildDeliverableContent(batches); delContent != "" {
-		_ = e.Whiteboard.WriteDeliverable(delContent)
-	}
-	if e.Loggers != nil {
-		summary := e.buildExecutionSummary(batches, goal, workdir)
-		e.Loggers.LogLeader("summary", goal, summary, 0, nil)
-		e.fireEvent(TaskEvent{Type: EventLeaderLog})
-	}
-	e.saveCheckpoint(masterTaskID, completedBatches, cp.CompletedOutputs, batches)
-	return batches, nil
+if delContent := e.Whiteboard.BuildDeliverableContent(batches); delContent != "" {
+	_ = e.Whiteboard.WriteDeliverable(delContent)
+}
+if e.Loggers != nil {
+	summary := e.buildExecutionSummary(batches, goal, workdir)
+	e.Loggers.LogLeader("summary", goal, summary, 0, nil)
+	e.fireEvent(TaskEvent{Type: EventLeaderLog})
+}
+e.saveCheckpoint(masterTaskID, completedBatches, cp.CompletedOutputs, batches)
+return batches, nil
 }
 
 // leaderWatchLoop gives the Leader real-time oversight during execution.
 func (e *TeamEngine) leaderWatchLoop(ctx context.Context, leader *Leader, masterTaskID, goal, workdir string) {
-	eventCh := make(chan TaskEvent, 256)
-	cancel := e.OnEvent(func(event TaskEvent) {
-		select {
-		case eventCh <- event:
-		default:
+eventCh := make(chan TaskEvent, 256)
+cancel := e.OnEvent(func(event TaskEvent) {
+	select {
+	case eventCh <- event:
+	default:
 		}
 	})
 	defer cancel()
@@ -1128,6 +1135,14 @@ func (e *TeamEngine) PlanAndRun(ctx context.Context, goal, workdir, masterTaskID
 			})
 			batch.Tasks = append(batch.Tasks, task)
 		}
+			// Propagate UseDW from tasks to batch: if any task uses DW,
+			// the entire batch gets DW pipeline execution (multi-verifier per task).
+			for _, t := range batch.Tasks {
+				if t.UseDW {
+					batch.UseDW = true
+					break
+				}
+			}
 		batches = append(batches, batch)
 	}
 
@@ -1181,150 +1196,167 @@ func (e *TeamEngine) PlanAndRun(ctx context.Context, goal, workdir, masterTaskID
 			cycleLimit = 1 // at minimum one cycle
 		}
 
-		var prevFindings *CycleFindingsSet
-		dryCount := 0
-
-	batchCycleLoop:
-		for cycle := 0; cycle < cycleLimit; cycle++ {
-			batch.CycleCount = cycle + 1
-
-			// Execute all tasks in this batch (parallel if concurrency > 0).
-			if err := e.RunBatch(ctx, batch); err != nil {
-				e.saveCheckpoint(masterTaskID, completedBatches, completedBatchOutputs, batches)
-				return batches, fmt.Errorf("run batch %s cycle %d: %w", batch.ID, cycle, err)
-			}
-
-			// Loop-until-dry: collect findings, exit when no new ones for 2 cycles.
-			currentFindings := e.collectCycleFindings(batch, cycle+1)
-			if prevFindings != nil && !currentFindings.HasNewFindings(prevFindings) {
-				dryCount++
-				if dryCount >= 2 {
-					if e.Loggers != nil {
-						e.Loggers.Engine("batch %s: dry after %d cycles", batch.ID, cycle+1)
-					}
-					completedBatches[batch.ID] = true
-					completedBatchOutputs[batch.ID] = e.collectBatchOutputs(batch)
-					e.saveCheckpoint(masterTaskID, completedBatches, completedBatchOutputs, batches)
-					break batchCycleLoop
-				}
-			} else {
-				dryCount = 0
-			}
-			prevFindings = currentFindings
-
-			// Check for tasks needing re-decomposition (retries exhausted).
-			escalator.ProcessBatch(batch, masterTaskID, workdir, decomposerTimeout, leaderModel,
-				func(id string) (*Task, error) { return e.DB.GetTask(id) },
-				func(pt PlanTask, batchID, mtID string) (*Task, error) {
-					profile := ToolProfile(pt.Profile)
-					task, err := e.CreateTask(pt.Title, pt.Description, AgentRole(pt.Role), profile, nil, 0, workdir, pt.VerifierFocus)
-					if err != nil {
-						return nil, err
-					}
-					task.BatchID = batchID
-					task.UseDW = pt.UseDW
-					_ = e.DB.UpdateTask(task.ID, map[string]interface{}{"batch_id": batchID, "master_task_id": mtID, "use_dw": pt.UseDW})
-					return task, nil
-				},
-				func(taskID string, state TaskState, reason string) error {
-					return e.DB.ForceTransitionState(taskID, state, reason)
-				},
-			)
-
-			// Write board.md after each batch cycle.
-			if boardContent := e.Whiteboard.BuildBoardContent(batches); boardContent != "" {
-				_ = e.Whiteboard.WriteBoard(boardContent)
-			}
-
-			// Build and send CycleReport to Leader for review.
-			report := e.buildCycleReport(batch, cycle+1)
-			review, err := leader.ReviewCycle(goal, report, workdir, decomposerTimeout, leaderModel)
-			if err != nil {
-				// If review fails, accept by default (don't block pipeline).
-				completedBatches[batch.ID] = true
-				e.saveCheckpoint(masterTaskID, completedBatches, completedBatchOutputs, batches)
-				break batchCycleLoop
-			}
-
-			switch review.Decision {
-			case CycleAccept:
-				completedBatches[batch.ID] = true
-				// Cross-stage artifact passing (场景4):
-				// Collect outputs from completed batch tasks so the
-				// next batch can reference them.
+		if batch.UseDW {
+			// DW pipeline execution: multi-verifier per task, no Leader review.
+			e.runDWCycle(ctx, batch, cycleLimit, masterTaskID, completedBatches, completedBatchOutputs, batches, escalator, workdir, decomposerTimeout, leaderModel)
+			// Cross-stage artifact passing for completed DW batch.
+			if completedBatches[batch.ID] {
 				completedBatchOutputs[batch.ID] = e.collectBatchOutputs(batch)
 				e.saveCheckpoint(masterTaskID, completedBatches, completedBatchOutputs, batches)
 				if depArtifacts := e.buildStageArtifactContext(completedBatchOutputs, batch.DependsOn); depArtifacts != "" {
-					// Inject dependency artifacts into this batch's tasks.
 					for _, t := range batch.Tasks {
 						updated := t.Description + depArtifacts
 						e.DB.UpdateTask(t.ID, map[string]interface{}{"description": updated})
 					}
 				}
-				break batchCycleLoop
-
-			case CycleReject:
-				// Leader rejected: reset all tasks (including failed ones) for retry.
-				batch.Status = BatchStatusPending
-				for _, t := range batch.Tasks {
-					e.SendFeedback(t.ID, review.Feedback)
-					// Log leader feedback into task dialogue for dashboard visibility.
-					if e.Loggers != nil {
-						e.Loggers.LogTaskFeedback(t.ID, "leader", t.RetryCount+1, review.Feedback)
-						e.fireEvent(TaskEvent{Type: EventAgentLog, TaskID: t.ID})
-					}
-					if t.State.IsTerminal() {
-						// Reset failed/done tasks: clear retries, bump max, re-assign.
-						_ = e.DB.UpdateTask(t.ID, map[string]interface{}{
-							"retry_count":       0,
-							"max_retries":       t.MaxRetries + 3,
-							"description":       t.Description + fmt.Sprintf("\n\n[Leader Feedback - Retry]\n%s", review.Feedback),
-							"verifier_feedback": "",
-						})
-						_ = e.DB.TransitionState(t.ID, TaskStateAssigned, "leader retry", "")
-					} else {
-						_ = e.DB.TransitionState(t.ID, TaskStateAssigned, "", "")
-					}
-				}
-				// Continue the cycle loop to retry.
-				continue
-
-			case CycleEscalate:
-				// Send escalation request to user via inbox and wait.
-				e.handleEscalation(batch, review)
-				// After escalation, continue based on user decision.
-				completedBatches[batch.ID] = true
-				e.saveCheckpoint(masterTaskID, completedBatches, completedBatchOutputs, batches)
-				break batchCycleLoop
 			}
-		}
+		} else {
+			// Normal execution with Leader review cycle.
+			var prevFindings *CycleFindingsSet
+			dryCount := 0
 
-		// All cycles exhausted without acceptance — leader makes final call.
-		if !completedBatches[batch.ID] {
-			report := e.buildCycleReport(batch, cycleLimit)
-			review, err := leader.ReviewCycle(goal, report, workdir, decomposerTimeout, leaderModel)
-			if err != nil {
-				// Leader unavailable: accept whatever we have (don't block).
-				completedBatches[batch.ID] = true
-				e.saveCheckpoint(masterTaskID, completedBatches, completedBatchOutputs, batches)
-			} else {
+		batchCycleLoop:
+			for cycle := 0; cycle < cycleLimit; cycle++ {
+				batch.CycleCount = cycle + 1
+
+				// Execute all tasks in this batch (parallel if concurrency > 0).
+				if err := e.RunBatch(ctx, batch); err != nil {
+					e.saveCheckpoint(masterTaskID, completedBatches, completedBatchOutputs, batches)
+					return batches, fmt.Errorf("run batch %s cycle %d: %w", batch.ID, cycle, err)
+				}
+
+				// Loop-until-dry: collect findings, exit when no new ones for 2 cycles.
+				currentFindings := e.collectCycleFindings(batch, cycle+1)
+				if prevFindings != nil && !currentFindings.HasNewFindings(prevFindings) {
+					dryCount++
+					if dryCount >= 2 {
+						if e.Loggers != nil {
+							e.Loggers.Engine("batch %s: dry after %d cycles", batch.ID, cycle+1)
+						}
+						completedBatches[batch.ID] = true
+						completedBatchOutputs[batch.ID] = e.collectBatchOutputs(batch)
+						e.saveCheckpoint(masterTaskID, completedBatches, completedBatchOutputs, batches)
+						break batchCycleLoop
+					}
+				} else {
+					dryCount = 0
+				}
+				prevFindings = currentFindings
+
+				// Check for tasks needing re-decomposition (retries exhausted).
+				escalator.ProcessBatch(batch, masterTaskID, workdir, decomposerTimeout, leaderModel,
+					func(id string) (*Task, error) { return e.DB.GetTask(id) },
+					func(pt PlanTask, batchID, mtID string) (*Task, error) {
+						profile := ToolProfile(pt.Profile)
+						task, err := e.CreateTask(pt.Title, pt.Description, AgentRole(pt.Role), profile, nil, 0, workdir, pt.VerifierFocus)
+						if err != nil {
+							return nil, err
+						}
+						task.BatchID = batchID
+						task.UseDW = pt.UseDW
+						_ = e.DB.UpdateTask(task.ID, map[string]interface{}{"batch_id": batchID, "master_task_id": mtID, "use_dw": pt.UseDW})
+						return task, nil
+					},
+					func(taskID string, state TaskState, reason string) error {
+						return e.DB.ForceTransitionState(taskID, state, reason)
+					},
+				)
+
+				// Write board.md after each batch cycle.
+				if boardContent := e.Whiteboard.BuildBoardContent(batches); boardContent != "" {
+					_ = e.Whiteboard.WriteBoard(boardContent)
+				}
+
+				// Build and send CycleReport to Leader for review.
+				report := e.buildCycleReport(batch, cycle+1)
+				review, err := leader.ReviewCycle(goal, report, workdir, decomposerTimeout, leaderModel)
+				if err != nil {
+					// If review fails, accept by default (don't block pipeline).
+					completedBatches[batch.ID] = true
+					e.saveCheckpoint(masterTaskID, completedBatches, completedBatchOutputs, batches)
+					break batchCycleLoop
+				}
+
 				switch review.Decision {
 				case CycleAccept:
 					completedBatches[batch.ID] = true
+					// Cross-stage artifact passing:
+					// Collect outputs from completed batch tasks so the
+					// next batch can reference them.
 					completedBatchOutputs[batch.ID] = e.collectBatchOutputs(batch)
-				default:
-					// Leader still not satisfied — mark batch as failed but continue pipeline.
-					batch.Status = BatchStatusFailed
+					e.saveCheckpoint(masterTaskID, completedBatches, completedBatchOutputs, batches)
+					if depArtifacts := e.buildStageArtifactContext(completedBatchOutputs, batch.DependsOn); depArtifacts != "" {
+						// Inject dependency artifacts into this batch's tasks.
+						for _, t := range batch.Tasks {
+							updated := t.Description + depArtifacts
+							e.DB.UpdateTask(t.ID, map[string]interface{}{"description": updated})
+						}
+					}
+					break batchCycleLoop
+
+				case CycleReject:
+					// Leader rejected: reset all tasks (including failed ones) for retry.
+					batch.Status = BatchStatusPending
+					for _, t := range batch.Tasks {
+						e.SendFeedback(t.ID, review.Feedback)
+						// Log leader feedback into task dialogue for dashboard visibility.
+						if e.Loggers != nil {
+							e.Loggers.LogTaskFeedback(t.ID, "leader", t.RetryCount+1, review.Feedback)
+							e.fireEvent(TaskEvent{Type: EventAgentLog, TaskID: t.ID})
+						}
+						if t.State.IsTerminal() {
+							// Reset failed/done tasks: clear retries, bump max, re-assign.
+							_ = e.DB.UpdateTask(t.ID, map[string]interface{}{
+								"retry_count":       0,
+								"max_retries":       t.MaxRetries + 3,
+								"description":       t.Description + fmt.Sprintf("\n\n[Leader Feedback - Retry]\n%s", review.Feedback),
+								"verifier_feedback": "",
+							})
+							_ = e.DB.TransitionState(t.ID, TaskStateAssigned, "leader retry", "")
+						} else {
+							_ = e.DB.TransitionState(t.ID, TaskStateAssigned, "", "")
+						}
+					}
+					// Continue the cycle loop to retry.
+					continue
+
+				case CycleEscalate:
+					// Send escalation request to user via inbox and wait.
+					e.handleEscalation(batch, review)
+					// After escalation, continue based on user decision.
 					completedBatches[batch.ID] = true
+					e.saveCheckpoint(masterTaskID, completedBatches, completedBatchOutputs, batches)
+					break batchCycleLoop
 				}
-				e.saveCheckpoint(masterTaskID, completedBatches, completedBatchOutputs, batches)
-				if e.Loggers != nil {
-					e.Loggers.LogLeader("review", fmt.Sprintf("Batch: %s\nDecision: %s (final)", batch.LabelOrID(), review.Decision), fmt.Sprintf("Final review: %s\nFeedback: %s", review.Decision, review.Feedback), decomposerTimeout, nil)
-					e.fireEvent(TaskEvent{Type: EventLeaderLog})
+			}
+
+			// All cycles exhausted without acceptance — leader makes final call.
+			if !completedBatches[batch.ID] {
+				report := e.buildCycleReport(batch, cycleLimit)
+				review, err := leader.ReviewCycle(goal, report, workdir, decomposerTimeout, leaderModel)
+				if err != nil {
+					// Leader unavailable: accept whatever we have (don't block).
+					completedBatches[batch.ID] = true
+					e.saveCheckpoint(masterTaskID, completedBatches, completedBatchOutputs, batches)
+				} else {
+					switch review.Decision {
+					case CycleAccept:
+						completedBatches[batch.ID] = true
+						completedBatchOutputs[batch.ID] = e.collectBatchOutputs(batch)
+					default:
+						// Leader still not satisfied — mark batch as failed but continue pipeline.
+						batch.Status = BatchStatusFailed
+						completedBatches[batch.ID] = true
+					}
+					e.saveCheckpoint(masterTaskID, completedBatches, completedBatchOutputs, batches)
+					if e.Loggers != nil {
+							e.Loggers.LogLeader("review", fmt.Sprintf("Batch: %s\nDecision: %s (final)", batch.LabelOrID(), review.Decision), fmt.Sprintf("Final review: %s\nFeedback: %s", review.Decision, review.Feedback), decomposerTimeout, nil)
+						e.fireEvent(TaskEvent{Type: EventLeaderLog})
+					}
 				}
 			}
 		}
-	}
+		}
 
 	// Step 4: Write final deliverable.md.
 	if delContent := e.Whiteboard.BuildDeliverableContent(batches); delContent != "" {
@@ -1447,7 +1479,133 @@ func (e *TeamEngine) handleEscalation(batch *Batch, review *CycleReview) {
 	_ = e.Whiteboard.WriteBoard(existing + resultEntry + "\n")
 }
 
+// runDWCycle executes a batch using DW pipeline mode: each task gets
+// multi-verifier DW verification, there is no batch-level Leader review,
+// and tasks complete independently (no barrier).  Only failed tasks are
+// retried — passed tasks stay done.
+func (e *TeamEngine) runDWCycle(
+	ctx context.Context,
+	batch *Batch,
+	cycleLimit int,
+	masterTaskID string,
+	completedBatches map[string]bool,
+	completedBatchOutputs map[string]string,
+	batches []*Batch,
+	escalator *Escalator,
+	workdir string,
+	decomposerTimeout time.Duration,
+	leaderModel string,
+) {
+	var prevFindings *CycleFindingsSet
+	dryCount := 0
+
+	for cycle := 0; cycle < cycleLimit; cycle++ {
+		batch.CycleCount = cycle + 1
+
+		// Check cancellation between cycles.
+		select {
+		case <-ctx.Done():
+			for _, t := range batch.Tasks {
+				if !t.State.IsTerminal() {
+					_ = e.DB.ForceTransitionState(t.ID, TaskStateSuspended, "cancelled-by-user")
+				}
+			}
+			_ = e.DB.UpdateMasterTaskStatus(masterTaskID, "")
+			e.fireEvent(TaskEvent{Type: EventStateChanged})
+			return
+		default:
+		}
+
+		// Execute all tasks in parallel (each with DW verification if task.UseDW).
+		if err := e.RunBatch(ctx, batch); err != nil {
+			e.saveCheckpoint(masterTaskID, completedBatches, completedBatchOutputs, batches)
+			return
+		}
+
+		if e.Loggers != nil {
+			e.Loggers.Engine("DW batch %s cycle %d/%d: status=%s", batch.LabelOrID(), cycle+1, cycleLimit, batch.Status)
+		}
+
+		// Loop-until-dry: collect findings, exit when no new ones for 2 cycles.
+		currentFindings := e.collectCycleFindings(batch, cycle+1)
+		if prevFindings != nil && !currentFindings.HasNewFindings(prevFindings) {
+			dryCount++
+			if dryCount >= 2 {
+				if e.Loggers != nil {
+					e.Loggers.Engine("DW batch %s: dry after %d cycles", batch.ID, cycle+1)
+				}
+				completedBatches[batch.ID] = true
+				completedBatchOutputs[batch.ID] = e.collectBatchOutputs(batch)
+				e.saveCheckpoint(masterTaskID, completedBatches, completedBatchOutputs, batches)
+				return
+			}
+		} else {
+			dryCount = 0
+		}
+		prevFindings = currentFindings
+
+		// Escalator: re-decompose stuck tasks (retries exhausted).
+		escalator.ProcessBatch(batch, masterTaskID, workdir, decomposerTimeout, leaderModel,
+			func(id string) (*Task, error) { return e.DB.GetTask(id) },
+			func(pt PlanTask, batchID, mtID string) (*Task, error) {
+				profile := ToolProfile(pt.Profile)
+				task, err := e.CreateTask(pt.Title, pt.Description, AgentRole(pt.Role), profile, nil, 0, workdir, pt.VerifierFocus)
+				if err != nil {
+					return nil, err
+				}
+				task.BatchID = batchID
+				task.UseDW = pt.UseDW
+				_ = e.DB.UpdateTask(task.ID, map[string]interface{}{"batch_id": batchID, "master_task_id": mtID, "use_dw": pt.UseDW})
+				return task, nil
+			},
+			func(taskID string, state TaskState, reason string) error {
+				return e.DB.ForceTransitionState(taskID, state, reason)
+			},
+		)
+
+		// Write board after each cycle.
+		if boardContent := e.Whiteboard.BuildBoardContent(batches); boardContent != "" {
+			_ = e.Whiteboard.WriteBoard(boardContent)
+		}
+
+		// Check if all tasks passed.  Only retry failed tasks (not suspended —
+		// those are handled by Escalator).
+		allPassed := true
+		for _, t := range batch.Tasks {
+			current, err := e.DB.GetTask(t.ID)
+			if err != nil {
+				continue
+			}
+			if current == nil {
+				continue
+			}
+			if current.State == TaskStateFailed {
+				allPassed = false
+				_ = e.DB.ForceTransitionState(t.ID, TaskStateAssigned, "dw-retry")
+			} else if current.State != TaskStateDone && current.State != TaskStateSuspended {
+				allPassed = false
+			}
+		}
+
+		if allPassed {
+			completedBatches[batch.ID] = true
+			completedBatchOutputs[batch.ID] = e.collectBatchOutputs(batch)
+			e.saveCheckpoint(masterTaskID, completedBatches, completedBatchOutputs, batches)
+			return
+		}
+	}
+
+	// Max cycles reached — auto-accept whatever we have.
+	completedBatches[batch.ID] = true
+	completedBatchOutputs[batch.ID] = e.collectBatchOutputs(batch)
+	e.saveCheckpoint(masterTaskID, completedBatches, completedBatchOutputs, batches)
+	if e.Loggers != nil {
+		e.Loggers.Engine("DW batch %s: max cycles (%d) reached, auto-accepting", batch.ID, cycleLimit)
+	}
+}
+
 // RunBatch executes all tasks in a batch in parallel, respecting the
+// configured concurrency limit.// RunBatch executes all tasks in a batch in parallel, respecting the
 // configured concurrency limit.
 func (e *TeamEngine) RunBatch(ctx context.Context, batch *Batch) error {
 	batch.Status = BatchStatusRunning
