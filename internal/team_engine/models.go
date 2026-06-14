@@ -118,6 +118,39 @@ type Batch struct {
 	CycleCount  int          `json:"cycle_count"`
 }
 
+// Finding is a structured issue found by the Verifier.  Used for
+// loop-until-dry: the engine compares findings across cycles; when no
+// new findings appear, the batch is "dry" and the cycle ends.
+type Finding struct {
+	ID       string `json:"id"`       // stable key for dedup (e.g. "prd-s3-missing")
+	Title    string `json:"title"`    // one-line summary
+	Severity string `json:"severity"` // "critical" | "major" | "minor"
+	Evidence string `json:"evidence"` // specific file/line/reason
+}
+
+// CycleFindingsSet holds the deduplicated findings from one batch cycle.
+type CycleFindingsSet struct {
+	Cycle    int       `json:"cycle"`
+	Findings []Finding `json:"findings"`
+}
+
+// HasNewFindings reports whether this cycle produced any findings not in prev.
+func (c *CycleFindingsSet) HasNewFindings(prev *CycleFindingsSet) bool {
+	if prev == nil {
+		return len(c.Findings) > 0
+	}
+	seen := make(map[string]bool)
+	for _, f := range prev.Findings {
+		seen[f.ID] = true
+	}
+	for _, f := range c.Findings {
+		if !seen[f.ID] {
+			return true
+		}
+	}
+	return false
+}
+
 // PlanTask is a single subtask in the leader's decomposition plan, returned
 // as JSON by the planning agent.
 type PlanTask struct {

@@ -1,6 +1,7 @@
 package team_engine
 
 import (
+	"encoding/json"
 	"fmt"
 	"regexp"
 	"strings"
@@ -76,6 +77,14 @@ ISSUES:
 - [list specific issues, or "none" if PASS]
 SUGGESTIONS:
 - [optional improvement suggestions]
+
+## FINDINGS (structured JSON array)
+---json
+[
+  {"id": "unique-key", "title": "one-line summary", "severity": "critical|major|minor", "evidence": "specific reason"}
+]
+---
+Use stable IDs for cross-round comparison (e.g. "missing-section-3" not "issue-1").
 `, task.Description, workerOutput, buildFocusSection(task.VerifierFocus))
 }
 
@@ -128,6 +137,14 @@ SUBSTANCE: [substantial|thin|empty]
 EVIDENCE: [verification evidence from tools]
 ISSUES:
 - [list specific issues, or "none" if PASS]
+
+## FINDINGS (structured JSON array)
+---json
+[
+  {"id": "unique-key", "title": "one-line summary", "severity": "critical|major|minor", "evidence": "specific reason"}
+]
+---
+Use stable IDs for cross-round comparison (e.g. "missing-section-3" not "issue-1").
 `, task.Description, workerOutput, buildFocusSection(task.VerifierFocus))
 }
 
@@ -235,4 +252,19 @@ func (v *Verifier) Verify(task *Task) (passed bool, retry bool, feedback string,
 	// No clear verdict → treat as FAIL to be safe.
 
 	return passed, retry, output, nil
+}
+
+// ParseFindings extracts structured Finding objects from verifier output.
+func ParseFindings(output string) []Finding {
+	// Find JSON array after "FINDINGS" marker.
+	re := regexp.MustCompile(`(?s)FINDINGS.*?(\[.*?\])`)
+	m := re.FindStringSubmatch(output)
+	if len(m) < 2 {
+		return nil
+	}
+	var findings []Finding
+	if err := json.Unmarshal([]byte(m[1]), &findings); err != nil {
+		return nil
+	}
+	return findings
 }
