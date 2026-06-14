@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"os"
+	"path/filepath"
 
 	"github.com/usewhale/whale/internal/core"
 	"github.com/usewhale/whale/internal/dashboard"
@@ -111,6 +112,9 @@ func New(ctx context.Context, cfg Config, start StartOptions) (*App, error) {
 	app.dashboardClient.OnResume = func(masterTaskID string) {
 		app.toolset.AutoExecuteMasterTask(masterTaskID)
 	}
+
+	// Clean up tasks left in transient states from a previous crash/exit.
+	team_engine.CleanupInterruptedTasks(filepath.Join(workspaceRoot, ".whale", "team_engine.db"))
 
 	return app, nil
 }

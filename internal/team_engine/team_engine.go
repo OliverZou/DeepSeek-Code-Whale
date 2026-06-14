@@ -193,6 +193,37 @@ func (e *TeamEngine) Close() error {
 	return e.DB.Close()
 }
 
+// CleanupInterruptedTasks opens the database at dbPath, resets tasks
+// in transient states (producing, verifying, assigned) to suspended,
+// and clears stale "running" status on master tasks.  Safe to call
+// during startup or when a whale process reconnects.
+func CleanupInterruptedTasks(dbPath string) {
+	tdb, err := NewDB(dbPath)
+	if err != nil {
+		return
+	}
+	defer tdb.Close()
+	tasks, err := tdb.ListTasks()
+	if err != nil {
+		return
+	}
+	for _, t := range tasks {
+		switch t.State {
+		case TaskStateProducing, TaskStateVerifying, TaskStateAssigned:
+			_ = tdb.ForceTransitionState(t.ID, TaskStateSuspended, "interrupted-restart")
+			if DefaultTeamLog != nil {
+				DefaultTeamLog.EngineResumeTask(t.ID, string(TaskStateSuspended))
+			}
+		}
+	}
+	mts, _ := tdb.ListMasterTasks()
+	for _, mt := range mts {
+		if mt.Status == "running" {
+			_ = tdb.UpdateMasterTaskStatus(mt.ID, "")
+		}
+	}
+}
+
 // cleanupInterruptedTasks resets tasks in transient states (producing,
 // verifying, assigned) to suspended.  Called on engine open to handle
 // the case where a previous whale process was killed mid-execution.
