@@ -519,21 +519,24 @@ func (r *CycleReport) BatchLabelOrID() string {
 //  2. ``` ... ``` plain code fences
 //  3. Raw JSON arrays
 func extractJSON(output string) string {
-	// Strip markdown code fences if present.
+	// Strip markdown code fences.  Use the LAST fenced block — the leader
+	// prompt also contains example JSON that must not be matched.
 	re := regexp.MustCompile("(?s)```(?:json)?\\s*\\n?(.*?)\\n?```")
-	matches := re.FindStringSubmatch(output)
-	if len(matches) >= 2 {
-		candidate := strings.TrimSpace(matches[1])
+	allMatches := re.FindAllStringSubmatch(output, -1)
+	for i := len(allMatches) - 1; i >= 0; i-- {
+		candidate := strings.TrimSpace(allMatches[i][1])
 		if strings.HasPrefix(candidate, "[") {
 			return candidate
 		}
 	}
 
-	// Try to find a raw JSON array in the output.
+	// No fenced JSON — search from end for the last raw JSON array.
 	re = regexp.MustCompile(`(?s)\[.*\]`)
-	match := re.FindString(output)
-	if match != "" {
-		return match
+	allRaw := re.FindAllString(output, -1)
+	for i := len(allRaw) - 1; i >= 0; i-- {
+		if strings.HasPrefix(allRaw[i], "[") {
+			return allRaw[i]
+		}
 	}
 
 	return ""
