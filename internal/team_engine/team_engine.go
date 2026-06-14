@@ -1551,7 +1551,7 @@ func GetProgress(state TaskState) int {
 	case TaskStatePending:
 		return 0
 	case TaskStateAssigned:
-		return 10
+		return 0
 	case TaskStateProducing:
 		return 25
 	case TaskStateProduced:
