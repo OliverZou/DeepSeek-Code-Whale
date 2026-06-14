@@ -371,14 +371,22 @@ func (e *TeamEngine) ListSuspendedMasterTasks() ([]*MasterTask, error) {
 // saveCheckpoint persists PlanAndRun progress for later Resume.
 func (e *TeamEngine) saveCheckpoint(masterTaskID string, completed map[string]bool, outputs map[string]string, batches []*Batch) {
 	type checkpoint struct {
-		CompletedBatches []string          `json:"completed_batches"`
-		BatchCycles      map[string]int    `json:"batch_cycles"`
-		CompletedOutputs map[string]string `json:"completed_outputs,omitempty"`
+		CompletedBatches []string            `json:"completed_batches"`
+		BatchCycles      map[string]int      `json:"batch_cycles"`
+		CompletedOutputs map[string]string   `json:"completed_outputs,omitempty"`
+		BatchDependsOn   map[string][]string `json:"batch_depends_on,omitempty"`
+	}
+	deps := make(map[string][]string)
+	for _, b := range batches {
+		if len(b.DependsOn) > 0 {
+			deps[b.ID] = b.DependsOn
+		}
 	}
 	cp := checkpoint{
 		CompletedBatches: make([]string, 0),
 		BatchCycles:      make(map[string]int),
 		CompletedOutputs: outputs,
+		BatchDependsOn:   deps,
 	}
 	for id := range completed {
 		cp.CompletedBatches = append(cp.CompletedBatches, id)
@@ -397,9 +405,10 @@ func (e *TeamEngine) ResumeMasterTask(ctx context.Context, masterTaskID, goal, w
 		return nil, fmt.Errorf("load checkpoint: %w", err)
 	}
 	type checkpoint struct {
-		CompletedBatches []string          `json:"completed_batches"`
-		BatchCycles      map[string]int    `json:"batch_cycles"`
-		CompletedOutputs map[string]string `json:"completed_outputs,omitempty"`
+		CompletedBatches []string            `json:"completed_batches"`
+		BatchCycles      map[string]int      `json:"batch_cycles"`
+		CompletedOutputs map[string]string   `json:"completed_outputs,omitempty"`
+		BatchDependsOn   map[string][]string `json:"batch_depends_on,omitempty"`
 	}
 	var cp checkpoint
 	if progressJSON != "" {
@@ -412,6 +421,9 @@ func (e *TeamEngine) ResumeMasterTask(ctx context.Context, masterTaskID, goal, w
 	}
 	if cp.BatchCycles == nil {
 		cp.BatchCycles = make(map[string]int)
+	}
+	if cp.BatchDependsOn == nil {
+		cp.BatchDependsOn = make(map[string][]string)
 	}
 	completedBatches := make(map[string]bool)
 	for _, id := range cp.CompletedBatches {
@@ -439,7 +451,13 @@ func (e *TeamEngine) ResumeMasterTask(ctx context.Context, masterTaskID, goal, w
 			bid = "default"
 		}
 		if _, ok := batchMap[bid]; !ok {
-			batchMap[bid] = &Batch{ID: bid, Label: bid, Status: BatchStatusPending, Tasks: make([]*Task, 0)}
+			batchMap[bid] = &Batch{
+				ID:        bid,
+				Label:     bid,
+				Status:    BatchStatusPending,
+				Tasks:     make([]*Task, 0),
+				DependsOn: cp.BatchDependsOn[bid],
+			}
 			batchOrder = append(batchOrder, bid)
 		}
 		batchMap[bid].Tasks = append(batchMap[bid].Tasks, t)

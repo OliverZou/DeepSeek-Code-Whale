@@ -63,8 +63,8 @@ var Defaults = Config{
 		DecomposerTimeoutSec: 300,  // 5 min — plan decomposition (v4-pro needs ~90s, v4-flash ~30s)
 	},
 	Batch: BatchConfig{
-		DefaultConcurrency: 0,  // unlimited
-		DefaultMaxCycles:   0,  // unlimited
+		DefaultConcurrency: 1,  // unlimited
+		DefaultMaxCycles:   3,  // unlimited
 	},
 }
 
