@@ -268,6 +268,13 @@ func ParsePlanTasks(output string) ([]PlanTask, error) {
 
 	var tasks []PlanTask
 	if err := json.Unmarshal([]byte(jsonStr), &tasks); err != nil {
+		// Try basic repair on common LLM JSON mistakes.
+		repaired := repairJSON(jsonStr)
+		if repaired != jsonStr {
+			if err2 := json.Unmarshal([]byte(repaired), &tasks); err2 == nil {
+				return tasks, nil
+			}
+		}
 		return nil, fmt.Errorf("parse plan JSON: %w\nRaw output: %s", err, output)
 	}
 
@@ -509,6 +516,27 @@ func extractJSONObject(output string) string {
 		return match
 	}
 	return ""
+}
+
+// repairJSON attempts to fix common LLM JSON mistakes: trailing commas,
+// text after the closing bracket, and missing commas between objects.
+func repairJSON(s string) string {
+	// 1. Strip trailing text after the last ']' (markdown notes etc.)
+	if idx := strings.LastIndex(s, "]"); idx > 0 {
+		s = s[:idx+1]
+	}
+	// 2. Remove trailing commas before '}' or ']'.
+	s = regexp.MustCompile(`,(\s*[}\]])`).ReplaceAllString(s, "$1")
+	// 3. Fix missing commas: `" "` → `", "` (common when LLM forgets commas between string fields).
+	s = regexp.MustCompile(`"\s+"`).ReplaceAllString(s, `", "`)
+	// 4. Balance brackets — if there are more '[' than ']', append missing ones.
+	open := strings.Count(s, "[")
+	close := strings.Count(s, "]")
+	for close < open {
+		s += "]"
+		close++
+	}
+	return s
 }
 
 // BatchLabelOrID returns the batch label if set, otherwise the batch ID.
