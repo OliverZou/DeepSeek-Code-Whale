@@ -223,6 +223,10 @@ func (b *Toolset) runTeamPlan(ctx context.Context, call core.ToolCall, progress 
 				for _, mt := range existing {
 					_ = eng.DeleteMasterTask(mt.ID)
 				}
+				// Clean up old leader decomposition logs so GetLeaderPlan
+				// only shows the current run.
+				leaderDir := filepath.Join(b.root, ".whale", "team_tasks", "logs", "leader")
+				_ = os.RemoveAll(leaderDir)
 			}
 			masterTask, mtErr := eng.CreateMasterTask(args.Goal, b.root)
 			if mtErr != nil {

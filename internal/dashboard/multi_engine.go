@@ -1212,7 +1212,14 @@ func (m *MultiEngineManager) DeleteMasterTask(wsID, masterTaskID string) error {
 			return fmt.Errorf("engine not open for %s (no db)", wsID)
 		}
 	}
-	return ws.Engine.DeleteMasterTask(masterTaskID)
+	if err := ws.Engine.DeleteMasterTask(masterTaskID); err != nil {
+		return fmt.Errorf("delete master task: %w", err)
+	}
+	// Verify the deletion took effect.
+	if mt, _ := ws.Engine.GetMasterTask(masterTaskID); mt != nil {
+		log.Printf("dashboard: DeleteMasterTask: task %s still exists after deletion!", masterTaskID)
+	}
+	return nil
 }
 
 // CancelMasterTask cancels all non-terminal subtasks of a master task.
