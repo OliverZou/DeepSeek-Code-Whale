@@ -140,7 +140,7 @@ func New(dbPath, whiteboardDir, configPath string, spawner SubagentSpawner) (*Te
 	}
 	shutdownCtx, shutdownCancel := context.WithCancel(context.Background())
 
-	return &TeamEngine{
+	eng := &TeamEngine{
 		DB:         database,
 		Whiteboard: wb,
 		Config:     cfg,
@@ -153,7 +153,14 @@ func New(dbPath, whiteboardDir, configPath string, spawner SubagentSpawner) (*Te
 		activeCancels:  make(map[string]context.CancelFunc),
 		shutdownCtx:    shutdownCtx,
 		shutdownCancel: shutdownCancel,
-	}, nil
+	}
+
+	// Clean up tasks that were interrupted by a previous crash/exit.
+	// Transient states (producing, verifying, assigned) mean the task
+	// was in-flight when the engine shut down; reset to suspended.
+	eng.cleanupInterruptedTasks()
+
+	return eng, nil
 }
 
 // Close releases resources held by the engine.
@@ -182,6 +189,33 @@ func (e *TeamEngine) Close() error {
 	}
 
 	return e.DB.Close()
+}
+
+// cleanupInterruptedTasks resets tasks in transient states (producing,
+// verifying, assigned) to suspended.  Called on engine open to handle
+// the case where a previous whale process was killed mid-execution.
+func (e *TeamEngine) cleanupInterruptedTasks() {
+	tasks, err := e.DB.ListTasks()
+	if err != nil {
+		return
+	}
+	for _, t := range tasks {
+		switch t.State {
+		case TaskStateProducing, TaskStateVerifying, TaskStateAssigned:
+			_ = e.DB.ForceTransitionState(t.ID, TaskStateSuspended, "interrupted-restart")
+			if DefaultTeamLog != nil {
+				DefaultTeamLog.EngineResumeTask(t.ID, string(TaskStateSuspended))
+			}
+		}
+	}
+	// Also reset any master task status from "running" so the dashboard
+	// doesn't show stale active states.
+	mts, _ := e.DB.ListMasterTasks()
+	for _, mt := range mts {
+		if mt.Status == "running" {
+			_ = e.DB.UpdateMasterTaskStatus(mt.ID, "")
+		}
+	}
 }
 
 // FireEvent broadcasts an event to all subscribers.
