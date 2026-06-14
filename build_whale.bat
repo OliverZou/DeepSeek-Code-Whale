@@ -1,7 +1,7 @@
 @echo off
 cd /d "%~dp0"
 echo Building whale.exe...
-go build -o bin\whale.exe .\cmd\whale
+go build -tags teamlog -o bin\whale.exe .\cmd\whale
 if %ERRORLEVEL% EQU 0 (
     echo OK: bin/whale.exe
 ) else (

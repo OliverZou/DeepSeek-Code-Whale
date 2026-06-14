@@ -1,7 +1,7 @@
 @echo off
 cd /d "%~dp0cmd\dashboard"
 echo Building dashboard with Wails...
-wails build
+wails build -tags teamlog
 if %ERRORLEVEL% NEQ 0 (
     echo FAILED
     exit /b %ERRORLEVEL%
