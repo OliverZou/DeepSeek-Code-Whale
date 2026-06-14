@@ -1136,6 +1136,7 @@ func (e *TeamEngine) PlanAndRun(ctx context.Context, goal, workdir, masterTaskID
 	leader = NewLeader(e.Runner).WithLoggers(e.Loggers).WithTeam(e.team).WithOnLog(func() {
 		e.fireEvent(TaskEvent{Type: EventLeaderLog})
 	})
+	escalator := NewEscalator(leader.planner).WithLoggers(e.Loggers)
 	completedBatches := make(map[string]bool)
 	// Track completed batch outputs for cross-stage injection.
 	completedBatchOutputs := make(map[string]string)
@@ -1212,21 +1213,23 @@ func (e *TeamEngine) PlanAndRun(ctx context.Context, goal, workdir, masterTaskID
 			prevFindings = currentFindings
 
 			// Check for tasks needing re-decomposition (retries exhausted).
-			if reTasks := e.collectReDecomposeTasks(batch); len(reTasks) > 0 {
-				for _, t := range reTasks {
-					if e.Loggers != nil {
-						e.Loggers.Engine("leader: re-decompose task %s (%s) after %d retries", t.ID[:8], t.Title, t.MaxRetries)
+			escalator.ProcessBatch(batch, masterTaskID, workdir, decomposerTimeout, leaderModel,
+				func(id string) (*Task, error) { return e.DB.GetTask(id) },
+				func(pt PlanTask, batchID, mtID string) (*Task, error) {
+					profile := ToolProfile(pt.Profile)
+					task, err := e.CreateTask(pt.Title, pt.Description, AgentRole(pt.Role), profile, nil, 0, workdir, pt.VerifierFocus)
+					if err != nil {
+						return nil, err
 					}
-					smaller, err := leader.DecomposeTask(t, workdir, decomposerTimeout, leaderModel)
-					if err == nil && len(smaller) > 1 {
-						// Replace the original task with smaller subtasks.
-						e.replaceTaskWithSubtasks(t, smaller, masterTaskID)
-						if e.Loggers != nil {
-							e.Loggers.Engine("leader: re-decomposed %s into %d smaller tasks", t.ID[:8], len(smaller))
-						}
-					}
-				}
-			}
+					task.BatchID = batchID
+					task.UseDW = pt.UseDW
+					_ = e.DB.UpdateTask(task.ID, map[string]interface{}{"batch_id": batchID, "master_task_id": mtID, "use_dw": pt.UseDW})
+					return task, nil
+				},
+				func(taskID string, state TaskState, reason string) error {
+					return e.DB.ForceTransitionState(taskID, state, reason)
+				},
+			)
 
 			// Write board.md after each batch cycle.
 			if boardContent := e.Whiteboard.BuildBoardContent(batches); boardContent != "" {
@@ -1506,6 +1509,10 @@ func (e *TeamEngine) RunBatch(ctx context.Context, batch *Batch) error {
 		}
 	}
 
+	// Estimate batch cost: worker + verifier tokens per task × rounds.
+	for _, t := range batch.Tasks {
+		batch.TotalTokens += (t.RetryCount + 1) * 10000 // ~10K tokens per worker+verifier round
+	}
 	if allPassed {
 		batch.Status = BatchStatusPassed
 	} else {
@@ -1771,37 +1778,6 @@ func extractVerdict(output string, passCount, total int) dwVerdict {
 	// Majority vote fallback.
 	if passCount > total/2 { return dwVerdict{passed: true} }
 	return dwVerdict{}
-}
-
-// collectReDecomposeTasks returns tasks that exhausted retries and need the
-// leader to break them into smaller subtasks.  Re-reads from DB because
-// batch.Tasks pointers may be stale after goroutine execution.
-func (e *TeamEngine) collectReDecomposeTasks(batch *Batch) []*Task {
-	var out []*Task
-	for _, t := range batch.Tasks {
-		current, _ := e.DB.GetTask(t.ID)
-		if current != nil && current.State == TaskStateSuspended && current.RetryCount >= current.MaxRetries {
-			out = append(out, current)
-		}
-	}
-	return out
-}
-
-// replaceTaskWithSubtasks marks the original task as done (replaced) and
-// inserts the new smaller subtasks into the same batch.
-func (e *TeamEngine) replaceTaskWithSubtasks(original *Task, smaller []PlanTask, masterTaskID string) {
-	_ = e.DB.ForceTransitionState(original.ID, TaskStateDone, "re-decomposed into smaller tasks")
-	for _, pt := range smaller {
-		profile := ToolProfile(pt.Profile)
-		task, _ := e.CreateTask(pt.Title, pt.Description, AgentRole(pt.Role), profile, nil, 0, original.Workdir, pt.VerifierFocus)
-		task.BatchID = original.BatchID
-		task.MasterTaskID = masterTaskID
-		_ = e.DB.UpdateTask(task.ID, map[string]interface{}{
-			"batch_id":       original.BatchID,
-			"master_task_id": masterTaskID,
-		})
-		_ = e.DB.TransitionState(task.ID, TaskStateAssigned, "re-decomposed from "+original.ID[:8], "")
-	}
 }
 
 // collectCycleFindings reads the latest verifier output for each task in

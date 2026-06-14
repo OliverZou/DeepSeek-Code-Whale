@@ -114,9 +114,11 @@ type Batch struct {
 	Tasks       []*Task      `json:"tasks"`
 	DependsOn   []string     `json:"depends_on"`   // batch IDs this batch depends on
 	Status      BatchStatus  `json:"status"`
-	Concurrency int          `json:"concurrency"`  // max parallel tasks (0 = all)
-	MaxCycles   int          `json:"max_cycles"`   // 0 = unlimited
-	CycleCount  int          `json:"cycle_count"`
+	Concurrency   int          `json:"concurrency"`  // max parallel tasks (0 = all)
+	MaxCycles     int          `json:"max_cycles"`   // 0 = unlimited
+	CycleCount    int          `json:"cycle_count"`
+	TotalTokens   int          `json:"total_tokens"`  // cumulative prompt+completion across all cycles
+	TotalDuration float64      `json:"total_duration"` // cumulative seconds across all cycles
 }
 
 // Finding is a structured issue found by the Verifier.  Used for
