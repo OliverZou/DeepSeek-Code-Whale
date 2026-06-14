@@ -462,6 +462,29 @@ func (tdb *TaskDB) TransitionState(id string, newState TaskState, failureReason,
 	return nil
 }
 
+// ForceTransitionState is like TransitionState but skips the CanTransition
+// check.  It is used for resume operations where the normal state machine
+// does not allow the transition (e.g. failed → pending).
+func (tdb *TaskDB) ForceTransitionState(id string, newState TaskState, reason string) error {
+	task, err := tdb.GetTask(id)
+	if err != nil {
+		return fmt.Errorf("get task for force transition: %w", err)
+	}
+	if task == nil {
+		return fmt.Errorf("task %q not found", id)
+	}
+
+	fields := map[string]interface{}{
+		"state": string(newState),
+	}
+	if err := tdb.UpdateTask(id, fields); err != nil {
+		return err
+	}
+
+	_ = tdb.RecordStateHistory(id, string(task.State), string(newState), reason)
+	return nil
+}
+
 func (tdb *TaskDB) DeleteTask(id string) error {
 	tdb.db.Exec("DELETE FROM state_history WHERE task_id = ?", id)
 	_, err := tdb.db.Exec("DELETE FROM tasks WHERE id = ?", id)

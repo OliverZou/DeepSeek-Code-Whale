@@ -1104,7 +1104,7 @@ func (m *MultiEngineManager) ResumeMasterTask(wsID, masterTaskID string) error {
 		// failed/suspended -> pending, other runnable -> assigned.
 		newState := team_engine.ResetForResume(t.State)
 		if newState != t.State {
-			if err := ws.Engine.DB.TransitionState(t.ID, newState, "dashboard-resume", ""); err != nil {
+			if err := ws.Engine.DB.ForceTransitionState(t.ID, newState, "dashboard-resume"); err != nil {
 				if team_engine.DefaultTeamLog != nil { team_engine.DefaultTeamLog.DashboardResumeMaster(wsID, masterTaskID, fmt.Errorf("transition %s from %s: %w", t.ID, t.State, err)) }
 				return fmt.Errorf("transition task %s: %w", t.ID, err)
 			}
