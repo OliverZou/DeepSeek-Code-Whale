@@ -1215,10 +1215,19 @@ func (m *MultiEngineManager) DeleteMasterTask(wsID, masterTaskID string) error {
 	if err := ws.Engine.DeleteMasterTask(masterTaskID); err != nil {
 		return fmt.Errorf("delete master task: %w", err)
 	}
-	// Force WAL checkpoint so subsequent reads (including our own
-	// GetMasterTasks called milliseconds later by the frontend)
-	// see the deletion immediately.
-	_ = ws.Engine.DB.Checkpoint()
+	// Reopen the engine with a fresh DB connection. SQLite WAL can
+	// delay visibility of committed writes to existing connections.
+	// A new connection always sees the latest committed state.
+	dbPath := filepath.Join(ws.Path, ".whale", "team_engine.db")
+	wbDir := filepath.Join(ws.Path, ".whale", "team_tasks")
+	if eng, err := team_engine.New(dbPath, wbDir, "", nil); err == nil {
+		m.wireEngine(eng)
+		oldEngine := ws.Engine
+		ws.Engine = eng
+		// Close the old engine after swapping — any in-flight reads
+		// on the old connection will complete before close returns.
+		go func() { oldEngine.Close() }()
+	}
 	return nil
 }
 
