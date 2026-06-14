@@ -260,6 +260,32 @@ func (l *Leader) Decompose(goal string, workdir string, timeout time.Duration, m
 	return tasks, err
 }
 
+// DecomposeTask re-decomposes a single task that exhausted retries into
+// smaller subtasks.  Returns nil if decomposition is not possible.
+func (l *Leader) DecomposeTask(task *Task, workdir string, timeout time.Duration, model ...string) ([]PlanTask, error) {
+	prompt := fmt.Sprintf(`You are a Team Leader. The following task failed after multiple retries because it was too large to complete in a single pass.
+
+FAILED TASK:
+Title: %s
+Role: %s
+Description: %s
+
+Last verifier feedback: %s
+
+Break this task into 2-3 SMALLER subtasks that can each be completed in one pass.
+Each subtask must produce ONE concrete deliverable.
+
+OUTPUT FORMAT (pure JSON array, no markdown):
+[
+  {"title": "...", "description": "...", "role": "%s", "batch_id": "%s", "depends_on_batch": [], "verifier_focus": "%s", "max_cycles": 1}
+]
+
+CRITICAL: Verify your JSON syntax — no trailing commas, proper string quoting.`, task.Title, task.Role, task.Description, task.VerifierFeedback, task.Role, task.BatchID, task.VerifierFocus)
+
+	tasks, _, err := l.decomposeInternal(prompt, workdir, timeout, model...)
+	return tasks, err
+}
+
 // DecomposeFull is like Decompose but also returns the raw AI output text.
 func (l *Leader) DecomposeFull(goal string, workdir string, timeout time.Duration, model ...string) ([]PlanTask, string, error) {
 	return l.decomposeInternal(goal, workdir, timeout, model...)

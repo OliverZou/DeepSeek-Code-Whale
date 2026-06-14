@@ -995,9 +995,10 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 		}
 
 		if task.RetryCount >= task.MaxRetries {
-			if err := e.DB.TransitionState(taskID, TaskStateFailed, "max retries exceeded", ""); err != nil {
+			// Don't fail — the leader should re-decompose just this task.
+			if err := e.DB.TransitionState(taskID, TaskStateSuspended, "retries exhausted — needs re-decomposition", feedback); err != nil {
 				e.mu.Unlock()
-				return false, fmt.Errorf("transition to failed (retries exhausted): %w", err)
+				return false, fmt.Errorf("transition to suspended: %w", err)
 			}
 			e.mu.Unlock()
 			return false, nil
@@ -1177,6 +1178,23 @@ func (e *TeamEngine) PlanAndRun(ctx context.Context, goal, workdir, masterTaskID
 			if err := e.RunBatch(ctx, batch); err != nil {
 				e.saveCheckpoint(masterTaskID, completedBatches, completedBatchOutputs, batches)
 				return batches, fmt.Errorf("run batch %s cycle %d: %w", batch.ID, cycle, err)
+			}
+
+			// Check for tasks needing re-decomposition (retries exhausted).
+			if reTasks := e.collectReDecomposeTasks(batch); len(reTasks) > 0 {
+				for _, t := range reTasks {
+					if e.Loggers != nil {
+						e.Loggers.Engine("leader: re-decompose task %s (%s) after %d retries", t.ID[:8], t.Title, t.MaxRetries)
+					}
+					smaller, err := leader.DecomposeTask(t, workdir, decomposerTimeout, leaderModel)
+					if err == nil && len(smaller) > 1 {
+						// Replace the original task with smaller subtasks.
+						e.replaceTaskWithSubtasks(t, smaller, masterTaskID)
+						if e.Loggers != nil {
+							e.Loggers.Engine("leader: re-decomposed %s into %d smaller tasks", t.ID[:8], len(smaller))
+						}
+					}
+				}
 			}
 
 			// Write board.md after each batch cycle.
@@ -1613,6 +1631,35 @@ func (e *TeamEngine) DeleteMasterTask(masterTaskID string) error {
 		}
 	}
 	return e.DB.DeleteMasterTask(masterTaskID)
+}
+
+// collectReDecomposeTasks returns tasks that exhausted retries and need the
+// leader to break them into smaller subtasks.
+func (e *TeamEngine) collectReDecomposeTasks(batch *Batch) []*Task {
+	var out []*Task
+	for _, t := range batch.Tasks {
+		if t.State == TaskStateSuspended && strings.Contains(t.VerifierFeedback, "needs re-decomposition") {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
+// replaceTaskWithSubtasks marks the original task as done (replaced) and
+// inserts the new smaller subtasks into the same batch.
+func (e *TeamEngine) replaceTaskWithSubtasks(original *Task, smaller []PlanTask, masterTaskID string) {
+	_ = e.DB.ForceTransitionState(original.ID, TaskStateDone, "re-decomposed into smaller tasks")
+	for _, pt := range smaller {
+		profile := ToolProfile(pt.Profile)
+		task, _ := e.CreateTask(pt.Title, pt.Description, AgentRole(pt.Role), profile, nil, 0, original.Workdir, pt.VerifierFocus)
+		task.BatchID = original.BatchID
+		task.MasterTaskID = masterTaskID
+		_ = e.DB.UpdateTask(task.ID, map[string]interface{}{
+			"batch_id":       original.BatchID,
+			"master_task_id": masterTaskID,
+		})
+		_ = e.DB.TransitionState(task.ID, TaskStateAssigned, "re-decomposed from "+original.ID[:8], "")
+	}
 }
 
 // SendFeedback sends human feedback to a task via the AgentChannel.Prompt

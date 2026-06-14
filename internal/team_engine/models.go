@@ -140,7 +140,7 @@ type PlanTask struct {
 func NewTask(id, title, description string, role AgentRole, profile ToolProfile, maxRetries int, workdir string, parentIDs []string, batchID, masterTaskID string) *Task {
 	now := time.Now().UTC().Format(time.RFC3339)
 	if maxRetries <= 0 {
-		maxRetries = 9
+		maxRetries = 3
 	}
 	if profile == "" {
 		profile = ProfileDefault
