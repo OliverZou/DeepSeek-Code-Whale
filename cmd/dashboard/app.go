@@ -180,8 +180,18 @@ func (a *App) pushLoop() {
 	}
 }
 
+var lastUpdateJSON string
+
 func (a *App) emitUpdate() {
 	tasks := a.mgr.GetMasterTasks()
+	// Skip if nothing changed — prevents stale push-loop events from
+	// overwriting a just-deleted master task list (race with engine reopen).
+	data, _ := json.Marshal(tasks)
+	payload := string(data)
+	if payload == lastUpdateJSON {
+		return
+	}
+	lastUpdateJSON = payload
 	team_engine.DefaultTeamLog.Log("frontend", "emitUpdate: %d tasks", len(tasks))
 	runtime.EventsEmit(a.ctx, "update", tasks)
 }
