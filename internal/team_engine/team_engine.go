@@ -1634,12 +1634,14 @@ func (e *TeamEngine) DeleteMasterTask(masterTaskID string) error {
 }
 
 // collectReDecomposeTasks returns tasks that exhausted retries and need the
-// leader to break them into smaller subtasks.
+// leader to break them into smaller subtasks.  Re-reads from DB because
+// batch.Tasks pointers may be stale after goroutine execution.
 func (e *TeamEngine) collectReDecomposeTasks(batch *Batch) []*Task {
 	var out []*Task
 	for _, t := range batch.Tasks {
-		if t.State == TaskStateSuspended && strings.Contains(t.VerifierFeedback, "needs re-decomposition") {
-			out = append(out, t)
+		current, _ := e.DB.GetTask(t.ID)
+		if current != nil && current.State == TaskStateSuspended && current.RetryCount >= current.MaxRetries {
+			out = append(out, current)
 		}
 	}
 	return out
