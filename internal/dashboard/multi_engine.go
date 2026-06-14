@@ -1215,10 +1215,10 @@ func (m *MultiEngineManager) DeleteMasterTask(wsID, masterTaskID string) error {
 	if err := ws.Engine.DeleteMasterTask(masterTaskID); err != nil {
 		return fmt.Errorf("delete master task: %w", err)
 	}
-	// Verify the deletion took effect.
-	if mt, _ := ws.Engine.GetMasterTask(masterTaskID); mt != nil {
-		log.Printf("dashboard: DeleteMasterTask: task %s still exists after deletion!", masterTaskID)
-	}
+	// Force WAL checkpoint so subsequent reads (including our own
+	// GetMasterTasks called milliseconds later by the frontend)
+	// see the deletion immediately.
+	_ = ws.Engine.DB.Checkpoint()
 	return nil
 }
 

@@ -51,6 +51,13 @@ func NewDB(dbPath string) (*TaskDB, error) {
 
 func (tdb *TaskDB) Close() error { return tdb.db.Close() }
 
+// Checkpoint forces a WAL checkpoint so that all readers see the latest writes.
+// Call after deletions or bulk state changes that must be immediately visible.
+func (tdb *TaskDB) Checkpoint() error {
+	_, err := tdb.db.Exec("PRAGMA wal_checkpoint(TRUNCATE)")
+	return err
+}
+
 // ---------------------------------------------------------------------------
 // Schema migration
 // ---------------------------------------------------------------------------
