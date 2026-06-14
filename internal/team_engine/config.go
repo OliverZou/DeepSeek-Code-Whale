@@ -64,7 +64,7 @@ var Defaults = Config{
 	},
 	Batch: BatchConfig{
 		DefaultConcurrency: 0,  // unlimited
-		DefaultMaxCycles:   3,  // unlimited
+		DefaultMaxCycles:   10, // safety cap — real exit is loop-until-dry
 	},
 }
 
