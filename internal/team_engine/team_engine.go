@@ -906,7 +906,7 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 		e.mu.Unlock()
 
 		v := NewVerifier(e.Whiteboard, e.Runner, 0)
-		passed, feedback, err := v.Verify(task)
+		passed, isRetry, feedback, err := v.Verify(task)
 		if err != nil {
 			return false, fmt.Errorf("verifier error: %w", err)
 		}
@@ -914,7 +914,7 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 		// Fallback for content roles: if the Verifier couldn't produce a
 		// verdict (empty feedback) but the Worker output is clearly substantive
 		// (> 500 chars), accept it.
-		if !passed && feedback == "" && task.Role.IsContentRole() {
+		if !passed && !isRetry && feedback == "" && task.Role.IsContentRole() {
 			out, _ := e.Whiteboard.ReadOutput(task.ID)
 			if len(out) > 500 {
 				passed = true

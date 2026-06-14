@@ -87,6 +87,18 @@ You are a Content Verifier. Critically examine this output against the
 original task. Be skeptical — challenge weak claims, unverifiable data,
 and logical inconsistencies.
 
+IMPORTANT — INCREMENTAL PROGRESS:
+Large documents (requirements, architecture, analysis reports) often
+cannot be completed in a single pass.  The Worker writes to files on disk.
+Use list_dir and read_file to check the actual file content.
+If the files show meaningful progress (sections completed, content growing),
+and the Worker's output describes continuing the work, respond with:
+  VERDICT: RETRY
+  SPECIFIC NEXT STEPS: (list 2-3 concrete sections to add, max 100 words each)
+Use RETRY instead of FAIL when progress is being made but the task is
+not yet complete.  Use FAIL only for empty output, circular loops, or
+content that contradicts the original task.
+
 ORIGINAL TASK:
 %s
 
@@ -102,20 +114,18 @@ CHECKLIST:
 4. PLAUSIBILITY: Are any claims obviously impossible? (future dates, impossible
    numbers, physically/logically contradictory statements)
 5. COMPLETENESS: Does it address ALL requirements from the original task?
+   If incomplete but making progress, use RETRY with specific next steps.
 %s
 
-TOOL-GROUNDED: Use web_search or fetch to verify claims, check citations,
-and confirm facts. Your verdict must be based on actual external
-verification, not subjective judgment.
+TOOL-GROUNDED: Use list_dir and read_file to check files on disk, then
+web_search or fetch to verify factual claims.  Your verdict must be
+based on actual external verification, not subjective judgment.
 
 OUTPUT FORMAT:
-TOOLS USED: [list searches/fetches you ran]
-VERDICT: PASS|FAIL
+TOOLS USED: [list tools you ran]
+VERDICT: PASS|RETRY|FAIL
 SUBSTANCE: [substantial|thin|empty]
 EVIDENCE: [verification evidence from tools]
-ISSUES:
-VERDICT: PASS|FAIL
-SUBSTANCE: [substantial|thin|empty]
 ISSUES:
 - [list specific issues, or "none" if PASS]
 `, task.Description, workerOutput, buildFocusSection(task.VerifierFocus))
@@ -159,10 +169,10 @@ func buildFocusSection(focus string) string {
 // VERDICT: PASS|FAIL line.
 //
 // Returns (passed, feedback).
-func (v *Verifier) Verify(task *Task) (bool, string, error) {
+func (v *Verifier) Verify(task *Task) (passed bool, retry bool, feedback string, err error) {
 	workerOutput, err := v.whiteboard.ReadOutput(task.ID)
 	if err != nil {
-		return false, "", fmt.Errorf("read worker output: %w", err)
+		return false, false, "", fmt.Errorf("read worker output: %w", err)
 	}
 
 	// Choose the right verification prompt based on task role.
@@ -201,23 +211,28 @@ func (v *Verifier) Verify(task *Task) (bool, string, error) {
 	output := result.Stdout
 	// Persist the verifier result to the whiteboard.
 	if err := v.whiteboard.WriteVerifier(task.ID, output); err != nil {
-		return false, output, fmt.Errorf("write verifier result: %w", err)
+		return false, false, output, fmt.Errorf("write verifier result: %w", err)
 	}
 
-	// Parse the VERDICT line (case-insensitive).
-	// The verifier agent may embed markdown formatting like **VERDICT:** PASS
-	// or **VERDICT: PASS** — allow optional ** around/between the label and verdict.
-	verdictMatch := regexp.MustCompile(`(?i)VERDICT:\s*\*{0,2}\s*(PASS|FAIL)`).FindStringSubmatch(output)
-	passed := false
+	// Parse the VERDICT line (case-insensitive).  Supports PASS, FAIL, RETRY.
+	verdictMatch := regexp.MustCompile(`(?i)VERDICT:\s*\*{0,2}\s*(PASS|FAIL|RETRY)`).FindStringSubmatch(output)
+	upper := strings.ToUpper(output)
 	if len(verdictMatch) >= 2 {
-		passed = verdictMatch[1] == "PASS"
+		switch verdictMatch[1] {
+		case "PASS":
+			passed = true
+		case "RETRY":
+			retry = true
+		}
 	}
-	// Full-text fallback: search for "VERDICT: PASS" literally (ignores all formatting).
-	if !passed {
-		upper := strings.ToUpper(output)
+	// Full-text fallback.
+	if !passed && !retry {
 		passed = strings.Contains(upper, "VERDICT: PASS") || strings.Contains(upper, "VERDICT:  PASS")
+		if !passed {
+			retry = strings.Contains(upper, "VERDICT: RETRY")
+		}
 	}
 	// No clear verdict → treat as FAIL to be safe.
 
-	return passed, output, nil
+	return passed, retry, output, nil
 }
