@@ -1170,7 +1170,7 @@ func (e *TeamEngine) PlanAndRun(ctx context.Context, goal, workdir, masterTaskID
 			cycleLimit = 1 // at minimum one cycle
 		}
 
-		batchCycleLoop:
+	batchCycleLoop:
 		for cycle := 0; cycle < cycleLimit; cycle++ {
 			batch.CycleCount = cycle + 1
 
@@ -1662,6 +1662,26 @@ func (e *TeamEngine) replaceTaskWithSubtasks(original *Task, smaller []PlanTask,
 		})
 		_ = e.DB.TransitionState(task.ID, TaskStateAssigned, "re-decomposed from "+original.ID[:8], "")
 	}
+}
+
+// collectCycleFindings reads the latest verifier output for each task in
+// the batch and returns a unified findings set for loop-until-dry comparison.
+func (e *TeamEngine) collectCycleFindings(batch *Batch, cycle int) *CycleFindingsSet {
+	set := &CycleFindingsSet{Cycle: cycle}
+	seen := make(map[string]bool)
+	for _, t := range batch.Tasks {
+		output, err := e.Whiteboard.ReadVerifier(t.ID)
+		if err != nil {
+			continue
+		}
+		for _, f := range ParseFindings(output) {
+			if !seen[f.ID] {
+				seen[f.ID] = true
+				set.Findings = append(set.Findings, f)
+			}
+		}
+	}
+	return set
 }
 
 // SendFeedback sends human feedback to a task via the AgentChannel.Prompt
