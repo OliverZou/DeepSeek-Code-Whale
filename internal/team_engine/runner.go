@@ -8,23 +8,21 @@ import (
 )
 
 // ReasoningMaxTokens is the completion token budget for reasoning models
-// (deepseek-v4-pro, deepseek-r1, etc.). These models need significant
-// headroom because their thinking tokens count against the budget, and
-// a plan or analysis can easily exceed the default 800 tokens.
-const ReasoningMaxTokens = 8192
+// (deepseek-v4-pro, deepseek-r1, etc.). These models use thinking tokens
+// that count against the completion budget, so a large budget is needed
+// to leave room for actual output after chain-of-thought.
+const ReasoningMaxTokens = 32768
 
 // ReasoningDecomposerMaxTokens is the token budget for the Leader/Decomposer
-// role when using a reasoning model.  The decomposer prompt is much longer
-// than a typical task prompt (9 rules, orchestration patterns, role
-// descriptions, JSON format specification), and the model must think through
-// the decomposition before generating the plan JSON.  8192 is often
-// insufficient because thinking tokens can consume 60-80% of the budget.
-const ReasoningDecomposerMaxTokens = 16384
+// role when using a reasoning model.  The decomposer prompt is long (rules,
+// orchestration patterns, role descriptions, JSON format specification), and
+// the model must think through the decomposition before generating the plan.
+const ReasoningDecomposerMaxTokens = 65536
 
 // WorkerMaxTokens is the minimum completion token budget for non-reasoning
-// worker tasks (research, writing, analysis).  The runner default (800) is
-// nowhere near enough for a research report.
-const WorkerMaxTokens = 8192
+// worker tasks (research, writing, analysis).  When thinking is globally
+// enabled, even flash models consume budget for chain-of-thought.
+const WorkerMaxTokens = 32768
 
 // isDeepSeekModel reports whether the model is a known DeepSeek model that
 // should get a larger-than-default token budget.
