@@ -58,13 +58,19 @@ RULES:
 1. Break the goal into 1-12 subtasks
 2. Each subtask should be self-contained and produce a clear deliverable
 3. Order subtasks by dependency (earlier subtasks first)
-4. SINGLE-PASS CONSTRAINT: Every subtask MUST be small enough to complete in
-   ONE pass.  If a task would need multiple write calls or produce more than
-   a few hundred lines, SPLIT it into smaller sequential subtasks.
-   Example: "write complete PRD (8 sections)" → split into "write PRD §§1-3",
-   then "write PRD §§4-6", then "write PRD §§7-8".
+4. HOW TO SPLIT — Choose the right strategy:
+   a) BY DELIVERABLE: One file/artifact per task (e.g. "write API spec" →
+      "write implementation" → "write tests").  Use sequential batches.
+   b) BY PERSPECTIVE: Same goal, different lenses.  Assign multiple agents
+      with different verifier_focus values in the SAME batch, then add a
+      synthesizer in the NEXT batch to merge findings.  (Judge Panel pattern)
+      Example: Batch 1 = security-reviewer + perf-reviewer + correctness-reviewer
+               Batch 2 = synthesizer (aggregate all reviews)
+   c) BY WORKLOAD: Only when a single deliverable is unavoidably large
+      (e.g. 8-section document).  Split into sequential subtasks of 2-3
+      sections each.  Avoid — prefer (a) or (b) when possible.
 
-4. Assign an appropriate ROLE to each subtask:
+5. Assign an appropriate ROLE to each subtask:
    - "developer"   — writing code
    - "tester"      — writing tests
    - "reviewer"    — code review
@@ -74,13 +80,13 @@ RULES:
    - "evaluator"   — quality evaluation
    - "synthesizer" — merge multiple research results into structured conclusions
 
-5. Group related subtasks into **batches** (stages). Use "batch_id" to group tasks
+6. Group related subtasks into **batches** (stages). Use "batch_id" to group tasks
    that can run in parallel. Use "depends_on_batch" to declare batch-level dependencies.
    Example: tasks in batch "research" must finish before tasks in batch "write" start.
 
-6. Use "depends_on_index" / "depends_on_indices" for task-level dependencies.
+7. Use "depends_on_index" / "depends_on_indices" for task-level dependencies.
 
-7. ORCHESTRATION PATTERNS — Choose the best pattern for your goal:
+8. ORCHESTRATION PATTERNS — Choose the best pattern for your goal:
 
    a) PIPELINE (default): Sequential batches, each depending on the previous.
       Use when tasks have clear dependencies (e.g. design → code → test → deploy).
@@ -102,7 +108,7 @@ RULES:
       assign a reviewer with verifier_focus="completeness" in a subsequent batch.
       This reviewer checks if the output covers all requirements from the goal.
 
-8. Use "verifier_focus" to control what the Verifier checks:
+9. Use "verifier_focus" to control what the Verifier checks:
    - "correctness"    — output is accurate (default)
    - "security"       — security vulnerabilities
    - "performance"    — performance implications
@@ -111,7 +117,7 @@ RULES:
    - "style"          — code style / conventions
    - "sources"        — whether claims are properly sourced (for research)
 
-9. Use "max_cycles" per-batch to limit retry/exploration loops (default 1, max 10).
+10. Use "max_cycles" per-batch to limit retry/exploration loops (default 1, max 10).
 
 OUTPUT FORMAT (pure JSON array, no markdown):
 [
