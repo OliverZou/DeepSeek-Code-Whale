@@ -149,11 +149,9 @@ async function loadFlowchart(wsID, mtID) {
 function updateUI() {
   renderSidebar();
   $('#mt-count').textContent = state.masterTasks.length + ' master tasks';
-  // Only load subtasks if there's a selected master task and we haven't
-  // already loaded them (subtasks array is empty or belongs to a different mt).
   if (state.selMtId) {
     const mt = getSelMt();
-    if (mt && (state.subtasks.length === 0 || state._lastMtId !== mt.id)) {
+    if (mt) {
       state._lastMtId = mt.id;
       loadSubtasks(mt.workspace_id, mt.id);
     }
