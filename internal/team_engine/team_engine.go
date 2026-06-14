@@ -155,10 +155,12 @@ func New(dbPath, whiteboardDir, configPath string, spawner SubagentSpawner) (*Te
 		shutdownCancel: shutdownCancel,
 	}
 
-	// Clean up tasks that were interrupted by a previous crash/exit.
-	// Transient states (producing, verifying, assigned) mean the task
-	// was in-flight when the engine shut down; reset to suspended.
-	eng.cleanupInterruptedTasks()
+	// Clean up tasks interrupted by a previous crash/exit — only when
+	// we have a spawner (i.e. this engine can actually execute tasks).
+	// Read-only engines (dashboard) must not modify task state.
+	if spawner != nil {
+		eng.cleanupInterruptedTasks()
+	}
 
 	return eng, nil
 }
