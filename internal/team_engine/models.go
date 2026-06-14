@@ -90,6 +90,7 @@ type Task struct {
 	VerifierFocus    string     `json:"verifier_focus"`    // 验证重点 (correctness,security,sources,plausibility,...)
 	BatchID          string     `json:"batch_id"`          // 所属 Batch（stage）
  	MasterTaskID     string     `json:"master_task_id"`    // 所属总任务
+	UseDW            bool       `json:"use_dw"`            // use Dynamic Workflow for verification
 	CreatedAt        string     `json:"created_at"`        // ISO 8601
 	UpdatedAt        string     `json:"updated_at"`        // ISO 8601
 }

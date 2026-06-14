@@ -913,10 +913,18 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 		}
 		e.mu.Unlock()
 
-		v := NewVerifier(e.Whiteboard, e.Runner, 0)
-		passed, isRetry, feedback, err := v.Verify(task)
-		if err != nil {
-			return false, fmt.Errorf("verifier error: %w", err)
+		var passed, isRetry bool
+		var feedback string
+
+		if task.UseDW {
+			// Dynamic Workflow mode: N verifiers in parallel + Synthesizer.
+			passed, isRetry, feedback = e.runDWVerification(task)
+		} else {
+			v := NewVerifier(e.Whiteboard, e.Runner, 0)
+			passed, isRetry, feedback, err = v.Verify(task)
+			if err != nil {
+				return false, fmt.Errorf("verifier error: %w", err)
+			}
 		}
 
 		// Fallback for content roles: if the Verifier couldn't produce a
@@ -1652,6 +1660,115 @@ func (e *TeamEngine) DeleteMasterTask(masterTaskID string) error {
 		}
 	}
 	return e.DB.DeleteMasterTask(masterTaskID)
+}
+
+// runDWVerification executes Dynamic Workflow verification for a task:
+// N parallel verifiers with different perspectives + Synthesizer merge.
+func (e *TeamEngine) runDWVerification(task *Task) (passed bool, retry bool, feedback string) {
+	workerOutput, _ := e.Whiteboard.ReadOutput(task.ID)
+	if workerOutput == "" {
+		return false, false, "worker output is empty"
+	}
+
+	// Perspectives: default set for code tasks, can be overridden by task.VerifierFocus.
+	perspectives := []string{"correctness", "completeness"}
+	if task.VerifierFocus != "" {
+		perspectives = strings.Split(task.VerifierFocus, ",")
+	}
+	// Ensure we have at least 2 perspectives for DW verification.
+	if len(perspectives) < 2 {
+		perspectives = []string{"correctness", "completeness"}
+	}
+
+	// Run verifiers in parallel using goroutine + semaphore pattern.
+	type verifierResult struct {
+		perspective string
+		output      string
+		passed      bool
+		isRetry     bool
+		feedback    string
+	}
+	sem := make(chan struct{}, len(perspectives))
+	results := make([]verifierResult, len(perspectives))
+	var wg sync.WaitGroup
+
+	for i, p := range perspectives {
+		sem <- struct{}{}
+		wg.Add(1)
+		go func(idx int, perspective string) {
+			defer func() { <-sem; wg.Done() }()
+			v := NewVerifier(e.Whiteboard, e.Runner, 0)
+			// Set verifier focus for this perspective.
+			t := *task // shallow copy
+			t.VerifierFocus = strings.TrimSpace(perspective)
+			r := verifierResult{perspective: perspective}
+			r.passed, r.isRetry, r.output, _ = v.Verify(&t)
+			// Parse findings for feedback synthesis.
+			findings := ParseFindings(r.output)
+			for j, f := range findings {
+				if j > 0 {
+					r.feedback += "; "
+				}
+				r.feedback += fmt.Sprintf("[%s] %s", f.Severity, f.Title)
+			}
+			if r.feedback == "" {
+				r.feedback = r.output
+			}
+			results[idx] = r
+		}(i, p)
+	}
+	wg.Wait()
+
+	// Synthesizer: analyze all verifier outputs and produce a final verdict.
+	synthPrompt := fmt.Sprintf(`You are a Verification Synthesizer. Multiple verifiers examined the same worker output from different perspectives. Merge their findings into a single verdict.
+
+WORKER TASK: %s
+
+VERIFIER REPORTS:
+`, task.Title)
+	passCount := 0
+	for _, r := range results {
+		synthPrompt += fmt.Sprintf("\n## %s\nVERDICT: %s\n%s\n", r.perspective, verdictLabel(r.passed, r.isRetry), r.feedback)
+		if r.passed {
+			passCount++
+		}
+	}
+	synthPrompt += fmt.Sprintf(`
+OUTPUT: VERDICT: PASS|FAIL|RETRY
+SYNTHESIS: brief explanation
+FINDINGS: key issues consolidated from all verifiers
+`)
+
+	synthOutput := e.Runner.RunVerifier(synthPrompt, task.Workdir, 120*time.Second, "")
+	synthVerdict := extractVerdict(synthOutput.Stdout, passCount, len(results))
+
+	// Write DW verification results to whiteboard.
+	var dwLog strings.Builder
+	dwLog.WriteString(fmt.Sprintf("# DW Verification — %s\n\n", task.Title))
+	for _, r := range results {
+		dwLog.WriteString(fmt.Sprintf("## Verifier: %s\nVERDICT: %s\n%s\n\n", r.perspective, verdictLabel(r.passed, r.isRetry), r.feedback))
+	}
+	dwLog.WriteString(fmt.Sprintf("## Synthesizer\n%s\n", synthOutput.Stdout))
+	_ = e.Whiteboard.WriteVerifier(task.ID, dwLog.String())
+
+	return synthVerdict.passed, synthVerdict.retry, synthOutput.Stdout
+}
+
+type dwVerdict struct{ passed, retry bool }
+
+func verdictLabel(passed, retry bool) string {
+	if passed { return "PASS" }
+	if retry { return "RETRY" }
+	return "FAIL"
+}
+
+func extractVerdict(output string, passCount, total int) dwVerdict {
+	upper := strings.ToUpper(output)
+	if strings.Contains(upper, "VERDICT: PASS") { return dwVerdict{passed: true} }
+	if strings.Contains(upper, "VERDICT: RETRY") { return dwVerdict{retry: true} }
+	// Majority vote fallback.
+	if passCount > total/2 { return dwVerdict{passed: true} }
+	return dwVerdict{}
 }
 
 // collectReDecomposeTasks returns tasks that exhausted retries and need the
