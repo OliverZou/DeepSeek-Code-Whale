@@ -486,7 +486,7 @@ func (m *MultiEngineManager) ListWorkspaces() []WorkspaceJSON {
 			Label:      ws.Label,
 			Registered: ws.Registered.Format(time.RFC3339),
 			LastSeen:   ws.LastSeen.Format(time.RFC3339),
-			Online:     time.Since(ws.LastSeen) < 90*time.Second,
+			Online:     m.isOnline(ws),
 		}
 		if ws.Engine != nil {
 			tasks, _ := ws.Engine.ListTasks()
@@ -655,7 +655,7 @@ func (m *MultiEngineManager) GetMasterTasks() []MasterTaskJSON {
 				WorkspaceLabel: ws.Label,
 				Status:         "idle",
 				CreatedAt:      ws.Registered.Format(time.RFC3339),
-				WorkspaceOnline: time.Since(ws.LastSeen) < 90*time.Second,
+				WorkspaceOnline: m.isOnline(ws),
 			})
 			continue
 		}
@@ -700,7 +700,7 @@ func (m *MultiEngineManager) GetMasterTasks() []MasterTaskJSON {
 				DoneCount:      doneCount,
 				ActiveCount:    activeCount,
 				SuspendedCount: suspendedCount,
-				WorkspaceOnline: time.Since(ws.LastSeen) < 90*time.Second,
+				WorkspaceOnline: m.isOnline(ws),
 			})
 		}
 	}
@@ -1463,6 +1463,17 @@ func readFileString(path string) (string, error) {
 		return "", err
 	}
 	return string(data), nil
+}
+
+// isOnline reports whether a workspace has a running Whale CLI.
+// An active WebSocket connection is the authoritative signal.
+// Caller must hold m.mu (read lock is sufficient).
+func (m *MultiEngineManager) isOnline(ws *WorkspaceState) bool {
+	if m.wsConns != nil {
+		_, ok := m.wsConns[ws.ID]
+		return ok
+	}
+	return false
 }
 
 func (m *MultiEngineManager) logResumeDiag(ws *WorkspaceState, format string, args ...interface{}) {
