@@ -235,10 +235,13 @@ func (b *Toolset) runTeamPlan(ctx context.Context, call core.ToolCall, progress 
 
 			// --- Phase 2: Decompose (LLM call, may take 30-90s) ----------------
 			decomposerTimeout := time.Duration(eng.Router.ResolveDecomposerTimeout()) * time.Second
+			// Always use v4-pro for decomposition — flash produces
+			// truncated JSON that wastes time on retries.
+			leaderModel := eng.Router.ResolveModel("planner")
 			planPreview := "⏳ Decomposing — team leader is analysing the goal...\n"
 			if planTasks, err := team_engine.NewLeader(eng.Runner).WithLoggers(eng.Loggers).WithTeam(eng.Team()).WithOnLog(func() {
 				eng.FireEvent(team_engine.TaskEvent{Type: team_engine.EventLeaderLog})
-			}).Decompose(args.Goal, workdir, decomposerTimeout); err == nil && len(planTasks) > 0 {
+			}).Decompose(args.Goal, workdir, decomposerTimeout, leaderModel); err == nil && len(planTasks) > 0 {
 				// Group planTasks into batches for preview.
 				type planBatch struct {
 					label string
