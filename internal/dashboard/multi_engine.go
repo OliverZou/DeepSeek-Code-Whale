@@ -683,6 +683,7 @@ func (m *MultiEngineManager) GetMasterTasks() []MasterTaskJSON {
 			doneCount := 0
 			activeCount := 0
 			suspendedCount := 0
+			online := m.isOnline(ws)
 			for _, t := range subtasks {
 				if t.State == team_engine.TaskStateDone || t.State == team_engine.TaskStateFailed {
 					doneCount++
@@ -690,7 +691,7 @@ func (m *MultiEngineManager) GetMasterTasks() []MasterTaskJSON {
 				if t.State == team_engine.TaskStateSuspended {
 					suspendedCount++
 				}
-				if t.State == team_engine.TaskStateProducing || t.State == team_engine.TaskStateVerifying {
+				if online && (t.State == team_engine.TaskStateProducing || t.State == team_engine.TaskStateVerifying) {
 					activeCount++
 				}
 			}
