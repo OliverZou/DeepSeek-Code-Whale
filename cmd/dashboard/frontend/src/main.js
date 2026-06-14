@@ -101,30 +101,7 @@ async function loadSubtasks(wsID, mtID) {
     if (newSubtasks.length > 0 && !state.selStId) {
       selectSubtask(newSubtasks[0].id);
     }
-    // If a subtask was already selected and still exists, refresh its dialogue
-    // so verifier results / worker output show up in real time.
-    if (state.selStId && state.selStId === prevSelStId) {
-      refreshDialogueIfNeeded();
-    }
   } catch (_) {}
-}
-
-// Refresh dialogue view for the currently selected subtask if it's still active.
-function refreshDialogueIfNeeded() {
-  if (!state.selStId || !state.selMtId) return;
-  const mt = getSelMt();
-  if (!mt) return;
-  // Check if subtask is still active (not in terminal state).
-  // Exception: __leader__ dialogue grows over time (decompose → review → summary),
-  // so always keep refreshing it.
-  const st = state.subtasks.find(s => s.id === state.selStId);
-  if (state.selStId !== '__leader__') {
-    if (!st || st.state === 'done' || st.state === 'failed') return;
-  }
-  // Only refresh if dialogue has been loaded at least once.
-  const dialogueView = document.getElementById('dialogue-view');
-  if (!dialogueView || dialogueView.querySelector('.empty')) return;
-  loadDialogue(mt.workspace_id, state.selStId);
 }
 
 async function loadDialogue(wsID, taskID) {
@@ -344,6 +321,8 @@ function renderDialogue(dialogue) {
     view.innerHTML = '<div class="empty"><div class="icon">💬</div>No conversation data</div>';
     return;
   }
+  // Preserve scroll position across refreshes.
+  const wasAtBottom = view.scrollTop + view.clientHeight >= view.scrollHeight - 4;
   let html = '';
   for (const msg of dialogue) {
     const role = msg.role || '';
@@ -351,7 +330,6 @@ function renderDialogue(dialogue) {
       : role.startsWith('verifier') ? 'role-verifier'
       : role.startsWith('任务主管') ? 'role-planner'
       : 'role-input';
-    // Extract round number from "worker (round 1)" format
     const roundMatch = role.match(/round\s+(\d+)/);
     const roundBadge = roundMatch ? `<span class="round-badge">Round ${roundMatch[1]}</span>` : '';
     html += `<div class="msg ${roleClass}">
@@ -360,7 +338,8 @@ function renderDialogue(dialogue) {
     </div>`;
   }
   view.innerHTML = html;
-  view.scrollTop = view.scrollHeight;
+  // Only auto-scroll to bottom if the user was already at the bottom.
+  if (wasAtBottom) view.scrollTop = view.scrollHeight;
 }
 
 // ---------- Flowchart View ----------
