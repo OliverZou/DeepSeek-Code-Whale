@@ -167,7 +167,7 @@ function renderSidebar() {
     const active = state.selMtId === mt.id ? ' active' : '';
     const goalShort = esc(mt.goal).length > 50 ? esc(mt.goal).slice(0, 50) + '…' : esc(mt.goal);
     const pct = mt.task_count > 0 ? Math.round(mt.done_count / mt.task_count * 100) : 0;
-    const isPlanning = mt.status === 'running' && (mt.task_count || 0) === 0;
+    const isPlanning = (mt.task_count || 0) === 0;
     const hasRunning = !isPlanning && (mt.active_count || 0) > 0;
     html += `<div class="mt${active}" data-id="${mt.id}" data-goal="${esc(mt.goal)}" data-wsid="${esc(mt.workspace_id)}">
       <div class="goal" title="${esc(mt.goal)}">${goalShort}</div>
