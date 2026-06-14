@@ -793,6 +793,14 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 
 	// Main retry loop.
 	for attempt := 0; attempt < task.MaxRetries; attempt++ {
+		// Check for cancellation before each retry.
+		select {
+		case <-ctx.Done():
+			_ = e.DB.ForceTransitionState(taskID, TaskStateSuspended, "cancelled-by-user")
+			e.fireEvent(TaskEvent{Type: EventStateChanged})
+			return false, ctx.Err()
+		default:
+		}
 		// ---- Phase 1: Producing ----------------------------------------
 		// Build the full prompt including inbox messages + agent memory.
 		prompt := task.Description
@@ -1139,7 +1147,18 @@ func (e *TeamEngine) PlanAndRun(ctx context.Context, goal, workdir, masterTaskID
 		// Check for cancellation between batches.
 		select {
 		case <-ctx.Done():
+			// Suspend all non-terminal tasks so the dashboard shows them as
+			// stopped rather than still running.
+			for _, b := range batches {
+				for _, t := range b.Tasks {
+					if !t.State.IsTerminal() {
+						_ = e.DB.ForceTransitionState(t.ID, TaskStateSuspended, "cancelled-by-user")
+					}
+				}
+			}
+			_ = e.DB.UpdateMasterTaskStatus(masterTaskID, "")
 			e.saveCheckpoint(masterTaskID, completedBatches, completedBatchOutputs, batches)
+			e.fireEvent(TaskEvent{Type: EventStateChanged})
 			return batches, fmt.Errorf("cancelled: %w", ctx.Err())
 		default:
 		}
@@ -1405,7 +1424,14 @@ func (e *TeamEngine) RunBatch(ctx context.Context, batch *Batch) error {
 	for _, task := range tasks {
 		select {
 		case <-ctx.Done():
+			// Suspend all not-yet-launched tasks.
+			for _, t := range tasks {
+				if !t.State.IsTerminal() {
+					_ = e.DB.ForceTransitionState(t.ID, TaskStateSuspended, "cancelled-by-user")
+				}
+			}
 			batch.Status = BatchStatusFailed
+			e.fireEvent(TaskEvent{Type: EventStateChanged})
 			return ctx.Err()
 		default:
 		}
