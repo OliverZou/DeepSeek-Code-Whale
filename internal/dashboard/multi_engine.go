@@ -1260,6 +1260,8 @@ func (m *MultiEngineManager) CancelMasterTask(wsID, masterTaskID string) (int, e
 		}
 		cancelled++
 	}
+	// Notify the whale CLI to stop execution immediately.
+	m.sendWSCommand(wsID, "cancel_master", masterTaskID)
 	return cancelled, nil
 }
 
@@ -1503,6 +1505,21 @@ func (m *MultiEngineManager) isOnline(ws *WorkspaceState) bool {
 		return ok
 	}
 	return false
+}
+
+// sendWSCommand sends a JSON command to the whale CLI via WebSocket.
+func (m *MultiEngineManager) sendWSCommand(wsID, command, masterTaskID string) {
+	m.mu.Lock()
+	conn, ok := m.wsConns[wsID]
+	m.mu.Unlock()
+	if !ok || conn == nil {
+		return
+	}
+	msg, _ := json.Marshal(map[string]string{
+		"command":         command,
+		"master_task_id": masterTaskID,
+	})
+	conn.WriteMessage(websocket.TextMessage, msg)
 }
 
 func (m *MultiEngineManager) logResumeDiag(ws *WorkspaceState, format string, args ...interface{}) {

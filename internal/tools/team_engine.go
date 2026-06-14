@@ -85,12 +85,33 @@ func (b *Toolset) AutoExecuteMasterTask(masterTaskID string) {
 			workdir = b.root
 		}
 
-		batches, err := eng.ResumeMasterTask(context.Background(), masterTaskID, mt.Goal, workdir)
+		ctx, cancel := context.WithCancel(context.Background())
+		b.autoExecCancelMu.Lock()
+		b.autoExecCancel = cancel
+		b.autoExecCancelMu.Unlock()
+		defer func() {
+			cancel()
+			b.autoExecCancelMu.Lock()
+			b.autoExecCancel = nil
+			b.autoExecCancelMu.Unlock()
+		}()
+
+		batches, err := eng.ResumeMasterTask(ctx, masterTaskID, mt.Goal, workdir)
 		if eng.Loggers != nil {
 			eng.Loggers.Engine("dashboard-resume: masterTask=%s goal=%q batches=%d err=%v",
 				masterTaskID, mt.Goal, len(batches), err)
 		}
 	}()
+}
+
+// CancelAutoExecute cancels a running AutoExecuteMasterTask.
+func (b *Toolset) CancelAutoExecute() {
+	b.autoExecCancelMu.Lock()
+	defer b.autoExecCancelMu.Unlock()
+	if b.autoExecCancel != nil {
+		b.autoExecCancel()
+		b.autoExecCancel = nil
+	}
 }
 
 func logToFile(path, format string, args ...interface{}) {

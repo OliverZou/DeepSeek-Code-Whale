@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sync"
 	"strings"
 	"time"
 
@@ -51,6 +52,10 @@ type Toolset struct {
 		PendingResume() string
 		SendTaskEvent(team_engine.TaskEvent)
 	}
+
+	// auto-exec cancellation
+	autoExecCancel   context.CancelFunc
+	autoExecCancelMu sync.Mutex
 }
 
 // SetDashboardClient sets the dashboard client for auto-resume support.

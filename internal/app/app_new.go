@@ -112,6 +112,9 @@ func New(ctx context.Context, cfg Config, start StartOptions) (*App, error) {
 	app.dashboardClient.OnResume = func(masterTaskID string) {
 		app.toolset.AutoExecuteMasterTask(masterTaskID)
 	}
+	app.dashboardClient.OnCancel = func(masterTaskID string) {
+		app.toolset.CancelAutoExecute()
+	}
 
 	// Clean up tasks left in transient states from a previous crash/exit.
 	team_engine.CleanupInterruptedTasks(filepath.Join(workspaceRoot, ".whale", "team_engine.db"))

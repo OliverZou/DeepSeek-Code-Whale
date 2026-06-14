@@ -32,6 +32,8 @@ type Client struct {
 	// OnResume is called when the dashboard sends a resume command.
 	// masterTaskID is the task to execute.
 	OnResume func(masterTaskID string)
+	// OnCancel is called when the dashboard sends a cancel command.
+	OnCancel func(masterTaskID string)
 
 	pendingResume   string
 	pendingResumeMu sync.Mutex
@@ -182,6 +184,12 @@ func (c *Client) connectAndRead() {
 			if c.OnResume != nil {
 				if team_engine.DefaultTeamLog != nil { team_engine.DefaultTeamLog.CLIReceiveResume(body.MasterTaskID) }
 				c.OnResume(body.MasterTaskID)
+			}
+		}
+		if body.Command == "cancel_master" && body.MasterTaskID != "" {
+			log.Printf("dashboard: received cancel command for master task %s", body.MasterTaskID)
+			if c.OnCancel != nil {
+				c.OnCancel(body.MasterTaskID)
 			}
 		}
 	}
