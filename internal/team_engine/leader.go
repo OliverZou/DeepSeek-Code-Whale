@@ -213,10 +213,17 @@ func (l *Leader) decomposeInternal(goal string, workdir string, timeout time.Dur
 
 		tasks, err := ParsePlanTasks(output)
 		if err != nil {
-			// Fallback: when the decomposer subagent returns non-JSON output
-			// (e.g. natural-language summary), create a single generic task
-			// that preserves the AI's natural-language output as its
-			// description so no information is lost.
+			// Retry on parse failure — the model may have produced slightly
+			// malformed JSON that a second attempt will fix (e.g. missing
+			// code fences or trailing commas).
+			if attempt < maxRetries {
+				if l.loggers != nil {
+					l.loggers.Engine("leader.decompose: retrying (attempt %d parse failed: %v)", attempt+1, err)
+				}
+				if DefaultTeamLog != nil { DefaultTeamLog.LeaderRetry(attempt+1, err.Error()) }
+				continue
+			}
+			// Last attempt failed — fallback to a single generic task.
 			return []PlanTask{{
 				Title:           goal,
 				Description:     output,
