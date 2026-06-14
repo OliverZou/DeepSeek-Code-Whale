@@ -8,13 +8,14 @@ let state = { masterTasks: [], selMtId: null, subtasks: [], selStId: null, activ
 
 // ---------- Init ----------
 function init() {
-  if (typeof window.go === 'undefined') return;
+  if (typeof window.go === 'undefined') { document.getElementById('mt-count').textContent = 'FATAL: no Wails bridge'; return; }
   loadMasterTasks();
   window.runtime.EventsOn("update", (payload) => {
-    if (payload && payload.length !== undefined) {
+    if (payload && typeof payload.length === 'number') {
       state.masterTasks = payload;
       updateUI();
     } else {
+      document.getElementById('mt-count').textContent = 'update: bad payload type=' + typeof payload;
       loadMasterTasks();
     }
   });
@@ -68,6 +69,7 @@ function onTaskEvent(event) {
 async function loadMasterTasks() {
   try {
     const newTasks = await window.go.main.App.GetMasterTasks();
+    document.getElementById('mt-count').textContent = (newTasks ? newTasks.length : 0) + ' master tasks';
     state.masterTasks = newTasks;
     // Recover selMt reference from new data if previously selected.
     if (state.selMtId) {
