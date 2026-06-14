@@ -900,6 +900,11 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 
 		task.RetryCount = attempt + 1
 		task.VerifierFeedback = feedback
+		// Strip any previous verifier feedback blocks to prevent
+		// prompt bloat across retries (context grows unboundedly).
+		if idx := strings.Index(task.Description, "\n\n[VERIFIER FEEDBACK"); idx >= 0 {
+			task.Description = task.Description[:idx]
+		}
 		task.Description += fmt.Sprintf(
 			"\n\n[VERIFIER FEEDBACK - Attempt %d]\n%s",
 			task.RetryCount, feedback,
