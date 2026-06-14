@@ -728,6 +728,10 @@ func (m *MultiEngineManager) GetSubtasks(wsID, masterTaskID string) []SubtaskJSO
 		log.Printf("dashboard: list subtasks for %s/%s: %v", wsID, masterTaskID, err)
 		return []SubtaskJSON{}
 	}
+	// If the master task itself is gone, return empty.
+	if mt, _ := ws.Engine.GetMasterTask(masterTaskID); mt == nil {
+		return []SubtaskJSON{}
+	}
 
 	out := make([]SubtaskJSON, 0, 1+len(tasks))
 	// Prepend synthetic 任务规划 entry.
