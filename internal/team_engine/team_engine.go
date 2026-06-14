@@ -1170,6 +1170,9 @@ func (e *TeamEngine) PlanAndRun(ctx context.Context, goal, workdir, masterTaskID
 			cycleLimit = 1 // at minimum one cycle
 		}
 
+		var prevFindings *CycleFindingsSet
+		dryCount := 0
+
 	batchCycleLoop:
 		for cycle := 0; cycle < cycleLimit; cycle++ {
 			batch.CycleCount = cycle + 1
@@ -1179,6 +1182,24 @@ func (e *TeamEngine) PlanAndRun(ctx context.Context, goal, workdir, masterTaskID
 				e.saveCheckpoint(masterTaskID, completedBatches, completedBatchOutputs, batches)
 				return batches, fmt.Errorf("run batch %s cycle %d: %w", batch.ID, cycle, err)
 			}
+
+			// Loop-until-dry: collect findings, exit when no new ones for 2 cycles.
+			currentFindings := e.collectCycleFindings(batch, cycle+1)
+			if prevFindings != nil && !currentFindings.HasNewFindings(prevFindings) {
+				dryCount++
+				if dryCount >= 2 {
+					if e.Loggers != nil {
+						e.Loggers.Engine("batch %s: dry after %d cycles", batch.ID, cycle+1)
+					}
+					completedBatches[batch.ID] = true
+					completedBatchOutputs[batch.ID] = e.collectBatchOutputs(batch)
+					e.saveCheckpoint(masterTaskID, completedBatches, completedBatchOutputs, batches)
+					break batchCycleLoop
+				}
+			} else {
+				dryCount = 0
+			}
+			prevFindings = currentFindings
 
 			// Check for tasks needing re-decomposition (retries exhausted).
 			if reTasks := e.collectReDecomposeTasks(batch); len(reTasks) > 0 {
