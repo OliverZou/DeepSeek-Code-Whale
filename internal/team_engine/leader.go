@@ -121,7 +121,14 @@ OUTPUT FORMAT (pure JSON array, no markdown):
     "verifier_focus": "correctness",
     "max_cycles": 1
   }
-]`, goal)
+]
+
+CRITICAL — Before your final response, verify your JSON:
+- Every string is properly closed with double quotes.
+- Every object/array element is separated by commas.
+- No trailing commas after the last element.
+- The outermost structure is a JSON array [ ... ].
+- No text, explanation, or markdown outside the JSON array.`, goal)
 }
 
 // decomposeInternal runs the leader agent and returns both parsed tasks
