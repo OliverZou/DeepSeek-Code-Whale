@@ -26,9 +26,10 @@ type ProviderFactory func(model string, maxTokens int) (llm.Provider, error)
 type ProviderFactoryWithOptions func(ProviderRequest) (llm.Provider, error)
 
 type ProviderRequest struct {
-	Model     string
-	MaxTokens int
-	Effort    string
+	Model           string
+	MaxTokens       int
+	Effort          string
+	DisableThinking bool // force-disable thinking for this request
 }
 
 type ToolWorkspace struct {
@@ -147,12 +148,13 @@ func NewRunner(cfg RunnerConfig) *Runner {
 	}
 }
 
-func (r *Runner) newProvider(model string, maxTokens int, effort string) (llm.Provider, error) {
+func (r *Runner) newProvider(model string, maxTokens int, effort string, disableThinking bool) (llm.Provider, error) {
 	if r.providerFactoryWithOptions != nil {
 		return r.providerFactoryWithOptions(ProviderRequest{
-			Model:     strings.TrimSpace(model),
-			MaxTokens: maxTokens,
-			Effort:    strings.TrimSpace(effort),
+			Model:           strings.TrimSpace(model),
+			MaxTokens:       maxTokens,
+			Effort:          strings.TrimSpace(effort),
+			DisableThinking: disableThinking,
 		})
 	}
 	if r.providerFactory == nil {

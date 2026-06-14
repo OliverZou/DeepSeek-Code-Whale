@@ -100,7 +100,7 @@ func (r *Runner) hookModelExecutor(defaultModel, defaultEffort, hookKind string)
 		if err != nil {
 			return agent.HookResult{Decision: agent.HookDecisionError, Message: err.Error()}
 		}
-		provider, err := r.newProvider(model, 0, defaultEffort)
+		provider, err := r.newProvider(model, 0, defaultEffort, false)
 		if err != nil {
 			return agent.HookResult{Decision: agent.HookDecisionError, Message: err.Error()}
 		}

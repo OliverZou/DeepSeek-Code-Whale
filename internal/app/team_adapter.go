@@ -23,6 +23,10 @@ func teamEngineSpawnAdapter(runner *tasks.Runner) team_engine.SpawnFunc {
 			MaxToolIters: req.MaxIters,
 			MaxToolCalls: req.MaxCalls,
 			MaxTokens:    req.MaxTokens,
+			// Disable thinking for non-reasoning models (flash, etc.).
+			// Thinking tokens consume the completion budget, leaving
+			// almost nothing for actual output on flash models.
+			DisableThinking: !strings.Contains(strings.ToLower(req.Model), "v4-pro"),
 		}
 		if len(req.Tools) > 0 {
 			tasksReq.Tools = req.Tools

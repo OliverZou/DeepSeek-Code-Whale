@@ -29,6 +29,7 @@ type SpawnSubagentRequest struct {
 	MaxTokens         int             `json:"max_tokens,omitempty"`
 	Tools             []string        `json:"tools,omitempty"`
 	OutputSchema      map[string]any  `json:"output_schema,omitempty"`
+	DisableThinking   bool            `json:"-"` // force-disable thinking (for flash models)
 	ParentToolCallID  string          `json:"-"`
 	WorkflowRunID     string          `json:"-"`
 	WorkflowName      string          `json:"-"`
@@ -240,7 +241,7 @@ func (r *Runner) SpawnSubagentWithProgress(ctx context.Context, req SpawnSubagen
 	if req.MaxTokens > 0 {
 		maxTokens = req.MaxTokens
 	}
-	provider, err := r.newProvider(model, maxTokens, cfg.Effort)
+	provider, err := r.newProvider(model, maxTokens, cfg.Effort, req.DisableThinking)
 	if err != nil {
 		return SpawnSubagentResponse{}, err
 	}

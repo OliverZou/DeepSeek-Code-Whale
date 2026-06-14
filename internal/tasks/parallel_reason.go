@@ -131,7 +131,7 @@ waitLoop:
 }
 
 func (r *Runner) runOneReasoningQuery(ctx context.Context, model string, maxTokens int, prompt string) (string, llm.Usage, error) {
-	provider, err := r.newProvider(model, maxTokens, "")
+	provider, err := r.newProvider(model, maxTokens, "", false)
 	if err != nil {
 		return "", llm.Usage{}, err
 	}

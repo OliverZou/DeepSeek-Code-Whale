@@ -64,6 +64,10 @@ func initAppRuntime(cfg Config, sessionInit appSessionInit, toolInit appToolInit
 			model = defaults.DefaultModel
 		}
 		reqEffort := normalizeEffort(core.FirstNonEmpty(strings.TrimSpace(req.Effort), effort))
+		thinking := thinking
+		if req.DisableThinking {
+			thinking = false
+		}
 		return newDeepSeekProvider(providerOptions{
 			APIKey:                   apiKey,
 			BaseURL:                  cfg.APIBaseURL,
