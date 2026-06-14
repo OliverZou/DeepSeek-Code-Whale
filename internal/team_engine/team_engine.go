@@ -1120,8 +1120,10 @@ func (e *TeamEngine) PlanAndRun(ctx context.Context, goal, workdir, masterTaskID
 				return nil, fmt.Errorf("create subtask %s: %w", pt.Title, err)
 			}
 			task.BatchID = bid
+			task.UseDW = pt.UseDW
 			e.DB.UpdateTask(task.ID, map[string]interface{}{
 				"batch_id":       bid,
+					"use_dw":         pt.UseDW,
 				"master_task_id": masterTaskID,
 			})
 			batch.Tasks = append(batch.Tasks, task)

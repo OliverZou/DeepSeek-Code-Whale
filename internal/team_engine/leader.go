@@ -119,6 +119,11 @@ RULES:
 
 10. Use "max_cycles" per-batch to limit retry/exploration loops (default 1, max 10).
 
+11. Set "use_dw": true for tasks that benefit from multi-perspective verification:
+    - Security-critical code, correctness-critical logic, or multi-faceted reviews
+    - When verifier_focus includes multiple dimensions (security,correctness,completeness)
+    - DEFAULT: false (single verifier is sufficient for simple/formatting/minor tasks)
+
 OUTPUT FORMAT (pure JSON array, no markdown):
 [
   {
@@ -130,6 +135,7 @@ OUTPUT FORMAT (pure JSON array, no markdown):
     "depends_on_batch": [],
     "depends_on_index": -1,
     "verifier_focus": "correctness",
+    "use_dw": false,
     "max_cycles": 1
   }
 ]

@@ -165,6 +165,7 @@ type PlanTask struct {
 	DependsOnIndices []int    `json:"depends_on_indices,omitempty"`
 	Profile          string   `json:"profile,omitempty"`
 	VerifierFocus    string   `json:"verifier_focus,omitempty"`
+	UseDW            bool     `json:"use_dw"`                    // enable multi-verifier Dynamic Workflow
 	Concurrency      int      `json:"concurrency,omitempty"`   // per-batch override
 	MaxCycles        int      `json:"max_cycles,omitempty"`     // per-batch override
 }
