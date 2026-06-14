@@ -189,6 +189,7 @@ function renderSidebar() {
     };
     el.oncontextmenu = (e) => {
       e.preventDefault();
+      if (!el.dataset.id) return;
       showMasterTaskContextMenu(e.clientX, e.clientY, el.dataset.id, el.dataset.wsid, el.dataset.goal);
     };
   });
