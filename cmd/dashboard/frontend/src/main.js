@@ -4,7 +4,7 @@
 
 const $ = (s) => document.querySelector(s);
 
-let state = { masterTasks: [], selMtId: null, subtasks: [], selStId: null, activeTab: 'dialogue' };
+let state = { masterTasks: [], selMtId: null, subtasks: [], selStId: null, activeTab: 'dialogue', unreadTasks: new Set() };
 
 // ---------- Init ----------
 function init() {
@@ -31,19 +31,25 @@ function onTaskEvent(event) {
 
   // EventLeaderLog: leader 写入了新对话，刷新对话视图。
   if (event.type === 4) { // EventLeaderLog = 4
+    state.unreadTasks.add('__leader__');
     if (state.selStId === '__leader__') {
       const mt = getSelMt();
       if (mt) loadDialogue(mt.workspace_id, '__leader__');
     }
+    renderSubtasks();
     return;
   }
 
   // EventAgentLog: worker/verifier 写入了新对话，刷新匹配的子任务对话。
   if (event.type === 5) { // EventAgentLog = 5
-    if (event.task_id && state.selStId === event.task_id) {
-      const mt = getSelMt();
-      if (mt) loadDialogue(mt.workspace_id, event.task_id);
+    if (event.task_id) {
+      state.unreadTasks.add(event.task_id);
+      if (state.selStId === event.task_id) {
+        const mt = getSelMt();
+        if (mt) loadDialogue(mt.workspace_id, event.task_id);
+      }
     }
+    renderSubtasks();
     return;
   }
 
@@ -250,8 +256,9 @@ function renderSubtasks() {
 	
     html += `<div class="st${active}${leader}" data-id="${st.id}">
       <div class="st-title" title="${esc(st.title)}">
-        <span class="state-dot ${stateDot}"></span>
+        <span class="state-dot ${stateDot}${state.unreadTasks.has(st.id) ? " pulse" : ""}"></span>
         ${icon} ${esc(st.title)}
+	        ${state.unreadTasks.has(st.id) ? "<span class="unread-badge">●</span>" : ""}
       </div>
       <div class="st-meta">
         <span>${esc(st.role)}</span>
@@ -277,6 +284,7 @@ function selectSubtask(id) {
   const wsID = mt.workspace_id;
   const mtID = mt.id;
 
+  state.unreadTasks.delete(id);
   if (id === '__leader__') {
     // TeamLeader: show tab bar + load plan + flowchart
     $('#tab-bar').style.display = 'flex';
