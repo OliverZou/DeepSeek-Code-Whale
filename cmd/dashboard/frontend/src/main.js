@@ -258,7 +258,7 @@ function renderSubtasks() {
       <div class="st-title" title="${esc(st.title)}">
         <span class="state-dot ${stateDot}${state.unreadTasks.has(st.id) ? " pulse" : ""}"></span>
         ${icon} ${esc(st.title)}
-	        ${state.unreadTasks.has(st.id) ? "<span class="unread-badge">●</span>" : ""}
+	        ${state.unreadTasks.has(st.id) ? '<span class="unread-badge">●</span>' : ''}
       </div>
       <div class="st-meta">
         <span>${esc(st.role)}</span>
