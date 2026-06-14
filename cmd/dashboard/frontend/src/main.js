@@ -269,10 +269,6 @@ function renderSubtasks() {
       : st.state === 'suspended' ? 'suspended'
       : st.state === 'failed' ? 'failed' : 'pending';
     const icon = st.id === '__leader__' ? '📋' : '🎭';
-    // 停止按钮：只在 agent 真正干活时显示（producing/verifying）
-    const canStop = st.id !== '__leader__'
-      && (st.state === 'producing' || st.state === 'verifying');
-    // 恢复按钮：只对 suspended 的任务显示
 
 	
     html += `<div class="st${active}${leader}" data-id="${st.id}">
@@ -283,35 +279,12 @@ function renderSubtasks() {
       <div class="st-meta">
         <span>${esc(st.role)}</span>
         <span>${st.progress}%</span>
-        ${canStop ? `<button class="stop-btn-sm" data-taskid="${st.id}">⏹</button>` : ''}
-      </div>
+        </div>
     </div>`;
   }
   list.innerHTML = html;
   list.querySelectorAll('.st').forEach(el => {
-    el.onclick = (e) => { if (!e.target.closest('.stop-btn-sm')) selectSubtask(el.dataset.id); };
-  });
-  // Bind stop buttons for individual subtasks.
-  list.querySelectorAll('.stop-btn-sm').forEach(btn => {
-    btn.onclick = async (e) => {
-      e.stopPropagation();
-      if (!wsid) return;
-      const taskid = btn.dataset.taskid;
-      btn.textContent = '⏳';
-      btn.disabled = true;
-      const err = await window.go.main.App.CancelSubtask(wsid, taskid);
-      if (err) {
-        btn.textContent = '⚠️';
-        console.error('cancel subtask:', err);
-      } else {
-        btn.textContent = '✅';
-      }
-      // Refresh after a short delay.
-      setTimeout(() => {
-        const mt = getSelMt();
-        if (mt) loadSubtasks(mt.workspace_id, mt.id);
-      }, 1000);
-    };
+    el.onclick = (e) => selectSubtask(el.dataset.id);
   });
 }
 
