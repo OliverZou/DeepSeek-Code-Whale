@@ -171,9 +171,12 @@ body {
 
 /* dialogue view */
 #dialogue-view {
-  flex: 1; overflow-y: auto; padding: 16px;
+  flex: 1; min-height: 0; overflow-y: auto; padding: 16px;
   display: flex; flex-direction: column; gap: 12px;
 }
+#dialogue-view::-webkit-scrollbar { width: 8px; }
+#dialogue-view::-webkit-scrollbar-thumb { background: #4a4f5a; border-radius: 4px; }
+#dialogue-view::-webkit-scrollbar-thumb:hover { background: #6e7681; }
 #dialogue-view .msg {
   max-width: 90%;
   padding: 10px 14px;
@@ -238,8 +241,8 @@ body {
 /* scrollbar */
 ::-webkit-scrollbar { width: 6px; }
 ::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
-::-webkit-scrollbar-thumb:hover { background: var(--muted); }
+::-webkit-scrollbar-thumb { background: #4a4f5a; border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: #6e7681; }
 
 /* unread pulse */
 .state-dot.pulse {
