@@ -58,6 +58,11 @@ RULES:
 1. Break the goal into 1-12 subtasks
 2. Each subtask should be self-contained and produce a clear deliverable
 3. Order subtasks by dependency (earlier subtasks first)
+4. SINGLE-PASS CONSTRAINT: Every subtask MUST be small enough to complete in
+   ONE pass.  If a task would need multiple write calls or produce more than
+   a few hundred lines, SPLIT it into smaller sequential subtasks.
+   Example: "write complete PRD (8 sections)" → split into "write PRD §§1-3",
+   then "write PRD §§4-6", then "write PRD §§7-8".
 
 4. Assign an appropriate ROLE to each subtask:
    - "developer"   — writing code
