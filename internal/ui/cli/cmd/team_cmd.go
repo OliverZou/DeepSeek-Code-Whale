@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -105,7 +106,7 @@ Subcommands:
 			taskID := args[0]
 			fmt.Printf("🚀 Running task %s...\n", taskID)
 
-			success, err := eng.RunTask(taskID)
+			success, err := eng.RunTask(context.Background(), taskID)
 			if err != nil {
 				return fmt.Errorf("run task: %w", err)
 			}

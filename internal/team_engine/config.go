@@ -48,19 +48,19 @@ var Defaults = Config{
 	Routing: RoutingConfig{
 		DefaultProfile: "default",
 		RoleMap: map[string]RoleEntry{
-			"planner":     {Profile: "read_only", Timeout: 180, Model: "deepseek-v4-flash"},  // 3 min — plan decomposition
+			"planner":     {Profile: "read_only", Timeout: 180, Model: "deepseek-v4-pro"},  // 3 min — plan decomposition
 			"developer":   {Profile: "default", Timeout: 1800, Model: "deepseek-v4-pro"},     // 30 min — coding
 			"tester":      {Profile: "test", Timeout: 1200, Model: "deepseek-v4-flash"},      // 20 min
 			"reviewer":    {Profile: "read_only", Timeout: 900, Model: "deepseek-v4-flash"},  // 15 min
-			"researcher":  {Profile: "research", Timeout: 900, Model: "deepseek-v4-flash"},
-			"writer":      {Profile: "content", Timeout: 900, Model: "deepseek-v4-flash"},
+			"researcher":  {Profile: "research", Timeout: 1800, Model: "deepseek-v4-flash"},  // 30 min — web search + deep analysis
+			"writer":      {Profile: "content", Timeout: 1800, Model: "deepseek-v4-flash"},   // 30 min — long-form writing
 			"formatter":   {Profile: "content", Timeout: 900, Model: "deepseek-v4-flash"},
-			"evaluator":   {Profile: "read_only", Timeout: 600, Model: "deepseek-v4-flash"},
-			"synthesizer": {Profile: "read_only", Timeout: 600, Model: "deepseek-v4-flash"},
+			"evaluator":   {Profile: "read_only", Timeout: 900, Model: "deepseek-v4-flash"},  // 15 min
+			"synthesizer": {Profile: "read_only", Timeout: 1200, Model: "deepseek-v4-flash"}, // 20 min — merging results
 		},
 		VerifierTools:        "verify",
 		VerifierTimeoutSec:   300,  // 5 min — verification is lightweight
-		DecomposerTimeoutSec: 180,  // 3 min — plan decomposition
+		DecomposerTimeoutSec: 300,  // 5 min — plan decomposition (v4-pro needs ~90s, v4-flash ~30s)
 	},
 	Batch: BatchConfig{
 		DefaultConcurrency: 0,  // unlimited

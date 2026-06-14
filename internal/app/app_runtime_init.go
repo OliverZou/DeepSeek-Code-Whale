@@ -139,6 +139,11 @@ func initAppRuntime(cfg Config, sessionInit appSessionInit, toolInit appToolInit
 		ApprovalFunc:               approvalFunc,
 	})
 	taskTools := tasks.NewTools(taskRunner)
+	// Wire native subagent adapter as the main toolset's Team Engine spawner.
+	// Without this, team_plan falls back to ShellSubagentSpawner which calls
+	// `whale exec` as a subprocess and cannot pass max_tokens, producing
+	// empty output for reasoning models.
+	toolInit.toolset.SetTeamEngineSpawnFunc(teamEngineSpawnAdapter(taskRunner))
 	goalTools := newGoalTools(cfg.DataDir, sessionInit.sessionsDir, parentSessionIDFunc)
 	var workflowManager *workflow.RunManager
 	var workflowRunner *workflow.ScriptRunner

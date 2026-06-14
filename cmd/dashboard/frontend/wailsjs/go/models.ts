@@ -38,6 +38,9 @@ export namespace dashboard {
 	    created_at: string;
 	    task_count: number;
 	    done_count: number;
+	    active_count: number;
+	    suspended_count: number;
+	    workspace_online: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new MasterTaskJSON(source);
@@ -54,6 +57,9 @@ export namespace dashboard {
 	        this.created_at = source["created_at"];
 	        this.task_count = source["task_count"];
 	        this.done_count = source["done_count"];
+	        this.active_count = source["active_count"];
+	        this.suspended_count = source["suspended_count"];
+	        this.workspace_online = source["workspace_online"];
 	    }
 	}
 	export class SubtaskJSON {

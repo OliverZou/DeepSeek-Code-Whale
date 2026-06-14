@@ -102,6 +102,11 @@ func (e *TeamEngine) SetTeam(tc *TeamConfig) {
 	e.team = tc
 }
 
+// Team returns the current team configuration, or nil if none is set.
+func (e *TeamEngine) Team() *TeamConfig {
+	return e.team
+}
+
 // New creates a TeamEngine with the given dependencies.
 //
 // Parameters:
@@ -177,6 +182,11 @@ func (e *TeamEngine) Close() error {
 	}
 
 	return e.DB.Close()
+}
+
+// FireEvent broadcasts an event to all subscribers.
+func (e *TeamEngine) FireEvent(event TaskEvent) {
+	e.fireEvent(event)
 }
 
 // fireEvent 向所有订阅者广播事件。
@@ -413,9 +423,10 @@ func (e *TeamEngine) ResumeMasterTask(ctx context.Context, masterTaskID, goal, w
 		return nil, fmt.Errorf("list subtasks: %w", err)
 	}
 	for _, t := range allTasks {
-		if t.State == TaskStateSuspended {
-			_ = e.DB.TransitionState(t.ID, TaskStatePending, "resumed", "")
-			_ = e.Whiteboard.WriteStatus(t.ID, string(TaskStatePending))
+		newState := ResetForResume(t.State)
+		if newState != t.State {
+			_ = e.DB.UpdateTask(t.ID, map[string]interface{}{"state": string(newState)})
+			_ = e.Whiteboard.WriteStatus(t.ID, string(newState))
 			_ = e.Whiteboard.AppendOutput(t.ID, "\n[RESUMED]\n")
 		}
 	}
@@ -444,7 +455,9 @@ func (e *TeamEngine) ResumeMasterTask(ctx context.Context, masterTaskID, goal, w
 		batches = append(batches, batchMap[bid])
 	}
 
-	leader := NewLeader(e.Runner)
+	leader := NewLeader(e.Runner).WithLoggers(e.Loggers).WithTeam(e.team).WithOnLog(func() {
+		e.fireEvent(TaskEvent{Type: EventLeaderLog})
+	})
 	decomposerTimeout := time.Duration(e.Router.ResolveDecomposerTimeout()) * time.Second
 	leaderModel := e.Router.ResolveModel("planner")
 
@@ -465,7 +478,8 @@ func (e *TeamEngine) ResumeMasterTask(ctx context.Context, masterTaskID, goal, w
 		}
 		for cycle := 0; cycle < cycleLimit; cycle++ {
 			batch.CycleCount = cycle + 1
-			if err := e.RunBatch(batch); err != nil {
+			if err := e.RunBatch(ctx, batch); err != nil {
+				e.saveCheckpoint(masterTaskID, completedBatches, cp.CompletedOutputs, batches)
 				return batches, fmt.Errorf("run batch %s cycle %d: %w", batch.ID, cycle, err)
 			}
 			if e.Loggers != nil {
@@ -478,10 +492,12 @@ func (e *TeamEngine) ResumeMasterTask(ctx context.Context, masterTaskID, goal, w
 			review, reviewOutput, err := leader.ReviewCycleFull(goal, report, workdir, decomposerTimeout, leaderModel)
 			if err != nil {
 				completedBatches[batch.ID] = true
+				e.saveCheckpoint(masterTaskID, completedBatches, cp.CompletedOutputs, batches)
 				break
 			}
 			if e.Loggers != nil && reviewOutput != "" {
 				e.Loggers.LogLeader("review", fmt.Sprintf("Batch: %s\nDecision: %s", batch.LabelOrID(), review.Decision), reviewOutput, decomposerTimeout, nil)
+				e.fireEvent(TaskEvent{Type: EventLeaderLog})
 			}
 			switch review.Decision {
 			case CycleAccept:
@@ -523,6 +539,7 @@ func (e *TeamEngine) ResumeMasterTask(ctx context.Context, masterTaskID, goal, w
 	if e.Loggers != nil {
 		summary := e.buildExecutionSummary(batches, goal, workdir)
 		e.Loggers.LogLeader("summary", goal, summary, 0, nil)
+		e.fireEvent(TaskEvent{Type: EventLeaderLog})
 	}
 	e.saveCheckpoint(masterTaskID, completedBatches, cp.CompletedOutputs, batches)
 	return batches, nil
@@ -660,33 +677,37 @@ func (e *TeamEngine) AssignTask(taskID string) error {
 //  8. Retry budget exhausted → failed
 //
 // Returns true if the task reached done, false otherwise.
-func (e *TeamEngine) RunTask(taskID string) (bool, error) {
+func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
+	// Phase 0: Initial state check and assignment (under lock).
 	e.mu.Lock()
-	defer e.mu.Unlock()
-
 	task, err := e.DB.GetTask(taskID)
 	if err != nil {
+		e.mu.Unlock()
 		return false, fmt.Errorf("get task: %w", err)
 	}
 	if task == nil {
+		e.mu.Unlock()
 		return false, fmt.Errorf("task %q not found", taskID)
 	}
 
 	// Guard: only start from PENDING or ASSIGNED.
 	if task.State != TaskStatePending && task.State != TaskStateAssigned {
+		e.mu.Unlock()
 		return false, fmt.Errorf("task %q is in state %s; can only run from pending or assigned", taskID, task.State)
 	}
 
 	// Step 1: Assign.
 	if task.State == TaskStatePending {
 		if err := e.AssignTask(taskID); err != nil {
+			e.mu.Unlock()
 			return false, fmt.Errorf("assign task: %w", err)
 		}
 		task.State = TaskStateAssigned
 	}
+	e.mu.Unlock()
 
 	// Main retry loop.
-	for task.RetryCount < task.MaxRetries {
+	for attempt := 0; attempt < task.MaxRetries; attempt++ {
 		// ---- Phase 1: Producing ----------------------------------------
 		// Build the full prompt including inbox messages + agent memory.
 		prompt := task.Description
@@ -701,10 +722,13 @@ func (e *TeamEngine) RunTask(taskID string) (bool, error) {
 			return false, fmt.Errorf("init whiteboard: %w", err)
 		}
 
+		// State: assigned → producing (under lock).
+		e.mu.Lock()
 		if err := e.DB.TransitionState(taskID, TaskStateProducing, "", ""); err != nil {
+			e.mu.Unlock()
 			return false, fmt.Errorf("transition to producing: %w", err)
 		}
-		task.State = TaskStateProducing
+		e.mu.Unlock()
 
 		workdir := task.Workdir
 		if workdir == "" {
@@ -739,7 +763,11 @@ func (e *TeamEngine) RunTask(taskID string) (bool, error) {
 			}
 		}
 
-		result := e.Runner.Run(prompt, workdir, toolsStr, e.timeout, liveOutput)
+		// Resolve per-role timeout from config instead of using the
+		// hardcoded default.  Research/deep-analysis roles need more
+		// time (900-1800s) than the default 300s.
+		taskTimeout := time.Duration(e.Router.ResolveTimeout(task.Role, false)) * time.Second
+		result := e.Runner.RunWithContext(ctx, prompt, workdir, toolsStr, taskTimeout, liveOutput)
 
 		if !result.Success {
 			errorContent := fmt.Sprintf("\nERROR (exit %d):\n%s", result.ExitCode, result.Stderr)
@@ -757,6 +785,7 @@ func (e *TeamEngine) RunTask(taskID string) (bool, error) {
 				return false, fmt.Errorf("write worker output: %w", err)
 			}
 		}
+		if DefaultTeamLog != nil { DefaultTeamLog.WorkerDone(task.ID, result.DurationSeconds, result.ExitCode, len(result.Stdout), result.Success) }
 
 		// Coding Harness: collect git diff after worker completes.
 		if hasWorktree {
@@ -769,16 +798,27 @@ func (e *TeamEngine) RunTask(taskID string) (bool, error) {
 			_ = e.Whiteboard.CopyArtifact(task.ID, task.ID[:8]+".diff", diffContent)
 		}
 
+		// Log worker output for dashboard dialogue.
+		if e.Loggers != nil {
+			e.Loggers.LogAgent("worker", taskID, attempt+1, prompt, result.Stdout, result.ExitCode, time.Duration(result.DurationSeconds)*time.Second, nil)
+			e.fireEvent(TaskEvent{Type: EventAgentLog, TaskID: taskID})
+		}
+
+		// State: producing → produced (under lock).
+		e.mu.Lock()
 		if err := e.DB.TransitionState(taskID, TaskStateProduced, "", ""); err != nil {
+			e.mu.Unlock()
 			return false, fmt.Errorf("transition to produced: %w", err)
 		}
-		task.State = TaskStateProduced
+		e.mu.Unlock()
 
 		// ---- Phase 2: Verifying ----------------------------------------
+		e.mu.Lock()
 		if err := e.DB.TransitionState(taskID, TaskStateVerifying, "", ""); err != nil {
+			e.mu.Unlock()
 			return false, fmt.Errorf("transition to verifying: %w", err)
 		}
-		task.State = TaskStateVerifying
+		e.mu.Unlock()
 
 		v := NewVerifier(e.Whiteboard, e.Runner, 0)
 		passed, feedback, err := v.Verify(task)
@@ -797,23 +837,50 @@ func (e *TeamEngine) RunTask(taskID string) (bool, error) {
 			}
 		}
 
+		// Log verifier output for dashboard dialogue.
+		if e.Loggers != nil {
+			verdict := "PASS"
+			if !passed {
+				verdict = "FAIL"
+			}
+			verifierPrompt := fmt.Sprintf("Verify output of task %q (role: %s)", task.Title, task.Role)
+			e.Loggers.LogAgent("verifier", taskID, attempt+1, verifierPrompt, fmt.Sprintf("[%s] %s", verdict, feedback), 0, 0, nil)
+			e.fireEvent(TaskEvent{Type: EventAgentLog, TaskID: taskID})
+		}
+
 		if passed {
+			e.mu.Lock()
 			if err := e.DB.TransitionState(taskID, TaskStateVerified, "", ""); err != nil {
+				e.mu.Unlock()
 				return false, fmt.Errorf("transition to verified: %w", err)
 			}
 			if err := e.DB.TransitionState(taskID, TaskStateDone, "", ""); err != nil {
+				e.mu.Unlock()
 				return false, fmt.Errorf("transition to done: %w", err)
 			}
 			if err := e.DB.UpdateTask(taskID, map[string]interface{}{
-				"retry_count": task.RetryCount,
+				"retry_count": attempt,
 			}); err != nil {
+				e.mu.Unlock()
 				return false, fmt.Errorf("update retry count: %w", err)
 			}
+			e.mu.Unlock()
 			return true, nil
 		}
 
 		// Verification failed — prepare retry.
-		task.RetryCount++
+		e.mu.Lock()
+		task, err = e.DB.GetTask(taskID)
+		if err != nil {
+			e.mu.Unlock()
+			return false, fmt.Errorf("re-get task for retry: %w", err)
+		}
+		if task == nil {
+			e.mu.Unlock()
+			return false, fmt.Errorf("task %q disappeared", taskID)
+		}
+
+		task.RetryCount = attempt + 1
 		task.VerifierFeedback = feedback
 		task.Description += fmt.Sprintf(
 			"\n\n[VERIFIER FEEDBACK - Attempt %d]\n%s",
@@ -825,17 +892,26 @@ func (e *TeamEngine) RunTask(taskID string) (bool, error) {
 			"description":        task.Description,
 			"verifier_feedback":  feedback,
 		}); err != nil {
+			e.mu.Unlock()
 			return false, fmt.Errorf("update task for retry: %w", err)
 		}
 
 		if task.RetryCount >= task.MaxRetries {
 			if err := e.DB.TransitionState(taskID, TaskStateFailed, "max retries exceeded", ""); err != nil {
+				e.mu.Unlock()
 				return false, fmt.Errorf("transition to failed (retries exhausted): %w", err)
 			}
+			e.mu.Unlock()
 			return false, nil
 		}
 
 		// Reset state back to assigned for retry.
+		if err := e.DB.TransitionState(taskID, TaskStateAssigned, "", ""); err != nil {
+			e.mu.Unlock()
+			return false, fmt.Errorf("transition to assigned for retry: %w", err)
+		}
+		e.mu.Unlock()
+
 		task.State = TaskStateAssigned
 	}
 
@@ -858,7 +934,9 @@ func (e *TeamEngine) RunTask(taskID string) (bool, error) {
 //                  → gate: all PASS → next batch, any FAIL → abort
 //              → write board.md + deliverable.md
 func (e *TeamEngine) PlanAndRun(ctx context.Context, goal, workdir, masterTaskID string) ([]*Batch, error) {
-	leader := NewLeader(e.Runner)
+	leader := NewLeader(e.Runner).WithLoggers(e.Loggers).WithTeam(e.team).WithOnLog(func() {
+		e.fireEvent(TaskEvent{Type: EventLeaderLog})
+	})
 	decomposerTimeout := time.Duration(e.Router.ResolveDecomposerTimeout()) * time.Second
 	leaderModel := e.Router.ResolveModel("planner")
 	planTasks, err := leader.Decompose(goal, workdir, decomposerTimeout, leaderModel)
@@ -935,7 +1013,10 @@ func (e *TeamEngine) PlanAndRun(ctx context.Context, goal, workdir, masterTaskID
 				return nil, fmt.Errorf("create subtask %s: %w", pt.Title, err)
 			}
 			task.BatchID = bid
-			e.DB.UpdateTask(task.ID, map[string]interface{}{"batch_id": bid})
+			e.DB.UpdateTask(task.ID, map[string]interface{}{
+				"batch_id":       bid,
+				"master_task_id": masterTaskID,
+			})
 			batch.Tasks = append(batch.Tasks, task)
 		}
 		batches = append(batches, batch)
@@ -943,7 +1024,9 @@ func (e *TeamEngine) PlanAndRun(ctx context.Context, goal, workdir, masterTaskID
 
 	// Step 3: Execute batches in order with dependency gating + CycleReport
 	//         + cross-stage artifact passing (场景4).
-	leader = NewLeader(e.Runner)
+	leader = NewLeader(e.Runner).WithLoggers(e.Loggers).WithTeam(e.team).WithOnLog(func() {
+		e.fireEvent(TaskEvent{Type: EventLeaderLog})
+	})
 	completedBatches := make(map[string]bool)
 	// Track completed batch outputs for cross-stage injection.
 	completedBatchOutputs := make(map[string]string)
@@ -959,7 +1042,16 @@ func (e *TeamEngine) PlanAndRun(ctx context.Context, goal, workdir, masterTaskID
 		}
 		if !allDepsPassed {
 			batch.Status = BatchStatusFailed
+			e.saveCheckpoint(masterTaskID, completedBatches, completedBatchOutputs, batches)
 			return batches, fmt.Errorf("batch %s: dependency %v not satisfied", batch.ID, batch.DependsOn)
+		}
+
+		// Check for cancellation between batches.
+		select {
+		case <-ctx.Done():
+			e.saveCheckpoint(masterTaskID, completedBatches, completedBatchOutputs, batches)
+			return batches, fmt.Errorf("cancelled: %w", ctx.Err())
+		default:
 		}
 
 		// Run this batch with cycle support.
@@ -973,7 +1065,8 @@ func (e *TeamEngine) PlanAndRun(ctx context.Context, goal, workdir, masterTaskID
 			batch.CycleCount = cycle + 1
 
 			// Execute all tasks in this batch (parallel if concurrency > 0).
-			if err := e.RunBatch(batch); err != nil {
+			if err := e.RunBatch(ctx, batch); err != nil {
+				e.saveCheckpoint(masterTaskID, completedBatches, completedBatchOutputs, batches)
 				return batches, fmt.Errorf("run batch %s cycle %d: %w", batch.ID, cycle, err)
 			}
 
@@ -988,6 +1081,7 @@ func (e *TeamEngine) PlanAndRun(ctx context.Context, goal, workdir, masterTaskID
 			if err != nil {
 				// If review fails, accept by default (don't block pipeline).
 				completedBatches[batch.ID] = true
+				e.saveCheckpoint(masterTaskID, completedBatches, completedBatchOutputs, batches)
 				break batchCycleLoop
 			}
 
@@ -998,6 +1092,7 @@ func (e *TeamEngine) PlanAndRun(ctx context.Context, goal, workdir, masterTaskID
 				// Collect outputs from completed batch tasks so the
 				// next batch can reference them.
 				completedBatchOutputs[batch.ID] = e.collectBatchOutputs(batch)
+				e.saveCheckpoint(masterTaskID, completedBatches, completedBatchOutputs, batches)
 				if depArtifacts := e.buildStageArtifactContext(completedBatchOutputs, batch.DependsOn); depArtifacts != "" {
 					// Inject dependency artifacts into this batch's tasks.
 					for _, t := range batch.Tasks {
@@ -1008,13 +1103,26 @@ func (e *TeamEngine) PlanAndRun(ctx context.Context, goal, workdir, masterTaskID
 				break batchCycleLoop
 
 			case CycleReject:
-				// Increment retries on all tasks in the batch and re-run.
+				// Leader rejected: reset all tasks (including failed ones) for retry.
 				batch.Status = BatchStatusPending
 				for _, t := range batch.Tasks {
 					e.SendFeedback(t.ID, review.Feedback)
-					// Reset state to allow retry.
-					if !t.State.IsTerminal() {
-						e.DB.TransitionState(t.ID, TaskStateAssigned, "", "")
+					// Log leader feedback into task dialogue for dashboard visibility.
+					if e.Loggers != nil {
+						e.Loggers.LogTaskFeedback(t.ID, "leader", t.RetryCount+1, review.Feedback)
+						e.fireEvent(TaskEvent{Type: EventAgentLog, TaskID: t.ID})
+					}
+					if t.State.IsTerminal() {
+						// Reset failed/done tasks: clear retries, bump max, re-assign.
+						_ = e.DB.UpdateTask(t.ID, map[string]interface{}{
+							"retry_count":       0,
+							"max_retries":       t.MaxRetries + 3,
+							"description":       t.Description + fmt.Sprintf("\n\n[Leader Feedback - Retry]\n%s", review.Feedback),
+							"verifier_feedback": "",
+						})
+						_ = e.DB.TransitionState(t.ID, TaskStateAssigned, "leader retry", "")
+					} else {
+						_ = e.DB.TransitionState(t.ID, TaskStateAssigned, "", "")
 					}
 				}
 				// Continue the cycle loop to retry.
@@ -1025,7 +1133,34 @@ func (e *TeamEngine) PlanAndRun(ctx context.Context, goal, workdir, masterTaskID
 				e.handleEscalation(batch, review)
 				// After escalation, continue based on user decision.
 				completedBatches[batch.ID] = true
+				e.saveCheckpoint(masterTaskID, completedBatches, completedBatchOutputs, batches)
 				break batchCycleLoop
+			}
+		}
+
+		// All cycles exhausted without acceptance — leader makes final call.
+		if !completedBatches[batch.ID] {
+			report := e.buildCycleReport(batch, cycleLimit)
+			review, err := leader.ReviewCycle(goal, report, workdir, decomposerTimeout, leaderModel)
+			if err != nil {
+				// Leader unavailable: accept whatever we have (don't block).
+				completedBatches[batch.ID] = true
+				e.saveCheckpoint(masterTaskID, completedBatches, completedBatchOutputs, batches)
+			} else {
+				switch review.Decision {
+				case CycleAccept:
+					completedBatches[batch.ID] = true
+					completedBatchOutputs[batch.ID] = e.collectBatchOutputs(batch)
+				default:
+					// Leader still not satisfied — mark batch as failed but continue pipeline.
+					batch.Status = BatchStatusFailed
+					completedBatches[batch.ID] = true
+				}
+				e.saveCheckpoint(masterTaskID, completedBatches, completedBatchOutputs, batches)
+				if e.Loggers != nil {
+					e.Loggers.LogLeader("review", fmt.Sprintf("Batch: %s\nDecision: %s (final)", batch.LabelOrID(), review.Decision), fmt.Sprintf("Final review: %s\nFeedback: %s", review.Decision, review.Feedback), decomposerTimeout, nil)
+					e.fireEvent(TaskEvent{Type: EventLeaderLog})
+				}
 			}
 		}
 	}
@@ -1153,8 +1288,9 @@ func (e *TeamEngine) handleEscalation(batch *Batch, review *CycleReview) {
 
 // RunBatch executes all tasks in a batch in parallel, respecting the
 // configured concurrency limit.
-func (e *TeamEngine) RunBatch(batch *Batch) error {
+func (e *TeamEngine) RunBatch(ctx context.Context, batch *Batch) error {
 	batch.Status = BatchStatusRunning
+	if DefaultTeamLog != nil { DefaultTeamLog.BatchStart(batch.ID, batch.Label, len(batch.Tasks), batch.CycleCount, batch.MaxCycles) }
 
 	tasks := batch.Tasks
 	if len(tasks) == 0 {
@@ -1177,10 +1313,16 @@ func (e *TeamEngine) RunBatch(batch *Batch) error {
 	resultCh := make(chan taskResult, len(tasks))
 
 	for _, task := range tasks {
+		select {
+		case <-ctx.Done():
+			batch.Status = BatchStatusFailed
+			return ctx.Err()
+		default:
+		}
 		sem <- struct{}{} // acquire semaphore (blocks if at limit)
 		go func(t *Task) {
 			defer func() { <-sem }() // release semaphore
-			ok, err := e.RunTask(t.ID)
+			ok, err := e.RunTask(ctx, t.ID)
 			resultCh <- taskResult{taskID: t.ID, ok: ok, err: err}
 		}(task)
 	}
@@ -1204,14 +1346,16 @@ func (e *TeamEngine) RunBatch(batch *Batch) error {
 	} else {
 		batch.Status = BatchStatusFailed
 	}
-
+	if DefaultTeamLog != nil { DefaultTeamLog.BatchDone(batch.ID, string(batch.Status), 0) }
 	return nil
 }
 
 // PlanAndRunLegacy runs the plan sequentially (original behavior, no batches).
 // Kept for backward compatibility.
 func (e *TeamEngine) PlanAndRunLegacy(goal, workdir string) ([]*Task, error) {
-	leader := NewLeader(e.Runner)
+	leader := NewLeader(e.Runner).WithLoggers(e.Loggers).WithTeam(e.team).WithOnLog(func() {
+		e.fireEvent(TaskEvent{Type: EventLeaderLog})
+	})
 	decomposerTimeout := time.Duration(e.Router.ResolveDecomposerTimeout()) * time.Second
 	leaderModel := e.Router.ResolveModel("planner")
 	planTasks, err := leader.Decompose(goal, workdir, decomposerTimeout, leaderModel)
@@ -1257,7 +1401,7 @@ func (e *TeamEngine) PlanAndRunLegacy(goal, workdir string) ([]*Task, error) {
 		if !allDepsDone {
 			continue
 		}
-		if _, err := e.RunTask(task.ID); err != nil {
+		if _, err := e.RunTask(e.shutdownCtx, task.ID); err != nil {
 			return tasks, fmt.Errorf("run subtask %s (%s): %w", task.ID, task.Title, err)
 		}
 		completed[task.ID] = true
@@ -1293,7 +1437,7 @@ func (e *TeamEngine) RunPipeline(taskIDs []string) (map[string]bool, error) {
 			if !depsMet {
 				continue
 			}
-			ok, err := e.RunTask(tid)
+			ok, err := e.RunTask(e.shutdownCtx, tid)
 			if err != nil {
 				return results, fmt.Errorf("run task %s: %w", tid, err)
 			}
@@ -1333,6 +1477,26 @@ func (e *TeamEngine) CancelTask(taskID string) error {
 	}
 
 	return e.DB.TransitionState(taskID, TaskStateSuspended, "cancelled by user", "")
+}
+
+// DeleteTask permanently removes a single task and its history from the database.
+func (e *TeamEngine) DeleteTask(taskID string) error {
+	return e.DB.DeleteTask(taskID)
+}
+
+// DeleteMasterTask deletes a master task and all its subtasks.
+// Actively running subtasks are transitioned to failed before deletion.
+func (e *TeamEngine) DeleteMasterTask(masterTaskID string) error {
+	subtasks, err := e.DB.ListTasksByMasterTask(masterTaskID)
+	if err != nil {
+		return fmt.Errorf("list subtasks: %w", err)
+	}
+	for _, t := range subtasks {
+		if t.State == TaskStateProducing || t.State == TaskStateVerifying {
+			_ = e.DB.TransitionState(t.ID, TaskStateFailed, "deleted by user", "")
+		}
+	}
+	return e.DB.DeleteMasterTask(masterTaskID)
 }
 
 // SendFeedback sends human feedback to a task via the AgentChannel.Prompt

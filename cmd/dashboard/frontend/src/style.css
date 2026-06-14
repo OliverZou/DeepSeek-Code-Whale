@@ -218,6 +218,19 @@ body {
   max-width: 100%; height: auto;
 }
 
+/* context menu */
+.ctx-menu {
+  position: fixed; z-index: 1000; min-width: 140px;
+  background: var(--panel); border: 1px solid var(--border);
+  border-radius: 6px; padding: 4px 0; box-shadow: 0 4px 12px rgba(0,0,0,.4);
+}
+.ctx-menu-item {
+  padding: 6px 16px; cursor: pointer; font-size: 13px;
+  color: var(--text); display: flex; align-items: center; gap: 8px;
+}
+.ctx-menu-item:hover { background: var(--active); }
+.ctx-menu-item.danger { color: var(--red); }
+
 /* empty state */
 .empty { padding: 40px; text-align: center; color: var(--muted); }
 .empty .icon { font-size: 48px; margin-bottom: 12px; }

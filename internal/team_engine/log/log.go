@@ -147,6 +147,26 @@ func (l *Loggers) LogLeader(kind, prompt, response string, dur time.Duration, er
 	l.LogAgent("leader", kind, 0, prompt, response, 0, dur, err)
 }
 
+// LogTaskFeedback writes leader/verifier feedback into the task's dialogue directory
+// so the dashboard can display it chronologically between worker/verifier rounds.
+// kind is "leader" or "verifier", round is the attempt number.
+func (l *Loggers) LogTaskFeedback(taskID, kind string, round int, content string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	dir := filepath.Join(l.baseDir, "tasks", taskID)
+	os.MkdirAll(dir, 0755)
+	path := filepath.Join(dir, fmt.Sprintf("%s_feedback_%03d.md", kind, round))
+
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("# %s Feedback — round %d\n\n", strings.Title(kind), round))
+	sb.WriteString(fmt.Sprintf("**Time**: %s\n\n", time.Now().UTC().Format(time.RFC3339)))
+	sb.WriteString(content)
+	sb.WriteString("\n")
+
+	os.WriteFile(path, []byte(sb.String()), 0644)
+}
+
 // ---------------------------------------------------------------------------
 // Per-task engine event log
 // ---------------------------------------------------------------------------

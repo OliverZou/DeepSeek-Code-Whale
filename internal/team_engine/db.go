@@ -4,6 +4,8 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -19,6 +21,13 @@ type TaskDB struct {
 // NewDB opens (or creates) the SQLite database at dbPath and runs
 // schema migration.  Use ":memory:" for an in-memory database.
 func NewDB(dbPath string) (*TaskDB, error) {
+	// Ensure the parent directory exists (skip for :memory: and similar special names).
+	if dbPath != ":memory:" && !strings.Contains(dbPath, "?") {
+		dir := filepath.Dir(dbPath)
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			return nil, fmt.Errorf("create db parent dir %s: %w", dir, err)
+		}
+	}
 	d, err := sql.Open("sqlite", dbPath)
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite: %w", err)
@@ -456,6 +465,17 @@ func (tdb *TaskDB) TransitionState(id string, newState TaskState, failureReason,
 func (tdb *TaskDB) DeleteTask(id string) error {
 	tdb.db.Exec("DELETE FROM state_history WHERE task_id = ?", id)
 	_, err := tdb.db.Exec("DELETE FROM tasks WHERE id = ?", id)
+	return err
+}
+
+// DeleteMasterTask deletes a master task and all its subtasks (with history).
+func (tdb *TaskDB) DeleteMasterTask(masterTaskID string) error {
+	// Delete state history for all subtasks.
+	tdb.db.Exec("DELETE FROM state_history WHERE task_id IN (SELECT id FROM tasks WHERE master_task_id = ?)", masterTaskID)
+	// Delete all subtasks.
+	tdb.db.Exec("DELETE FROM tasks WHERE master_task_id = ?", masterTaskID)
+	// Delete the master task itself.
+	_, err := tdb.db.Exec("DELETE FROM master_tasks WHERE id = ?", masterTaskID)
 	return err
 }
 

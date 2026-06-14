@@ -126,6 +126,11 @@ OUTPUT FORMAT (pure JSON array, no markdown):
 
 // decomposeInternal runs the leader agent and returns both parsed tasks
 // and the raw AI output text.
+//
+// When the leader returns empty output (common with reasoning models whose
+// chain-of-thought can consume the entire token budget), this function
+// automatically retries up to 2 additional times with incrementally larger
+// token budgets and a brief delay between attempts.
 func (l *Leader) decomposeInternal(goal string, workdir string, timeout time.Duration, model ...string) ([]PlanTask, string, error) {
 	if timeout <= 0 {
 		timeout = 180 * time.Second
@@ -138,43 +143,99 @@ func (l *Leader) decomposeInternal(goal string, workdir string, timeout time.Dur
 	if (len(model) == 0 || model[0] == "") && l.team != nil && l.team.Leader.Model != "" {
 		model = []string{l.team.Leader.Model}
 	}
-	start := time.Now()
-	result := l.runner.RunDecomposer(prompt, workdir, timeout, model...)
-	dur := time.Since(start)
 
-	// Log decompose for dashboard visibility.
-	if l.loggers != nil {
-		l.loggers.LogLeader("decompose", prompt, result.Stdout, dur, nil)
+	mdl := ""
+	if len(model) > 0 {
+		mdl = model[0]
 	}
-	if l.onLog != nil {
-		l.onLog()
+	// Retry loop: reasoning models can exhaust their token budget on
+	// chain-of-thought, yielding empty output.  Each retry adds a short
+	// pause so the provider can recover.
+	const maxRetries = 2
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		start := time.Now()
+		// On retries, delay briefly so the provider can recover.
+		if attempt > 0 {
+			time.Sleep(time.Duration(attempt) * 2 * time.Second)
+		}
+		result := l.runner.RunDecomposer(prompt, workdir, timeout, model...)
+		dur := time.Since(start)
+
+		// Token budget diagnostic: log model + maxTokens + actual usage
+		// so operators can see whether the budget is sufficient.
+		totalUsed := result.UsagePrompt + result.UsageCompletion
+		if totalUsed == 0 {
+			// Usage not available from the provider; estimate from output.
+			totalUsed = len(result.Stdout) / 4 // rough 4 chars/token estimate
+		}
+		if l.loggers != nil {
+			l.loggers.Engine("leader.decompose: model=%s spawner=%s attempt=%d/%d maxTokens=%d prompt=%d completion=%d total=%d dur=%.1fs output=%d chars success=%v diag=%s",
+				mdl, result.SpawnerType, attempt+1, maxRetries+1,
+				ReasoningDecomposerMaxTokens,
+				result.UsagePrompt, result.UsageCompletion, totalUsed,
+				dur.Seconds(), len(result.Stdout), result.Success, result.Stderr)
+		}
+
+		// Log decompose for dashboard visibility (last attempt only, to
+		// avoid noise from retries).
+		if attempt == maxRetries || (result.Success && strings.TrimSpace(result.Stdout) != "") {
+			if l.loggers != nil {
+				l.loggers.LogLeader("decompose", prompt, result.Stdout, dur, nil)
+			}
+			if l.onLog != nil {
+				l.onLog()
+			}
+		}
+
+		if !result.Success {
+			// If we still have retries left and the failure looks like
+			// an empty-output issue (exit 1, empty stderr), retry.
+			if attempt < maxRetries && result.ExitCode == 1 && result.Stderr == "" {
+								if DefaultTeamLog != nil { DefaultTeamLog.LeaderRetry(attempt+1, "empty output") }
+				if l.loggers != nil {
+					l.loggers.Engine("leader.decompose: retrying (attempt %d failed with empty output, exit %d)", attempt+1, result.ExitCode)
+				}
+				continue
+			}
+			return nil, "", fmt.Errorf("leader agent failed (exit %d): %s", result.ExitCode, result.Stderr)
+		}
+
+		output := strings.TrimSpace(result.Stdout)
+		if output == "" {
+			if attempt < maxRetries {
+				if l.loggers != nil {
+					l.loggers.Engine("leader.decompose: retrying (attempt %d produced empty output after trim)", attempt+1)
+				}
+				continue
+			}
+			return nil, "", fmt.Errorf("leader returned empty output after %d attempts", maxRetries+1)
+		}
+
+		tasks, err := ParsePlanTasks(output)
+		if err != nil {
+			// Fallback: when the decomposer subagent returns non-JSON output
+			// (e.g. natural-language summary), create a single generic task
+			// that preserves the AI's natural-language output as its
+			// description so no information is lost.
+			return []PlanTask{{
+				Title:           goal,
+				Description:     output,
+				Role:            "developer",
+				BatchID:         "default",
+				BatchLabel:      "Execution",
+				DependsOnIndex:  -1,
+			}}, output, nil
+		}
+		if l.loggers != nil {
+			l.loggers.Engine("leader.decompose: success — %d tasks in plan", len(tasks))
+		}
+		if DefaultTeamLog != nil {
+			DefaultTeamLog.LeaderDecompose(goal, mdl, attempt+1, ReasoningDecomposerMaxTokens, result.UsagePrompt, result.UsageCompletion, dur.Seconds(), len(output), false, true)
+		}
+		return tasks, output, nil
 	}
 
-	if !result.Success {
-		return nil, "", fmt.Errorf("leader agent failed (exit %d): %s", result.ExitCode, result.Stderr)
-	}
-
-	output := strings.TrimSpace(result.Stdout)
-	if output == "" {
-		return nil, "", fmt.Errorf("leader returned empty output")
-	}
-
-	tasks, err := ParsePlanTasks(output)
-	if err != nil {
-		// Fallback: when the decomposer subagent returns non-JSON output
-		// (e.g. natural-language summary), create a single generic task
-		// that preserves the AI's natural-language output as its
-		// description so no information is lost.
-		return []PlanTask{{
-			Title:           goal,
-			Description:     output,
-			Role:            "developer",
-			BatchID:         "default",
-			BatchLabel:      "Execution",
-			DependsOnIndex:  -1,
-		}}, output, nil
-	}
-	return tasks, output, nil
+	return nil, "", fmt.Errorf("leader failed after %d attempts", maxRetries+1)
 }
 
 // Decompose calls a Whale subagent to decompose a goal into subtasks.

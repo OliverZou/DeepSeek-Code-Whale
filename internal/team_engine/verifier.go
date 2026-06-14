@@ -172,6 +172,24 @@ func (v *Verifier) Verify(task *Task) (bool, string, error) {
 	} else {
 		prompt = BuildVerifierPrompt(task, workerOutput)
 	}
+	// When the worker output is very short, the actual deliverable is
+	// likely in workspace files written via tool calls.  Tell the
+	// verifier to explore the workspace instead of judging the empty
+	// output.md.
+	if len(workerOutput) < 500 {
+		wd := task.Workdir
+		if wd == "" {
+			wd = "."
+		}
+		prompt += fmt.Sprintf(`
+
+	NOTE: The worker output above is very short (%d chars).  The actual
+	deliverable was likely written to files in the workspace.  Use list_dir
+	and read_file to explore the working directory (%s) — look for recently
+	created or modified .md, .rs, .go, .py, or other project files.  Check
+	those files against the requirements, not the empty output above.
+	`, len(workerOutput), wd)
+	}
 
 	workdir := task.Workdir
 	if workdir == "" {

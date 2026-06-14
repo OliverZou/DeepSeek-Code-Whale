@@ -8,10 +8,15 @@ let state = { masterTasks: [], selMtId: null, subtasks: [], selStId: null, activ
 
 // ---------- Init ----------
 function init() {
+  if (typeof window.go === 'undefined') return;
   loadMasterTasks();
-  window.runtime.EventsOn("update", () => {
-    loadMasterTasks();
-    $('#sse-time').textContent = new Date().toLocaleTimeString();
+  window.runtime.EventsOn("update", (payload) => {
+    if (payload && payload.length !== undefined) {
+      state.masterTasks = payload;
+      updateUI();
+    } else {
+      loadMasterTasks();
+    }
   });
 
   // Listen for real-time task events from engine (代替全量轮询).
@@ -66,6 +71,15 @@ async function loadMasterTasks() {
         state.selMtId = null;
         state.subtasks = [];
         state.selStId = null;
+      }
+    }
+    // Auto-select the first master task with subtasks when nothing
+    // is selected yet (e.g. planning just finished).
+    if (!state.selMtId) {
+      const planned = newTasks.find(mt => (mt.task_count || 0) > 0);
+      if (planned) {
+        state.selMtId = planned.id;
+        state._lastMtId = null;
       }
     }
     updateUI();
@@ -171,7 +185,7 @@ function renderSidebar() {
         <span class="ws-label">📁 ${esc(mt.workspace_label)}</span>
         <span>${mt.done_count}/${mt.task_count}</span>
         <span>${fmtTime(mt.created_at)}</span>
-        ${isPlanning ? `<span class="planning-indicator">⏳ 规划中...</span>` : hasRunning ? `<button class="stop-btn" data-wsid="${esc(mt.workspace_id)}" data-mtid="${mt.id}">⏹ 停止</button>` : mt.workspace_online ? `<button class="resume-btn" data-wsid="${esc(mt.workspace_id)}" data-mtid="${mt.id}">▶ 运行</button>` : ''}
+        ${isPlanning ? `<span class="planning-indicator">⏳ 规划中...</span>` : hasRunning ? `<button class="stop-btn" data-wsid="${esc(mt.workspace_id)}" data-mtid="${mt.id}">⏹ 停止</button>` : `<button class="resume-btn" data-wsid="${esc(mt.workspace_id)}" data-mtid="${mt.id}" ${!mt.workspace_online ? 'disabled title="需要 Whale CLI 在该工作区运行"' : ''}>▶ 运行</button>`}
       </div>
       <div class="progress-bar-wrap"><div class="progress-bar-fill" style="width:${pct}%"></div></div>
     </div>`;
@@ -261,7 +275,8 @@ function renderSubtasks() {
     const canStop = st.id !== '__leader__'
       && (st.state === 'producing' || st.state === 'verifying');
     // 恢复按钮：只对 suspended 的任务显示
-    const canResume = st.id !== '__leader__' && st.state === 'suspended';
+
+	
     html += `<div class="st${active}${leader}" data-id="${st.id}">
       <div class="st-title" title="${esc(st.title)}">
         <span class="state-dot ${stateDot}"></span>
@@ -271,7 +286,6 @@ function renderSubtasks() {
         <span>${esc(st.role)}</span>
         <span>${st.progress}%</span>
         ${canStop ? `<button class="stop-btn-sm" data-taskid="${st.id}">⏹</button>` : ''}
-        ${canResume ? `<button class="resume-btn-sm" data-wsid="${esc(wsid)}" data-taskid="${st.id}">▶ 恢复</button>` : ''}
       </div>
     </div>`;
   }
@@ -297,31 +311,6 @@ function renderSubtasks() {
       // Refresh after a short delay.
       setTimeout(() => {
         const mt = getSelMt();
-        if (mt) loadSubtasks(mt.workspace_id, mt.id);
-      }, 1000);
-    };
-  });
-  // Bind resume buttons for suspended subtasks.
-  list.querySelectorAll('.resume-btn-sm').forEach(btn => {
-    btn.onclick = async (e) => {
-      e.stopPropagation();
-      const wid = btn.dataset.wsid;
-      const taskid = btn.dataset.taskid;
-      if (!wid) return;
-      btn.textContent = '⏳';
-      btn.disabled = true;
-      // Resume via the parent master task.
-      const mt = getSelMt();
-      if (mt) {
-        const err = await window.go.main.App.ResumeMasterTask(wid, mt.id);
-        if (err) {
-          btn.textContent = '⚠️';
-          console.error('resume:', err);
-        } else {
-          btn.textContent = '✅';
-        }
-      }
-      setTimeout(() => {
         if (mt) loadSubtasks(mt.workspace_id, mt.id);
       }, 1000);
     };

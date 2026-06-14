@@ -6,6 +6,8 @@ export function CancelMasterTask(arg1:string,arg2:string):Promise<string>;
 
 export function CancelSubtask(arg1:string,arg2:string):Promise<string>;
 
+export function DeleteMasterTask(arg1:string,arg2:string):Promise<string>;
+
 export function GetAgentDialogue(arg1:string,arg2:string):Promise<Array<dashboard.AgentDialogueJSON>>;
 
 export function GetLeaderFlowchart(arg1:string,arg2:string):Promise<string>;
@@ -25,3 +27,5 @@ export function GetTasks(arg1:string):Promise<Array<dashboard.TaskJSON>>;
 export function GetWorkspaces():Promise<Array<dashboard.WorkspaceJSON>>;
 
 export function RegisterWorkspace(arg1:string):Promise<string>;
+
+export function ResumeMasterTask(arg1:string,arg2:string):Promise<string>;

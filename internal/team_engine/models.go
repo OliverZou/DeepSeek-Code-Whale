@@ -184,6 +184,22 @@ var ValidTransitions = map[TaskState][]TaskState{
 	TaskStateDone:      {}, // terminal
 }
 
+// ResetForResume transitions stuck tasks back to a runnable state so
+// ResumeMasterTask can re-execute them.  This bypasses the normal
+// transition table because resume is a recovery operation.
+func ResetForResume(state TaskState) TaskState {
+	if state == TaskStateFailed || state == TaskStateSuspended {
+		return TaskStatePending
+	}
+	if state == TaskStateDone {
+		return TaskStateDone // keep done — task already completed successfully
+	}
+	if state.IsTerminal() {
+		return TaskStatePending
+	}
+	return TaskStateAssigned // assigned/produced/verified/etc → assigned
+}
+
 // CanTransition reports whether a transition from oldState to newState is
 // legal according to ValidTransitions.
 func CanTransition(oldState, newState TaskState) bool {
@@ -279,6 +295,10 @@ const (
 	EventVerifierResult
 	// EventTaskDone — 任务最终完成（done 或 failed）
 	EventTaskDone
+	// EventLeaderLog — Leader 写入了新的日志（decompose/review/summary）
+	EventLeaderLog
+	// EventAgentLog — Worker/Verifier 写入了新的日志
+	EventAgentLog
 )
 
 // TaskEvent 是 engine 向监听者推送的事件

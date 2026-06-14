@@ -135,7 +135,7 @@ func (e *TeamEngine) Prompt(ctx context.Context, req PromptRequest) (*Message, e
 
 	// Only re-run if the task is in a non-terminal state that supports it.
 	if !task.State.IsTerminal() && task.State != TaskStateVerifying {
-		if _, err := e.RunTask(req.ToTaskID); err != nil {
+		if _, err := e.RunTask(e.shutdownCtx, req.ToTaskID); err != nil {
 			return nil, fmt.Errorf("re-run task for prompt reply: %w", err)
 		}
 	}

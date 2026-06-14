@@ -19,7 +19,7 @@ const (
 	MaxParallelPrompts    = 8
 	DefaultMaxTokens      = 800
 	DefaultMaxToolIters   = 12
-	DefaultSummaryMaxChar = 8 * 1024
+	DefaultSummaryMaxChar = 32 * 1024
 )
 
 type ProviderFactory func(model string, maxTokens int) (llm.Provider, error)

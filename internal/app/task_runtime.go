@@ -133,6 +133,8 @@ func (a *App) rebuildTaskRuntimeLocked() error {
 		},
 	})
 	a.taskTools = tasks.NewTools(taskRunner)
+	// Wire native subagent adapter as the main toolset's Team Engine spawner.
+	a.toolset.SetTeamEngineSpawnFunc(teamEngineSpawnAdapter(taskRunner))
 	a.workflowManager = nil
 	a.workflowRunner = nil
 	workflowLibrary := workflow.NewLibrary(a.workspaceRoot)

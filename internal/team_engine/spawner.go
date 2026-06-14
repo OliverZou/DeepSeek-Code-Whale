@@ -6,7 +6,42 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"sync"
+
+	teampglog "github.com/usewhale/whale/internal/team_engine/log"
 )
+
+// DefaultTeamLog is the package-level team-log.  Set via SetDefaultTeamLog
+// during process startup.  When nil (default or no build tag), all calls
+// are no-ops.
+var DefaultTeamLog *teampglog.TeamLog
+
+func SetDefaultTeamLog(tl *teampglog.TeamLog) { DefaultTeamLog = tl }
+
+// defaultSpawnFunc is a package-level fallback spawner, set by the toolset
+// when the app wires in the native subagent adapter.  When non-nil, team
+// engine instances prefer it over ShellSubagentSpawner.
+var (
+	defaultSpawnFunc      SpawnFunc
+	defaultSpawnFuncMu    sync.RWMutex
+)
+
+// DefaultSpawnFunc returns the package-level default spawn function, or nil
+// if the app has not yet wired in a native subagent adapter.
+func DefaultSpawnFunc() SpawnFunc {
+	defaultSpawnFuncMu.RLock()
+	defer defaultSpawnFuncMu.RUnlock()
+	return defaultSpawnFunc
+}
+
+// SetDefaultSpawnFunc sets the package-level default spawn function.
+// Called by the toolset when the app wires in the native subagent adapter.
+// Safe for concurrent use.
+func SetDefaultSpawnFunc(fn SpawnFunc) {
+	defaultSpawnFuncMu.Lock()
+	defer defaultSpawnFuncMu.Unlock()
+	defaultSpawnFunc = fn
+}
 
 // =============================================================================
 // Context Isolation Principle
@@ -126,12 +161,14 @@ func (s *ShellSubagentSpawner) SpawnSubagent(ctx context.Context, req SubagentRe
 				exitCode = exitErr.ExitCode()
 			}
 			return SubagentResponse{
+				SpawnerType: "shell",
 				Output:   stdout.String(),
 				ExitCode: exitCode,
 				Success:  false,
 			}, nil
 		}
 		return SubagentResponse{
+			SpawnerType: "shell",
 			Output:   stdout.String(),
 			ExitCode: 0,
 			Success:  true,

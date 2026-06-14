@@ -8,6 +8,8 @@ import (
 	"github.com/usewhale/whale/internal/dashboard"
 	"github.com/usewhale/whale/internal/plugins"
 	"github.com/usewhale/whale/internal/policy"
+	"github.com/usewhale/whale/internal/team_engine"
+	teampglog "github.com/usewhale/whale/internal/team_engine/log"
 )
 
 func New(ctx context.Context, cfg Config, start StartOptions) (*App, error) {
@@ -96,11 +98,18 @@ func New(ctx context.Context, cfg Config, start StartOptions) (*App, error) {
 	}
 	appRef = app
 
+	// Initialize team-engine lifecycle logger (no-op without -tags teamlog).
+	team_engine.SetDefaultTeamLog(teampglog.NewTeamLog(workspaceRoot))
+
 	// Register with the external whale-dashboard process if it's running.
-	// If it's not running, whale works normally without it.
+	// The heartbeat loop also retries registration if the dashboard starts later.
 	app.dashboardClient = dashboard.NewClient(workspaceRoot)
-	if app.dashboardClient.IsRegistered() {
-		app.dashboardClient.StartHeartbeat()
+	app.dashboardClient.StartHeartbeat()
+	// Enable auto-resume: dashboard → heartbeat → toolset picks up pending resume.
+	app.toolset.SetDashboardClient(app.dashboardClient)
+	// When dashboard sends a resume command, auto-execute directly.
+	app.dashboardClient.OnResume = func(masterTaskID string) {
+		app.toolset.AutoExecuteMasterTask(masterTaskID)
 	}
 
 	return app, nil

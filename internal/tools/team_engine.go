@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
 	"time"
 
@@ -23,6 +24,7 @@ func (b *Toolset) teamEngineTools() []core.Tool {
 		b.teamExportTool(),
 		b.teamResultTool(),
 		b.teamOutputTool(),
+		b.teamDeleteTool(),
 	}
 }
 
@@ -33,12 +35,17 @@ func (b *Toolset) teamEnginePaths() (dbPath, wbDir string) {
 
 func (b *Toolset) newTeamEngine() (*team_engine.TeamEngine, error) {
 	dbPath, wbDir := b.teamEnginePaths()
-	// Prefer Whale runtime spawner if configured; fall back to shell spawner.
+	// Prefer per-instance spawn func, then package-level default, then shell.
 	var spawner team_engine.SubagentSpawner
 	if b.teamEngineSpawnFunc != nil {
 		spawner = team_engine.NewFuncSpawner(b.teamEngineSpawnFunc)
+		if team_engine.DefaultTeamLog != nil { team_engine.DefaultTeamLog.SpawnerType("default", "adapter", "", 0) }
+	} else if df := team_engine.DefaultSpawnFunc(); df != nil {
+		spawner = team_engine.NewFuncSpawner(df)
+		if team_engine.DefaultTeamLog != nil { team_engine.DefaultTeamLog.SpawnerType("default", "adapter", "", 0) }
 	} else {
 		spawner = team_engine.NewShellSubagentSpawner()
+		if team_engine.DefaultTeamLog != nil { team_engine.DefaultTeamLog.SpawnerType("default", "shell", "", 0) }
 	}
 	return team_engine.New(dbPath, wbDir, "", spawner)
 }
@@ -49,6 +56,53 @@ func toolResult(text string) core.ToolResult {
 
 func toolError(format string, args ...interface{}) core.ToolResult {
 	return core.ToolResult{Content: fmt.Sprintf(format, args...), IsError: true}
+}
+
+// --- team_plan ---
+
+// AutoExecuteMasterTask is called by the dashboard client when it receives
+// a resume command via heartbeat.  It loads the master task and executes
+// it directly without waiting for a user-initiated team_plan call.
+func (b *Toolset) AutoExecuteMasterTask(masterTaskID string) {
+	go func() {
+		eng, err := b.newTeamEngine()
+		if err != nil {
+			logToFile(filepath.Join(b.root, ".whale", "team_tasks", "logs", "engine.log"),
+				"dashboard-resume: newTeamEngine failed: %v", err)
+			return
+		}
+		defer eng.Close()
+
+		mt, err := eng.GetMasterTask(masterTaskID)
+		if err != nil || mt == nil {
+			logToFile(filepath.Join(b.root, ".whale", "team_tasks", "logs", "engine.log"),
+				"dashboard-resume: GetMasterTask %s failed: err=%v", masterTaskID, err)
+			return
+		}
+
+		workdir := mt.WorkspacePath
+		if workdir == "" {
+			workdir = b.root
+		}
+
+		batches, err := eng.ResumeMasterTask(context.Background(), masterTaskID, mt.Goal, workdir)
+		if eng.Loggers != nil {
+			eng.Loggers.Engine("dashboard-resume: masterTask=%s goal=%q batches=%d err=%v",
+				masterTaskID, mt.Goal, len(batches), err)
+		}
+	}()
+}
+
+func logToFile(path, format string, args ...interface{}) {
+	msg := fmt.Sprintf(format, args...)
+	ts := time.Now().UTC().Format(time.RFC3339)
+	os.MkdirAll(filepath.Dir(path), 0755)
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	fmt.Fprintf(f, "[%s] %s\n", ts, msg)
 }
 
 // --- team_plan ---
@@ -96,10 +150,28 @@ func (b *Toolset) runTeamPlan(ctx context.Context, call core.ToolCall, progress 
 	}
 	defer eng.Close()
 
+	// Check for a pending dashboard resume command (auto-triggered by dashboard).
+	if args.Goal == "" && b.dashboardClient != nil {
+		if mtID := b.dashboardClient.PendingResume(); mtID != "" {
+			mt, err := eng.GetMasterTask(mtID)
+			if err != nil {
+				return toolError("dashboard resume: master task %s: %v", mtID, err), nil
+			}
+			if mt == nil {
+				return toolError("dashboard resume: master task %s not found", mtID), nil
+			}
+			args.Goal = mt.Goal
+			workdir = mt.WorkspacePath
+			if workdir == "" {
+				workdir = b.root
+			}
+		}
+	}
+
 	// Load team configuration if specified.
 	if args.Team != "" {
-		teamsDir := filepath.Join(b.root, ".whale", "teams")
-		tc, err := team_engine.FindTeam(teamsDir, args.Team)
+		teamRoots := team_engine.DefaultTeamRoots(b.root)
+		tc, err := team_engine.FindTeamInRoots(teamRoots, args.Team)
 		if err != nil {
 			return toolError("load team %q: %v", args.Team, err), nil
 		}
@@ -137,10 +209,25 @@ func (b *Toolset) runTeamPlan(ctx context.Context, call core.ToolCall, progress 
 		})
 	}
 
-	// --- Phase 1: Show the plan (best-effort preview) ----------------
+	// --- Phase 1: Create master task immediately so dashboard sees it ---
+			// Delete any prior master tasks so the dashboard only
+			// shows the latest run (avoids duplicates on retry).
+			if existing, _ := eng.DB.ListMasterTasks(); len(existing) > 0 {
+				for _, mt := range existing {
+					_ = eng.DeleteMasterTask(mt.ID)
+				}
+			}
+			masterTask, mtErr := eng.CreateMasterTask(args.Goal, b.root)
+			if mtErr != nil {
+				return toolError("create master task: %v", mtErr), nil
+			}
+
+			// --- Phase 2: Decompose (LLM call, may take 30-90s) ----------------
 			decomposerTimeout := time.Duration(eng.Router.ResolveDecomposerTimeout()) * time.Second
 			planPreview := "⏳ Executing...\n"
-			if planTasks, err := team_engine.NewLeader(eng.Runner).Decompose(args.Goal, workdir, decomposerTimeout); err == nil && len(planTasks) > 0 {
+			if planTasks, err := team_engine.NewLeader(eng.Runner).WithLoggers(eng.Loggers).WithTeam(eng.Team()).WithOnLog(func() {
+				eng.FireEvent(team_engine.TaskEvent{Type: team_engine.EventLeaderLog})
+			}).Decompose(args.Goal, workdir, decomposerTimeout); err == nil && len(planTasks) > 0 {
 				// Group planTasks into batches for preview.
 				type planBatch struct {
 					label string
@@ -182,12 +269,7 @@ func (b *Toolset) runTeamPlan(ctx context.Context, call core.ToolCall, progress 
 				planPreview = preview
 			}
 
-			// --- Phase 2: Create master task then execute -----------------------
-			masterTask, mtErr := eng.CreateMasterTask(args.Goal, b.root)
-			if mtErr != nil {
-				return toolError("create master task: %v", mtErr), nil
-			}
-
+			// --- Phase 3: Execute (async or sync) ------------------------------
 			// Async mode: return the decomposition plan immediately without executing.
 			// The agent can review the plan, then call team_plan again (sync) to execute.
 			// Or use team_create + team_run for manual orchestration.
@@ -365,7 +447,7 @@ func (b *Toolset) teamRunTool() toolFn {
 			}
 			defer eng.Close()
 
-			ok, err := eng.RunTask(args.TaskID)
+			ok, err := eng.RunTask(ctx, args.TaskID)
 			if err != nil {
 				return toolError("run: %v", err), nil
 			}
@@ -753,6 +835,85 @@ func (b *Toolset) teamResultTool() toolFn {
 				"tasks":      taskList,
 			}
 			return core.ToolResult{Content: mdBuilder, Metadata: metadata}, nil
+		},
+	}
+}
+
+// --- team_delete ---
+
+func (b *Toolset) teamDeleteTool() toolFn {
+	return toolFn{
+		name:        "team_delete",
+		description: "Delete a team task by ID. Use all=true to delete all tasks at once (both standalone and master tasks). Running tasks are transitioned to failed before deletion.",
+		parameters: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"task_id": map[string]any{"type": "string", "description": "Task ID to delete. Optional if all=true."},
+				"all":     map[string]any{"type": "boolean", "description": "Delete all tasks when true."},
+			},
+		},
+		fn: func(ctx context.Context, call core.ToolCall) (core.ToolResult, error) {
+			var args struct {
+				TaskID string `json:"task_id"`
+				All    bool   `json:"all"`
+			}
+			if err := json.Unmarshal([]byte(call.Input), &args); err != nil {
+				return toolError("invalid args: %v", err), nil
+			}
+
+			eng, err := b.newTeamEngine()
+			if err != nil {
+				return toolError("init: %v", err), nil
+			}
+			defer eng.Close()
+
+			if args.All {
+				// Delete all master tasks first (each cascades to subtasks).
+				masterTasks, err := eng.DB.ListMasterTasks()
+				if err != nil {
+					return toolError("list master: %v", err), nil
+				}
+				masterCount := 0
+				for _, mt := range masterTasks {
+					if err := eng.DeleteMasterTask(mt.ID); err != nil {
+						return toolError("delete master %s: %v", mt.ID, err), nil
+					}
+					masterCount++
+				}
+
+				// Delete remaining standalone tasks.
+				tasks, err := eng.DB.ListTasks()
+				if err != nil {
+					return toolError("list: %v", err), nil
+				}
+				standaloneCount := 0
+				for _, t := range tasks {
+					if err := eng.DeleteTask(t.ID); err != nil {
+						return toolError("delete task %s: %v", t.ID, err), nil
+					}
+					standaloneCount++
+				}
+				return toolResult(fmt.Sprintf("Deleted all tasks: %d master + %d standalone.", masterCount, standaloneCount)), nil
+			}
+
+			if args.TaskID == "" {
+				return toolError("task_id is required when all is not set"), nil
+			}
+
+			// Try as a regular task first, then as a master task.
+			task, err := eng.GetTask(args.TaskID)
+			if err == nil && task != nil {
+				if err := eng.DeleteTask(args.TaskID); err != nil {
+					return toolError("delete: %v", err), nil
+				}
+				return toolResult(fmt.Sprintf("Deleted task %s (%s).", args.TaskID, task.Title)), nil
+			}
+
+			// Try as master task.
+			if err := eng.DeleteMasterTask(args.TaskID); err != nil {
+				return toolError("delete master: %v", err), nil
+			}
+			return toolResult(fmt.Sprintf("Deleted master task %s and all subtasks.", args.TaskID)), nil
 		},
 	}
 }

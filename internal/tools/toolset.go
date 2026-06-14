@@ -44,6 +44,16 @@ type Toolset struct {
 	// enabling full Whale runtime integration (context isolation, tool permissions).
 	// The callback should adapt tasks.Runner.SpawnSubagentWithProgress.
 	teamEngineSpawnFunc team_engine.SpawnFunc
+
+	// DashboardClient provides access to dashboard-queued resume commands.
+	dashboardClient interface {
+		PendingResume() string
+	}
+}
+
+// SetDashboardClient sets the dashboard client for auto-resume support.
+func (b *Toolset) SetDashboardClient(c interface{ PendingResume() string }) {
+	b.dashboardClient = c
 }
 
 type externalReadRootsKey struct{}
@@ -92,6 +102,11 @@ func NewToolset(root string) (*Toolset, error) {
 
 func (b *Toolset) SetTeamEngineSpawnFunc(fn team_engine.SpawnFunc) {
 	b.teamEngineSpawnFunc = fn
+	// Also register as the package-level default so that any team engine
+	// instance (including those created by the main toolset, where the
+	// per-instance function may be nil) can fall back to the native
+	// subagent adapter instead of ShellSubagentSpawner.
+	team_engine.SetDefaultSpawnFunc(fn)
 }
 
 func (b *Toolset) SetForegroundShellWait(defaultMS, maxMS int) {

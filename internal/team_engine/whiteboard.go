@@ -42,6 +42,9 @@ func NewWhiteboard(baseDir string) (*Whiteboard, error) {
 	if err != nil {
 		return nil, fmt.Errorf("resolve base dir: %w", err)
 	}
+	if err := os.MkdirAll(abs, 0755); err != nil {
+		return nil, fmt.Errorf("create whiteboard dir %s: %w", abs, err)
+	}
 	return &Whiteboard{baseDir: abs}, nil
 }
 

@@ -10,6 +10,10 @@ export function CancelSubtask(arg1, arg2) {
   return window['go']['main']['App']['CancelSubtask'](arg1, arg2);
 }
 
+export function DeleteMasterTask(arg1, arg2) {
+  return window['go']['main']['App']['DeleteMasterTask'](arg1, arg2);
+}
+
 export function GetAgentDialogue(arg1, arg2) {
   return window['go']['main']['App']['GetAgentDialogue'](arg1, arg2);
 }
@@ -48,4 +52,8 @@ export function GetWorkspaces() {
 
 export function RegisterWorkspace(arg1) {
   return window['go']['main']['App']['RegisterWorkspace'](arg1);
+}
+
+export function ResumeMasterTask(arg1, arg2) {
+  return window['go']['main']['App']['ResumeMasterTask'](arg1, arg2);
 }

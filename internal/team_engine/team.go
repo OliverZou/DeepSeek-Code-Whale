@@ -98,8 +98,70 @@ func FindTeam(teamsDir, name string) (*TeamConfig, error) {
 	return LoadTeamConfig(path)
 }
 
+// DefaultTeamRoots returns the team discovery roots for a workspace.
+// Workspace .whale/teams is listed first so it takes priority over global.
+func DefaultTeamRoots(workspaceRoot string) []string {
+	var roots []string
+	if root := strings.TrimSpace(workspaceRoot); root != "" {
+		roots = append(roots, filepath.Join(root, ".whale", "teams"))
+	}
+	if home, err := os.UserHomeDir(); err == nil && strings.TrimSpace(home) != "" {
+		roots = append(roots, filepath.Join(home, ".whale", "teams"))
+	}
+	return roots
+}
+
+// FindTeamInRoots loads a single team by name, searching multiple roots in order.
+// Returns the first match found (workspace overrides global).
+func FindTeamInRoots(roots []string, name string) (*TeamConfig, error) {
+	for _, dir := range roots {
+		tc, err := FindTeam(dir, name)
+		if err == nil {
+			return tc, nil
+		}
+		if !os.IsNotExist(err) {
+			return nil, err
+		}
+	}
+	return nil, fmt.Errorf("team %q not found in any roots", name)
+}
+
+// LoadAllTeamsFromRoots loads all team YAML files from multiple roots.
+// Workspace teams take priority over global teams with the same name.
+func LoadAllTeamsFromRoots(roots []string) ([]*TeamConfig, error) {
+	seen := make(map[string]bool)
+	var teams []*TeamConfig
+	// Iterate in reverse so earlier roots (workspace) overwrite later ones (global).
+	for i := len(roots) - 1; i >= 0; i-- {
+		dir := roots[i]
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return nil, fmt.Errorf("read teams dir %s: %w", dir, err)
+		}
+		for _, e := range entries {
+			if e.IsDir() || !strings.HasSuffix(e.Name(), ".yaml") {
+				continue
+			}
+			name := strings.TrimSuffix(e.Name(), ".yaml")
+			if seen[name] {
+				continue
+			}
+			tc, err := LoadTeamConfig(filepath.Join(dir, e.Name()))
+			if err != nil {
+				return nil, fmt.Errorf("load team %s: %w", e.Name(), err)
+			}
+			seen[name] = true
+			teams = append(teams, tc)
+		}
+	}
+	return teams, nil
+}
+
 // BuildLeaderPrompt augments the standard decompose prompt with team-specific
-// leader instructions and rules.
+// leader instructions, available roles, and rules.
 func (tc *TeamConfig) BuildLeaderPrompt(basePrompt string) string {
 	var sb strings.Builder
 	sb.WriteString(basePrompt)
@@ -107,8 +169,22 @@ func (tc *TeamConfig) BuildLeaderPrompt(basePrompt string) string {
 		sb.WriteString("\n\n## Your Role\n")
 		sb.WriteString(tc.Leader.Prompt)
 	}
+
+	// Inject team role names so the decomposer assigns them instead of generic names.
+	if len(tc.Roles) > 0 {
+		sb.WriteString("\n\n## Available Team Roles\n")
+		sb.WriteString("You MUST assign subtasks using ONLY these role names (not generic names like \"researcher\" or \"writer\"):\n\n")
+		for name, cfg := range tc.Roles {
+			desc := cfg.Description
+			if desc == "" {
+				desc = name
+			}
+			sb.WriteString(fmt.Sprintf("- **%s**: %s\n", name, desc))
+		}
+	}
+
 	if len(tc.Leader.Rules) > 0 {
-		sb.WriteString("\n\n## Team Rules\n")
+		sb.WriteString("\n## Team Rules\n")
 		sb.WriteString("The following rules apply to ALL subtasks. Make sure each task description includes them:\n")
 		for i, rule := range tc.Leader.Rules {
 			sb.WriteString(fmt.Sprintf("%d. %s\n", i+1, rule))

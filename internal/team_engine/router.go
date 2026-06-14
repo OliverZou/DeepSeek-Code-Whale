@@ -70,7 +70,9 @@ func (r *Router) ResolveTimeout(role AgentRole, isVerifier bool) int {
 	if re, ok := rt.RoleMap[string(role)]; ok && re.Timeout > 0 {
 		return re.Timeout
 	}
-	return 600
+	// Default for unknown/team-specific roles (e.g. 宏观策略师) —
+	// research/deep-analysis tasks need ample time.
+	return 1800
 }
 
 // ResolveModel returns the LLM model name for a given role.

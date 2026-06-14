@@ -3,8 +3,71 @@ package team_engine
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 )
+
+// ReasoningMaxTokens is the completion token budget for reasoning models
+// (deepseek-v4-pro, deepseek-r1, etc.). These models need significant
+// headroom because their thinking tokens count against the budget, and
+// a plan or analysis can easily exceed the default 800 tokens.
+const ReasoningMaxTokens = 8192
+
+// ReasoningDecomposerMaxTokens is the token budget for the Leader/Decomposer
+// role when using a reasoning model.  The decomposer prompt is much longer
+// than a typical task prompt (9 rules, orchestration patterns, role
+// descriptions, JSON format specification), and the model must think through
+// the decomposition before generating the plan JSON.  8192 is often
+// insufficient because thinking tokens can consume 60-80% of the budget.
+const ReasoningDecomposerMaxTokens = 16384
+
+// WorkerMaxTokens is the minimum completion token budget for non-reasoning
+// worker tasks (research, writing, analysis).  The runner default (800) is
+// nowhere near enough for a research report.
+const WorkerMaxTokens = 8192
+
+// isDeepSeekModel reports whether the model is a known DeepSeek model that
+// should get a larger-than-default token budget.
+func isDeepSeekModel(model string) bool {
+	m := strings.ToLower(strings.TrimSpace(model))
+	return strings.HasPrefix(m, "deepseek-")
+}
+
+// isReasoningModel reports whether the model is a reasoning/thinking model
+// that needs a larger token budget for its chain-of-thought.
+func isReasoningModel(model string) bool {
+	if model == "" {
+		return false
+	}
+	m := strings.ToLower(model)
+	// DeepSeek reasoning family.
+	if strings.Contains(m, "deepseek-r1") || strings.Contains(m, "deepseek-v4-pro") {
+		return true
+	}
+	// Generic reasoning model suffixes.
+	if strings.HasSuffix(m, "-reasoning") || strings.HasSuffix(m, "-thinking") {
+		return true
+	}
+	return false
+}
+
+// effectiveMaxTokens returns the MaxTokens to use. If an explicit value is
+// provided (> 0), use it. Otherwise:
+//   - Reasoning models -> ReasoningMaxTokens (8192)
+//   - Other known DeepSeek models -> WorkerMaxTokens (8192)
+//   - Everything else -> 0 (runner default of 800)
+func effectiveMaxTokens(explicit int, model string) int {
+	if explicit > 0 {
+		return explicit
+	}
+	if isReasoningModel(model) {
+		return ReasoningMaxTokens
+	}
+	if isDeepSeekModel(model) {
+		return WorkerMaxTokens
+	}
+	return 0
+}
 
 // RunResult captures the outcome of a single agent run.
 type RunResult struct {
@@ -13,6 +76,9 @@ type RunResult struct {
 	Stderr          string  `json:"stderr"`
 	DurationSeconds float64 `json:"duration_seconds"`
 	Success         bool    `json:"success"`
+	UsagePrompt     int    `json:"-"` // prompt tokens (0 if unavailable)
+	UsageCompletion int    `json:"-"` // completion tokens (0 if unavailable)
+	SpawnerType     string `json:"-"` // "adapter" or "shell" — which spawner was used
 }
 
 // SubagentSpawner is the interface that the Whale integration layer must
@@ -50,9 +116,13 @@ type SubagentRequest struct {
 
 // SubagentResponse contains the result of a subagent execution.
 type SubagentResponse struct {
-	Output   string // Full agent output
-	ExitCode int
-	Success  bool
+	SpawnerType     string // "adapter" or "shell" — which spawner was used
+	Output          string // Full agent output
+	ExitCode        int
+	Success         bool
+	UsagePrompt     int    // prompt tokens consumed
+	UsageCompletion int    // completion tokens consumed
+	Diagnostic      string // detailed debug info (tool resolution, status, errors)
 }
 
 // AgentRunner executes prompts through a Whale subagent.
@@ -103,6 +173,7 @@ func (ar *AgentRunner) RunWithContext(ctx context.Context, prompt, workdir, tool
 	if len(model) > 0 && model[0] != "" {
 		req.Model = model[0]
 	}
+	req.MaxTokens = effectiveMaxTokens(0, req.Model)
 
 	runCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -127,6 +198,8 @@ func (ar *AgentRunner) RunWithContext(ctx context.Context, prompt, workdir, tool
 		Stderr:          "",
 		DurationSeconds: round(elapsed, 2),
 		Success:         resp.Success,
+		UsagePrompt:     resp.UsagePrompt,
+		UsageCompletion: resp.UsageCompletion,
 	}
 }
 
@@ -146,6 +219,7 @@ func (ar *AgentRunner) RunVerifier(prompt, workdir string, timeout time.Duration
 	if len(model) > 0 && model[0] != "" {
 		req.Model = model[0]
 	}
+	req.MaxTokens = effectiveMaxTokens(0, req.Model)
 
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
@@ -167,28 +241,42 @@ func (ar *AgentRunner) RunVerifier(prompt, workdir string, timeout time.Duration
 	return &RunResult{
 		ExitCode:        resp.ExitCode,
 		Stdout:          resp.Output,
-		Stderr:          "",
+		SpawnerType:     resp.SpawnerType,
+			Stderr:          resp.Diagnostic,
 		DurationSeconds: round(elapsed, 2),
 		Success:         resp.Success,
+		UsagePrompt:     resp.UsagePrompt,
+		UsageCompletion: resp.UsageCompletion,
 	}
 }
 
 // RunDecomposer is a convenience wrapper for running a leader/decomposer
 // subagent that produces a structured JSON plan.
+//
+// For reasoning models (deepseek-v4-pro, etc.) the decomposer gets a larger
+// token budget (ReasoningDecomposerMaxTokens) because the planning prompt
+// is significantly longer than a typical task prompt and the model's
+// chain-of-thought can consume 60-80% of the completion budget.
 func (ar *AgentRunner) RunDecomposer(prompt, workdir string, timeout time.Duration, model ...string) *RunResult {
 	toolNames := ProfileToToolNames(ProfileReadOnly)
 	req := SubagentRequest{
-		Task:      prompt,
-		Role:      "planner",
-		Tools:     toolNames,
-		Workdir:   workdir,
-		Timeout:   timeout,
-		MaxIters:  15,
-		MaxCalls:  40,
-		MaxTokens: 4096, // reasoning models need headroom (default 800 too small)
+		Task:     prompt,
+		Role:     "planner",
+		Tools:    toolNames,
+		Workdir:  workdir,
+		Timeout:  timeout,
+		MaxIters: 15,
+		MaxCalls: 40,
 	}
 	if len(model) > 0 && model[0] != "" {
 		req.Model = model[0]
+	}
+	// Decomposer needs a larger budget than the generic ReasoningMaxTokens.
+	// Use ReasoningDecomposerMaxTokens for reasoning models so the
+	// chain-of-thought doesn't starve the JSON plan output.
+	req.MaxTokens = effectiveMaxTokens(0, req.Model)
+	if req.MaxTokens == ReasoningMaxTokens {
+		req.MaxTokens = ReasoningDecomposerMaxTokens
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
@@ -211,9 +299,12 @@ func (ar *AgentRunner) RunDecomposer(prompt, workdir string, timeout time.Durati
 	return &RunResult{
 		ExitCode:        resp.ExitCode,
 		Stdout:          resp.Output,
-		Stderr:          "",
+		SpawnerType:     resp.SpawnerType,
+			Stderr:          resp.Diagnostic,
 		DurationSeconds: round(elapsed, 2),
 		Success:         resp.Success,
+		UsagePrompt:     resp.UsagePrompt,
+		UsageCompletion: resp.UsageCompletion,
 	}
 }
 
