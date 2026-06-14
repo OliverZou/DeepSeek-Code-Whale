@@ -35,6 +35,8 @@ type Client struct {
 
 	pendingResume   string
 	pendingResumeMu sync.Mutex
+	wsConn          *websocket.Conn
+	wsConnMu        sync.Mutex
 }
 
 // NewClient creates a dashboard client.  It immediately tries to register
@@ -125,8 +127,16 @@ func (c *Client) connectAndRead() {
 	if err != nil {
 		return
 	}
-	defer conn.Close()
+	defer func() {
+		c.wsConnMu.Lock()
+		c.wsConn = nil
+		c.wsConnMu.Unlock()
+		conn.Close()
+	}()
 
+	c.wsConnMu.Lock()
+	c.wsConn = conn
+	c.wsConnMu.Unlock()
 	log.Printf("dashboard: ws connected as %s", c.wsID)
 	if team_engine.DefaultTeamLog != nil { team_engine.DefaultTeamLog.CLIWSConnect(c.wsID, nil) }
 
@@ -207,5 +217,17 @@ func (c *Client) PendingResume() string {
 // IsRegistered returns true if the client successfully registered.
 func (c *Client) IsRegistered() bool {
 	return c.wsID != ""
+}
+
+// SendTaskEvent sends a team-engine task event to the dashboard over WebSocket.
+func (c *Client) SendTaskEvent(event team_engine.TaskEvent) {
+	c.wsConnMu.Lock()
+	conn := c.wsConn
+	c.wsConnMu.Unlock()
+	if conn == nil {
+		return
+	}
+	data, _ := json.Marshal(event)
+	conn.WriteMessage(websocket.TextMessage, data)
 }
 

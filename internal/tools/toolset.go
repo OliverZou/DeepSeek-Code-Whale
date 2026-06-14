@@ -45,14 +45,19 @@ type Toolset struct {
 	// The callback should adapt tasks.Runner.SpawnSubagentWithProgress.
 	teamEngineSpawnFunc team_engine.SpawnFunc
 
-	// DashboardClient provides access to dashboard-queued resume commands.
+	// DashboardClient provides access to dashboard-queued resume commands
+	// and real-time event forwarding to the dashboard.
 	dashboardClient interface {
 		PendingResume() string
+		SendTaskEvent(team_engine.TaskEvent)
 	}
 }
 
 // SetDashboardClient sets the dashboard client for auto-resume support.
-func (b *Toolset) SetDashboardClient(c interface{ PendingResume() string }) {
+func (b *Toolset) SetDashboardClient(c interface {
+	PendingResume() string
+	SendTaskEvent(team_engine.TaskEvent)
+}) {
 	b.dashboardClient = c
 }
 

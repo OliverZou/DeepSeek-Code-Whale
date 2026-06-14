@@ -95,6 +95,15 @@ async function loadMasterTasks() {
 async function loadSubtasks(wsID, mtID) {
   try {
     const newSubtasks = await window.go.main.App.GetSubtasks(wsID, mtID);
+    // Detect changes: mark subtasks as unread when state/progress changes.
+    const prevMap = new Map();
+    for (const st of state.subtasks) { prevMap.set(st.id, st); }
+    for (const st of newSubtasks) {
+      const prev = prevMap.get(st.id);
+      if (!prev || prev.state !== st.state || prev.progress !== st.progress) {
+        state.unreadTasks.add(st.id);
+      }
+    }
     state.subtasks = newSubtasks;
     // Preserve selected subtask ID across refreshes.
     const prevSelStId = state.selStId;

@@ -222,7 +222,7 @@ func (m *MultiEngineManager) HandleWebSocket(w http.ResponseWriter, r *http.Requ
 	if team_engine.DefaultTeamLog != nil { team_engine.DefaultTeamLog.DashboardWSConnect(wsID, true, nil) }
 	log.Printf("dashboard: ws connected for workspace %s", wsID)
 
-	// Read loop — keep connection alive and detect disconnects.
+	// Read loop — forward task events to frontend, detect disconnects.
 	go func() {
 		defer func() {
 			conn.Close()
@@ -231,8 +231,14 @@ func (m *MultiEngineManager) HandleWebSocket(w http.ResponseWriter, r *http.Requ
 			log.Printf("dashboard: ws disconnected for workspace %s", wsID)
 		}()
 		for {
-			if _, _, err := conn.ReadMessage(); err != nil {
+			_, msg, err := conn.ReadMessage()
+			if err != nil {
 				return
+			}
+			// Try to parse as a task event from the whale CLI.
+			var event team_engine.TaskEvent
+			if err := json.Unmarshal(msg, &event); err == nil && event.Type > 0 {
+				m.fireEngineEvent(event)
 			}
 		}
 	}()

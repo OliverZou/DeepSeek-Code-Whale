@@ -178,6 +178,13 @@ func (b *Toolset) runTeamPlan(ctx context.Context, call core.ToolCall, progress 
 		eng.SetTeam(tc)
 	}
 
+	// Forward engine events to dashboard for real-time UI updates.
+	if b.dashboardClient != nil {
+		eng.OnEvent(func(event team_engine.TaskEvent) {
+			b.dashboardClient.SendTaskEvent(event)
+		})
+	}
+
 	// Register progress callback if we have one.
 	// Throttled to at most 1 update per 500ms to avoid TUI flickering.
 	if progress != nil {
