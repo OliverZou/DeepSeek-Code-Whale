@@ -1056,6 +1056,7 @@ func (m *MultiEngineManager) ResumeMasterTask(wsID, masterTaskID string) error {
 	ws, ok := m.states[wsID]
 	m.mu.RUnlock()
 	if !ok {
+		if team_engine.DefaultTeamLog != nil { team_engine.DefaultTeamLog.DashboardResumeMaster(wsID, masterTaskID, fmt.Errorf("workspace not found")) }
 		return fmt.Errorf("workspace %s not found", wsID)
 	}
 	if ws.Engine == nil {
@@ -1067,11 +1068,13 @@ func (m *MultiEngineManager) ResumeMasterTask(wsID, masterTaskID string) error {
 		if _, err := os.Stat(dbPath); err == nil {
 			eng, err := team_engine.New(dbPath, wbDir, "", nil)
 			if err != nil {
+				if team_engine.DefaultTeamLog != nil { team_engine.DefaultTeamLog.DashboardResumeMaster(wsID, masterTaskID, fmt.Errorf("lazy open engine: %w", err)) }
 				return fmt.Errorf("lazy open engine for %s: %w", wsID, err)
 			}
 			m.wireEngine(eng)
 			ws.Engine = eng
 		} else {
+			if team_engine.DefaultTeamLog != nil { team_engine.DefaultTeamLog.DashboardResumeMaster(wsID, masterTaskID, fmt.Errorf("no db at %s", dbPath)) }
 			return fmt.Errorf("engine not open for %s (no db)", wsID)
 		}
 	}
@@ -1079,11 +1082,13 @@ func (m *MultiEngineManager) ResumeMasterTask(wsID, masterTaskID string) error {
 	// Load the master task to get its goal and workdir.
 	mt, err := ws.Engine.GetMasterTask(masterTaskID)
 	if err != nil || mt == nil {
+		if team_engine.DefaultTeamLog != nil { team_engine.DefaultTeamLog.DashboardResumeMaster(wsID, masterTaskID, fmt.Errorf("master task not found: %v", err)) }
 		return fmt.Errorf("master task %s not found", masterTaskID)
 	}
 
 	// Set master task status to running.
 	if err := ws.Engine.DB.UpdateMasterTaskStatus(masterTaskID, "running"); err != nil {
+		if team_engine.DefaultTeamLog != nil { team_engine.DefaultTeamLog.DashboardResumeMaster(wsID, masterTaskID, fmt.Errorf("update status: %w", err)) }
 		return fmt.Errorf("update master task status: %w", err)
 	}
 
@@ -1091,18 +1096,20 @@ func (m *MultiEngineManager) ResumeMasterTask(wsID, masterTaskID string) error {
 	// engine can pick them up.
 	subtasks, err := ws.Engine.DB.ListTasksByMasterTask(masterTaskID)
 	if err != nil {
+		if team_engine.DefaultTeamLog != nil { team_engine.DefaultTeamLog.DashboardResumeMaster(wsID, masterTaskID, fmt.Errorf("list subtasks: %w", err)) }
 		return fmt.Errorf("list subtasks: %w", err)
 	}
 	for _, t := range subtasks {
-			// ResetForResume mirrors team_engine.ResetForResume:
-			// failed/suspended -> pending, other runnable -> assigned.
-			newState := team_engine.ResetForResume(t.State)
-			if newState != t.State {
-				if err := ws.Engine.DB.TransitionState(t.ID, newState, "dashboard-resume", ""); err != nil {
-					return fmt.Errorf("transition task %s: %w", t.ID, err)
-				}
+		// ResetForResume mirrors team_engine.ResetForResume:
+		// failed/suspended -> pending, other runnable -> assigned.
+		newState := team_engine.ResetForResume(t.State)
+		if newState != t.State {
+			if err := ws.Engine.DB.TransitionState(t.ID, newState, "dashboard-resume", ""); err != nil {
+				if team_engine.DefaultTeamLog != nil { team_engine.DefaultTeamLog.DashboardResumeMaster(wsID, masterTaskID, fmt.Errorf("transition %s from %s: %w", t.ID, t.State, err)) }
+				return fmt.Errorf("transition task %s: %w", t.ID, err)
 			}
 		}
+	}
 
 	// Queue a resume command so the main Whale CLI picks it up and
 	// actually executes the tasks (dashboard itself has no spawner).
