@@ -734,15 +734,17 @@ func (m *MultiEngineManager) GetSubtasks(wsID, masterTaskID string) []SubtaskJSO
 	}
 
 	out := make([]SubtaskJSON, 0, 1+len(tasks))
-	// Prepend synthetic 任务规划 entry.
+	// Prepend synthetic 任务规划 entry — only when subtasks exist.
+	if len(tasks) > 0 {
 		out = append(out, SubtaskJSON{
 			ID:          "__leader__",
 			Title:       "📋 任务规划",
 			Description: masterTaskID,
-		Role:        "teamleader",
-		State:       "done",
-		Progress:    100,
-	})
+			Role:        "teamleader",
+			State:       "done",
+			Progress:    100,
+		})
+	}
 	for _, t := range tasks {
 		out = append(out, SubtaskJSON{
 			ID:          t.ID,
