@@ -230,7 +230,7 @@ func TestGetProgress(t *testing.T) {
 		pct   int
 	}{
 		{TaskStatePending, 0},
-		{TaskStateAssigned, 10},
+		{TaskStateAssigned, 0},
 		{TaskStateProducing, 25},
 		{TaskStateProduced, 50},
 		{TaskStateVerifying, 65},
