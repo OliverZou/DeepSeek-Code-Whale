@@ -91,7 +91,7 @@ async function loadMasterTasks() {
       }
     }
     updateUI();
-  } catch (_) {}
+  } catch (e) { console.error("loadMasterTasks failed:", e); }
 }
 
 async function loadSubtasks(wsID, mtID) {
@@ -451,16 +451,20 @@ function showMasterTaskContextMenu(x, y, mtId, wsId, goal) {
   menu.querySelector('[data-action="delete"]').onclick = async () => {
     removeCtxMenu();
     if (!confirm(`确认删除总任务「${goal}」及其所有子任务?`)) return;
-    const err = await window.go.main.App.DeleteMasterTask(wsId, mtId);
-    state.selMtId = null;
-    state.subtasks = [];
-    state.selStId = null;
-    await loadMasterTasks();
-    clearAgentPanel();
-    if (err) {
-      // Show error after UI refresh so the list is still updated.
-      console.error('删除总任务失败:', err);
-    }
+	    const err = await window.go.main.App.DeleteMasterTask(wsId, mtId);
+	    if (err) {
+	      console.error('删除总任务失败:', err);
+	      return;
+	    }
+	    // Clear local state immediately, then reload from backend.
+	    state.selMtId = null;
+	    state.subtasks = [];
+	    state.selStId = null;
+	    state.masterTasks = (state.masterTasks || []).filter(mt => mt.id !== mtId);
+	    updateUI();
+	    clearAgentPanel();
+	    // Reload in background to resolve push-update races.
+	    setTimeout(() => loadMasterTasks(), 200);
   };
   document.body.appendChild(menu);
 

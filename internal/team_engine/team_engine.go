@@ -1819,15 +1819,24 @@ func (e *TeamEngine) DeleteTask(taskID string) error {
 func (e *TeamEngine) DeleteMasterTask(masterTaskID string) error {
 	subtasks, err := e.DB.ListTasksByMasterTask(masterTaskID)
 	if err != nil {
-		return fmt.Errorf("list subtasks: %w", err)
+	return fmt.Errorf("list subtasks: %w", err)
 	}
 	for _, t := range subtasks {
-		if t.State == TaskStateProducing || t.State == TaskStateVerifying {
-			_ = e.DB.TransitionState(t.ID, TaskStateFailed, "deleted by user", "")
-		}
+	if t.State == TaskStateProducing || t.State == TaskStateVerifying {
+	_ = e.DB.TransitionState(t.ID, TaskStateFailed, "deleted by user", "")
 	}
-	return e.DB.DeleteMasterTask(masterTaskID)
-}
+	}
+	if err := e.DB.DeleteMasterTask(masterTaskID); err != nil {
+	return err
+	}
+	// Clean up whiteboard files — task directories, board, deliverable.
+	var ids []string
+	for _, t := range subtasks {
+	ids = append(ids, t.ID)
+	}
+	e.Whiteboard.CleanupMasterTask(masterTaskID, ids)
+	return nil
+	}
 
 // runDWVerification executes Dynamic Workflow verification for a task:
 // N parallel verifiers with different perspectives + Synthesizer merge.

@@ -434,3 +434,18 @@ func (wb *Whiteboard) CopyArtifact(taskID, filename, content string) error {
 	}
 	return wb.writeFile(dest, content)
 }
+
+	// CleanupTask removes all whiteboard files for a single task.
+	func (wb *Whiteboard) CleanupTask(taskID string) error {
+		return os.RemoveAll(wb.TaskDir(taskID))
+	}
+
+	// CleanupMasterTask removes board, deliverable, and all subtask directories.
+	func (wb *Whiteboard) CleanupMasterTask(masterTaskID string, subtaskIDs []string) {
+		_ = os.Remove(wb.BoardPath())
+		_ = os.Remove(wb.DeliverablePath())
+		_ = os.Remove(filepath.Join(wb.baseDir, "deliverable.json"))
+		for _, id := range subtaskIDs {
+			_ = os.RemoveAll(wb.TaskDir(id))
+		}
+	}
