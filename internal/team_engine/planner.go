@@ -50,20 +50,48 @@ GOAL:
 %s
 
 RULES:
-1. Break the goal into 1-12 subtasks
-2. Each subtask should be self-contained and produce a clear deliverable
-3. Order subtasks by dependency (earlier subtasks first)
-4. HOW TO SPLIT — Choose the right strategy:
-   a) BY DELIVERABLE: One file/artifact per task (e.g. "write API spec" →
-      "write implementation" → "write tests").  Use sequential batches.
-   b) BY PERSPECTIVE: Same goal, different lenses.  Assign multiple agents
-      with different verifier_focus values in the SAME batch, then add a
-      synthesizer in the NEXT batch to merge findings.  (Judge Panel pattern)
-      Example: Batch 1 = security-reviewer + perf-reviewer + correctness-reviewer
-               Batch 2 = synthesizer (aggregate all reviews)
-   c) BY WORKLOAD: Only when a single deliverable is unavoidably large
-      (e.g. 8-section document).  Split into sequential subtasks of 2-3
-      sections each.  Avoid — prefer (a) or (b) when possible.
+1. Break the goal into subtasks.  Most goals need 3-8 subtasks; complex goals
+   may need up to 12.  Fewer, larger tasks are MORE LIKELY TO FAIL than several
+   smaller, focused ones.
+
+2. Each subtask must be self-contained and produce ONE clear deliverable.
+   A Worker should be able to complete it in a single pass without running
+   out of output capacity.
+
+3. Order subtasks by dependency — foundation types and utilities first,
+   code that depends on them later.
+
+4. HOW TO SPLIT — Apply these strategies in combination.  Each strategy
+   addresses a different aspect of decomposition:
+
+   a) BY DOMAIN (architectural boundary):
+      Group work by module / package / architectural layer.  Each domain
+      becomes a batch.  Tasks within a batch share package context.
+      Example: "data model domain" → "business logic domain" → "API domain"
+
+   b) BY FUNCTION (independent capability):
+      Within a domain, split by self-contained capability.  Each subtask
+      should deliver ONE testable function or a small set of tightly
+      related functions.
+      Example for a game module:
+        Task 1: "Define board types, constants, and NewBoard constructor"
+        Task 2: "Implement CheckWin (4-direction win detection)"
+        Task 3: "Implement Game state machine (NewGame, MakeMove, accessors)"
+
+   c) BY DEPENDENCY (bottom-up ordering):
+      Types and constants FIRST.  Pure functions that only depend on types
+      SECOND.  Functions that compose other functions LAST.  Use
+      depends_on_index / depends_on_indices to enforce task-level ordering;
+      use depends_on_batch for batch-level ordering.
+
+   CRITICAL — SIZE CONSTRAINT:
+   Worker agents have LIMITED output capacity.  A single developer subtask
+   that requires more than ~150 lines of code or more than ~3 separate
+   functions WILL FAIL due to output truncation.  When in doubt, SPLIT:
+   - If a file needs 200+ lines → split into 2 subtasks
+   - If a file needs 300+ lines → split into 3 subtasks
+   - Split points: types/constants first, then algorithm core, then
+     integration/glue code last.
 
 5. Assign an appropriate ROLE to each subtask:
    - "developer"   — writing code
@@ -76,59 +104,46 @@ RULES:
    - "synthesizer" — merge multiple research results into structured conclusions
 
 6. Group related subtasks into **batches** (stages). Use "batch_id" to group tasks
-   that can run in parallel. Use "depends_on_batch" to declare batch-level dependencies.
-   Example: tasks in batch "research" must finish before tasks in batch "write" start.
+   that can run in parallel. Use "depends_on_batch" to declare batch-level
+   dependencies.  Tasks in batch "backend" can only start after all tasks in
+   batch "foundation" complete.
 
-7. Use "depends_on_index" / "depends_on_indices" for task-level dependencies.
+7. Use "depends_on_index" / "depends_on_indices" for task-level dependencies
+   WITHIN a batch.  -1 means no dependency.
 
 8. ORCHESTRATION PATTERNS — Choose the best pattern for your goal:
 
-   a) PIPELINE (default): Sequential batches, each depending on the previous.
-      Use when tasks have clear dependencies (e.g. design → code → test → deploy).
-      Set depends_on_batch on later batches.
+   a) PIPELINE (default for code projects): Sequential batches, each depending
+      on the previous.  Use when work has clear phases.
+      Example: foundation → core-logic → features → integration → verify
 
-   b) PARALLEL WITH AGGREGATION (Judge Panel): For high-risk review tasks,
-      assign MULTIPLE reviewers with different verifier_focus values in the same batch,
-      then add a "synthesizer" task in the next batch to aggregate their conclusions.
+   b) PARALLEL WITH AGGREGATION (Judge Panel): For review/analysis goals,
+      assign MULTIPLE reviewers with different verifier_focus values in the
+      SAME batch, then add a "synthesizer" in the next batch to merge findings.
       Example:
-        Batch 1: security-reviewer (focus:security), perf-reviewer (focus:performance)
+        Batch 1: security-reviewer + perf-reviewer + correctness-reviewer
         Batch 2 (depends on Batch 1): synthesizer (aggregate all reviews)
 
-   c) EXPLORATION LOOP (Deep Research): For research/exploration goals,
-      set verifier_focus to "exploration" on research tasks. The engine will
-      keep re-running the batch until no new findings emerge (dry).
-      Set max_cycles to a reasonable limit (e.g. 3-5) to bound exploration depth.
+   c) EXPLORATION LOOP (Deep Research): For research goals, set
+      verifier_focus to "exploration".  The engine keeps re-running the batch
+      until no new findings emerge.  Set max_cycles to 3-5.
 
-   d) COMPLETENESS CHECK: For goals requiring full coverage,
-      assign a reviewer with verifier_focus="completeness" in a subsequent batch.
-      This reviewer checks if the output covers all requirements from the goal.
+   d) COMPLETENESS CHECK: Assign a reviewer with verifier_focus="completeness"
+      in the final batch to verify all requirements are covered.
 
 9. Use "verifier_focus" to control what the Verifier checks:
-   - "correctness"    — output is accurate (default)
+   - "correctness"    — output is accurate (default for code tasks)
    - "security"       — security vulnerabilities
    - "performance"    — performance implications
    - "completeness"   — covers all requirements
-   - "exploration"    — whether there are still unexplored directions (for Loop-until-dry)
+   - "exploration"    — unexplored directions remain (for Loop-until-dry)
    - "style"          — code style / conventions
-   - "sources"        — whether claims are properly sourced (for research)
+   - "sources"        — claims are properly sourced (for research)
 
 10. Use "max_cycles" per-batch to limit retry/exploration loops (default 1, max 10).
 
-11. Set "use_dw": true for tasks that benefit from multi-perspective verification:
-    - Security-critical code, correctness-critical logic, or multi-faceted reviews
-    - When verifier_focus includes multiple dimensions (security,correctness,completeness)
-    - DEFAULT: false (single verifier is sufficient for simple/formatting/minor tasks)
-
-12. BATCH-LEVEL DW EXECUTION: When you mark ANY task in a batch with
-    "use_dw": true, the ENTIRE batch switches to DW pipeline mode:
-    - Each task gets multiple verifiers (parallel perspectives + Synthesizer)
-    - Tasks complete independently — no batch-wide Leader review
-    - Failed tasks are re-decomposed individually, passed tasks stay done
-    - Best for: Judge Panel patterns (multi-perspective review batches),
-      high-risk batches where every task needs thorough verification,
-      or batches where task independence maximizes throughput.
-    - Do NOT use for: simple sequential pipelines where Leader oversight
-      is essential, or batches with strong inter-task coordination needs.
+11. Set "use_dw": true for tasks needing multi-perspective verification.
+    DEFAULT: false (single verifier is sufficient for most tasks).
 
 OUTPUT FORMAT (pure JSON array, no markdown):
 [
@@ -137,7 +152,7 @@ OUTPUT FORMAT (pure JSON array, no markdown):
     "description": "detailed instructions for the worker agent",
     "role": "developer",
     "batch_id": "phase-1",
-    "batch_label": "Research Phase",
+    "batch_label": "Foundation",
     "depends_on_batch": [],
     "depends_on_index": -1,
     "verifier_focus": "correctness",
@@ -280,8 +295,18 @@ Description: %s
 
 Last verifier feedback: %s
 
-Break this task into 2-3 SMALLER subtasks that can each be completed in one pass.
-Each subtask must produce ONE concrete deliverable.
+The task failed because a Worker agent could not produce the full output in one pass —
+the output was truncated, the code was incomplete, or the file ended mid-statement.
+Workers have limited output capacity (~150 lines of code max per task).  The original
+task description likely asked for too much in a single pass.
+
+Break this task into 2-3 SMALLER subtasks that each stay under the ~150-line limit.
+Apply the same splitting strategies as the original decomposition:
+  - BY DOMAIN: split by module boundary if the task spans multiple packages
+  - BY FUNCTION: split by self-contained capability (one function or small set)
+  - BY DEPENDENCY: types/constants first, then algorithm, then integration
+
+Each subtask must produce ONE concrete, testable deliverable.
 
 OUTPUT FORMAT (pure JSON array, no markdown):
 [
