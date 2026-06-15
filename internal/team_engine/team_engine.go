@@ -1419,7 +1419,7 @@ func (e *TeamEngine) PlanAndRun(ctx context.Context, goal, workdir, masterTaskID
 				prevFindings = currentFindings
 
 				// Check for tasks needing re-decomposition (retries exhausted).
-				escalator.ProcessBatch(batch, masterTaskID, workdir, decomposerTimeout, leaderModel,
+				recount := escalator.ProcessBatch(batch, masterTaskID, workdir, decomposerTimeout, leaderModel,
 					func(id string) (*Task, error) { return e.DB.GetTask(id) },
 					func(pt PlanTask, batchID, mtID string, parentIDs []string) (*Task, error) {
 						profile := ToolProfile(pt.Profile)
@@ -1436,6 +1436,11 @@ func (e *TeamEngine) PlanAndRun(ctx context.Context, goal, workdir, masterTaskID
 						return e.DB.ForceTransitionState(taskID, state, reason)
 					},
 				)
+				// If new child tasks were created by the escalator, extend the
+				// cycle limit so they get a chance to execute in this run.
+				if recount > 0 && cycle == cycleLimit-1 {
+					cycleLimit++
+				}
 
 				// Write board.md after each batch cycle.
 				if boardContent := e.Whiteboard.BuildBoardContent(batches); boardContent != "" {
@@ -1723,7 +1728,7 @@ func (e *TeamEngine) runDWCycle(
 		prevFindings = currentFindings
 
 		// Escalator: re-decompose stuck tasks (retries exhausted).
-		escalator.ProcessBatch(batch, masterTaskID, workdir, decomposerTimeout, leaderModel,
+		recount := escalator.ProcessBatch(batch, masterTaskID, workdir, decomposerTimeout, leaderModel,
 			func(id string) (*Task, error) { return e.DB.GetTask(id) },
 			func(pt PlanTask, batchID, mtID string, parentIDs []string) (*Task, error) {
 				profile := ToolProfile(pt.Profile)
@@ -1740,6 +1745,9 @@ func (e *TeamEngine) runDWCycle(
 				return e.DB.ForceTransitionState(taskID, state, reason)
 			},
 		)
+		if recount > 0 && cycle == cycleLimit-1 {
+			cycleLimit++
+		}
 
 		// Write board after each cycle.
 		if boardContent := e.Whiteboard.BuildBoardContent(batches); boardContent != "" {
