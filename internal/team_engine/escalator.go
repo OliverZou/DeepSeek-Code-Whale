@@ -32,7 +32,7 @@ func (esc *Escalator) StuckTasks(batch *Batch, getTask func(string) (*Task, erro
 		if err != nil {
 			continue
 		}
-		if current != nil && current.State == TaskStateSuspended && current.RetryCount >= current.MaxRetries {
+		if current != nil && current.State == TaskStateSuspended {
 			out = append(out, current)
 		}
 	}
@@ -73,6 +73,10 @@ func (esc *Escalator) ProcessBatch(batch *Batch, masterTaskID, workdir string, t
 
 	count := 0
 	for _, t := range stuck {
+		// Skip tasks suspended for non-retry reasons (user interrupt, crash restart).
+		if t.RetryCount == 0 {
+			continue
+		}
 		if esc.loggers != nil {
 			esc.loggers.Engine("escalator: re-decompose task %s (%s) after %d retries", t.ID[:8], t.Title, t.MaxRetries)
 		}

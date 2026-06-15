@@ -291,8 +291,26 @@ func (p *Planner) DecomposeFull(goal string, workdir string, timeout time.Durati
 	return p.decomposeInternal(goal, workdir, timeout, model...)
 }
 
+// stripVerifierFeedback removes accumulated [VERIFIER FEEDBACK ...] blocks
+// from a task description, keeping only the original task requirements.
+// This prevents prompt bloat when re-decomposing tasks that have gone through
+// multiple retry rounds.
+func stripVerifierFeedback(desc string) string {
+	if idx := strings.Index(desc, "\n\n[VERIFIER FEEDBACK"); idx >= 0 {
+		return strings.TrimSpace(desc[:idx])
+	}
+	// Also strip [Leader Feedback ...] blocks.
+	if idx := strings.Index(desc, "\n\n[Leader Feedback"); idx >= 0 {
+		return strings.TrimSpace(desc[:idx])
+	}
+	return desc
+}
+
 // DecomposeTask re-decomposes a single task that exhausted retries into smaller subtasks.
 func (p *Planner) DecomposeTask(task *Task, workdir string, timeout time.Duration, model ...string) ([]PlanTask, error) {
+	// Strip accumulated verifier feedback to keep the prompt lean —
+	// the original task requirements are all the Leader needs to re-decompose.
+	cleanDesc := stripVerifierFeedback(task.Description)
 	prompt := fmt.Sprintf(`You are a Team Leader. The following task failed after multiple retries because it was too large to complete in a single pass.
 
 FAILED TASK:
@@ -320,7 +338,7 @@ OUTPUT FORMAT (pure JSON array, no markdown):
   {"title": "...", "description": "...", "role": "%s", "batch_id": "%s", "depends_on_batch": [], "verifier_focus": "%s", "max_cycles": 1}
 ]
 
-CRITICAL: Verify your JSON syntax — no trailing commas, proper string quoting.`, task.Title, task.Role, task.Description, task.VerifierFeedback, task.Role, task.BatchID, task.VerifierFocus)
+CRITICAL: Verify your JSON syntax — no trailing commas, proper string quoting.`, task.Title, task.Role, cleanDesc, task.VerifierFeedback, task.Role, task.BatchID, task.VerifierFocus)
 
 	tasks, _, err := p.decomposeInternal(prompt, workdir, timeout, model...)
 	return tasks, err
