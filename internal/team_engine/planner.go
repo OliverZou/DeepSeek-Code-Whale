@@ -50,6 +50,17 @@ GOAL:
 %s
 
 RULES:
+0. DOCUMENT TASKS — Only create a document task (requirements, architecture,
+   design spec, etc.) when the goal EXPLICITLY asks for one, OR when the
+   NEXT batch genuinely needs it as input to do its work.  When you do
+   create a document task:
+     - Its description must state: "Produce only what the next phase needs."
+     - It is a short checklist, not an essay.  Target ≤ 50 lines.
+     - Document tasks are SEQUENTIAL: architecture depends on requirements,
+       API design depends on architecture.  Put them in separate, ordered
+       batches with depends_on_batch.  Never put interdependent docs in
+       the same batch.
+
 1. Break the goal into subtasks.  Most goals need 3-8 subtasks; complex goals
    may need up to 12.  Fewer, larger tasks are MORE LIKELY TO FAIL than several
    smaller, focused ones.
