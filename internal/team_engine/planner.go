@@ -55,43 +55,63 @@ RULES:
    smaller, focused ones.
 
 2. Each subtask must be self-contained and produce ONE clear deliverable.
-   A Worker should be able to complete it in a single pass without running
-   out of output capacity.
+   A Worker should be able to complete it in a single pass.
 
 3. Order subtasks by dependency — foundation types and utilities first,
    code that depends on them later.
 
-4. HOW TO SPLIT — Apply these strategies in combination.  Each strategy
-   addresses a different aspect of decomposition:
+4. HOW TO SPLIT — You have 3 independent AXES.  Examine the goal and
+   combine them.  Not every axis applies to every goal.
 
-   a) BY DOMAIN (architectural boundary):
-      Group work by module / package / architectural layer.  Each domain
-      becomes a batch.  Tasks within a batch share package context.
-      Example: "data model domain" → "business logic domain" → "API domain"
+   ═══ AXIS A — STRUCTURE (what are the pieces?)
+   Split the scope into self-contained units.  The "size ruler" depends
+   on the task TYPE:
 
-   b) BY FUNCTION (independent capability):
-      Within a domain, split by self-contained capability.  Each subtask
-      should deliver ONE testable function or a small set of tightly
-      related functions.
-      Example for a game module:
-        Task 1: "Define board types, constants, and NewBoard constructor"
-        Task 2: "Implement CheckWin (4-direction win detection)"
-        Task 3: "Implement Game state machine (NewGame, MakeMove, accessors)"
+     BUILD tasks (code, configs, docs):
+       Split by module / component / file.
+       Size limit: ≤ ~150 lines of code or ≤ ~3 functions per subtask.
+       If a file needs 200+ lines → split into 2 subtasks.
+       Split points: types/constants first, then algorithm core, then
+       integration/glue code last.
 
-   c) BY DEPENDENCY (bottom-up ordering):
-      Types and constants FIRST.  Pure functions that only depend on types
-      SECOND.  Functions that compose other functions LAST.  Use
-      depends_on_index / depends_on_indices to enforce task-level ordering;
-      use depends_on_batch for batch-level ordering.
+     RESEARCH tasks (analysis, investigation, comparison):
+       Split by sub-question / topic / hypothesis.
+       Size limit: each subtask should yield 3-5 concrete findings
+       with 2+ citable sources per finding.
 
-   CRITICAL — SIZE CONSTRAINT:
-   Worker agents have LIMITED output capacity.  A single developer subtask
-   that requires more than ~150 lines of code or more than ~3 separate
-   functions WILL FAIL due to output truncation.  When in doubt, SPLIT:
-   - If a file needs 200+ lines → split into 2 subtasks
-   - If a file needs 300+ lines → split into 3 subtasks
-   - Split points: types/constants first, then algorithm core, then
-     integration/glue code last.
+     DECISION tasks (evaluation, recommendation):
+       Split by criterion / option / scenario.
+       Size limit: each subtask covers ONE criterion or ONE option
+       in depth, with evidence and trade-off analysis.
+
+   ═══ AXIS B — PERSPECTIVE (who is looking?)
+   For the SAME scope, assign multiple agents with DIFFERENT
+   verifier_focus values in the SAME batch.  Add a "synthesizer"
+   task in the NEXT batch to merge their findings.
+
+     Used for: high-risk verification, security audits, multi-faceted
+     analysis, adversarial review — any situation where a single
+     viewpoint risks missing something important.
+     Example:
+       Batch 1: security-reviewer + perf-reviewer + correctness-reviewer
+       Batch 2 (depends on Batch 1): synthesizer (aggregate all reviews)
+
+   ═══ AXIS C — DEPTH (how deep do we go?)
+   For goals where the answer is NOT known upfront, use iterative
+   deepening:
+     Pass 1 — BREADTH: cover the surface, identify key areas.
+     Pass 2 — DEPTH: drill into the most important findings.
+     Pass 3 — VERIFY: cross-check and consolidate conclusions.
+
+     Set verifier_focus="exploration" and max_cycles ≥ 3.
+     The engine will keep re-running the batch until no NEW findings
+     emerge (loop-until-dry).
+
+   ═══ COMBINING AXES
+   - A BUILD project (code, docs): Axis A dominates. Axis C optional.
+   - A RESEARCH project: Axis A + C. Axis B for critical claims.
+   - An AUDIT / REVIEW: Axis B dominates. Axis A for scope.
+   - Use ONLY the axes that fit.  Not every goal needs all three.
 
 5. Assign an appropriate ROLE to each subtask:
    - "developer"   — writing code
@@ -103,47 +123,34 @@ RULES:
    - "evaluator"   — quality evaluation
    - "synthesizer" — merge multiple research results into structured conclusions
 
-6. Group related subtasks into **batches** (stages). Use "batch_id" to group tasks
-   that can run in parallel. Use "depends_on_batch" to declare batch-level
-   dependencies.  Tasks in batch "backend" can only start after all tasks in
-   batch "foundation" complete.
+6. Group tasks into **batches**.  A batch is a DEPENDENCY BARRIER:
+   all tasks in a batch must finish before the next batch starts.
+   Put tasks in the SAME batch when they can run independently.
+   Put tasks in DIFFERENT batches when one MUST wait for another.
+   Use "depends_on_batch" to declare batch-level ordering.
 
-7. Use "depends_on_index" / "depends_on_indices" for task-level dependencies
-   WITHIN a batch.  -1 means no dependency.
+   IMPORTANT — You do NOT control parallelism.  The engine decides
+   how many tasks run simultaneously (respecting a global agent limit).
+   You only declare WHAT depends on WHAT.  If tasks have no dependency,
+   put them in the same batch — the engine parallelizes them for you.
 
-8. ORCHESTRATION PATTERNS — Choose the best pattern for your goal:
+7. Use "depends_on_index" / "depends_on_indices" for task-level
+   dependencies WITHIN a batch.  -1 means no dependency.
 
-   a) PIPELINE (default for code projects): Sequential batches, each depending
-      on the previous.  Use when work has clear phases.
-      Example: foundation → core-logic → features → integration → verify
-
-   b) PARALLEL WITH AGGREGATION (Judge Panel): For review/analysis goals,
-      assign MULTIPLE reviewers with different verifier_focus values in the
-      SAME batch, then add a "synthesizer" in the next batch to merge findings.
-      Example:
-        Batch 1: security-reviewer + perf-reviewer + correctness-reviewer
-        Batch 2 (depends on Batch 1): synthesizer (aggregate all reviews)
-
-   c) EXPLORATION LOOP (Deep Research): For research goals, set
-      verifier_focus to "exploration".  The engine keeps re-running the batch
-      until no new findings emerge.  Set max_cycles to 3-5.
-
-   d) COMPLETENESS CHECK: Assign a reviewer with verifier_focus="completeness"
-      in the final batch to verify all requirements are covered.
-
-9. Use "verifier_focus" to control what the Verifier checks:
-   - "correctness"    — output is accurate (default for code tasks)
+8. Use "verifier_focus" to control what the Verifier checks:
+   - "correctness"    — output is accurate (default for code)
    - "security"       — security vulnerabilities
    - "performance"    — performance implications
    - "completeness"   — covers all requirements
-   - "exploration"    — unexplored directions remain (for Loop-until-dry)
+   - "exploration"    — unexplored directions remain (for Axis C)
    - "style"          — code style / conventions
    - "sources"        — claims are properly sourced (for research)
 
-10. Use "max_cycles" per-batch to limit retry/exploration loops (default 1, max 10).
+9. Use "max_cycles" per-batch to limit retry/exploration loops
+   (default 1, max 10).  For Axis C (exploration), set max_cycles ≥ 3.
 
-11. Set "use_dw": true for tasks needing multi-perspective verification.
-    DEFAULT: false (single verifier is sufficient for most tasks).
+10. Set "use_dw": true only for tasks that need multi-perspective
+    verification (Axis B).  DEFAULT: false.
 
 OUTPUT FORMAT (pure JSON array, no markdown):
 [
