@@ -245,12 +245,13 @@ func NewWhaleNativeSpawner(spawn SpawnSubagentFunc) *WhaleNativeSpawner {
 
 func (s *WhaleNativeSpawner) SpawnSubagent(ctx context.Context, req SubagentRequest) (SubagentResponse, error) {
 	opts := SpawnOptions{
-		Role:       req.Role,
-		Tools:      req.Tools,
-		Workdir:    req.Workdir,
-		MaxIters:   req.MaxIters,
-		MaxCalls:   req.MaxCalls,
-		OnProgress: req.OnProgress,
+		Role:           req.Role,
+		Tools:          req.Tools,
+		Workdir:        req.Workdir,
+		MaxIters:       req.MaxIters,
+		MaxCalls:       req.MaxCalls,
+		OnProgress:     req.OnProgress,
+		PermissionMode: "auto", // workspace dir is trusted — don't prompt
 	}
 
 	result, err := s.spawn(ctx, req.Task, opts)

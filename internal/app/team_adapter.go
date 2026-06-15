@@ -32,19 +32,27 @@ func teamEngineSpawnAdapter(runner *tasks.Runner) team_engine.SpawnFunc {
 			tasksReq.Tools = req.Tools
 		}
 		// Provide inline agent definitions for team-engine roles
-		// that aren't in the builtin registry.
+		// that aren't in the builtin registry.  All team-engine agents
+		// operate inside a known workspace directory and should use
+		// "auto" permission mode to avoid user prompts mid-run.
 		switch req.Role {
-		case "worker":
+		case "worker", "tester", "formatter", "writer":
 			tasksReq.Agent = tasks.AgentDefinition{
-				Name:           "worker",
-				Description:    "General-purpose worker agent",
+				Name:           req.Role,
+				Description:    "Team engine " + req.Role + " agent",
 				PermissionMode: tasks.AgentPermissionAuto,
 			}
-		case "verifier":
+		case "planner", "verifier", "reviewer", "researcher", "evaluator", "synthesizer":
 			tasksReq.Agent = tasks.AgentDefinition{
-				Name:           "verifier",
-				Description:    "Verification agent",
+				Name:           req.Role,
+				Description:    "Team engine " + req.Role + " agent",
 				PermissionMode: tasks.AgentPermissionReadOnly,
+			}
+		default:
+			tasksReq.Agent = tasks.AgentDefinition{
+				Name:           req.Role,
+				Description:    "Team engine agent",
+				PermissionMode: tasks.AgentPermissionAuto,
 			}
 		}
 		if req.Workdir != "" {
