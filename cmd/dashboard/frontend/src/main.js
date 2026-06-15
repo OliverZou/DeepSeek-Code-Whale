@@ -280,14 +280,18 @@ function renderSubtasks() {
       const icon = st.id === '__leader__' ? '📋'
         : (st.children && st.children.length > 0) ? '📂'
         : '🎭';
-      const indent = depth * 16;
+      const indent = depth * 24; // 24px per level for clear hierarchy
       const hasChildren = st.children && st.children.length > 0;
       const retryBadge = exhausted ? '<span class="retry-badge" title="重试耗尽，已被重新分解">🔄</span>' : '';
+      // Show child count for re-decomposed (management) nodes.
+      const childBadge = hasChildren ? `<span class="child-count">${st.children.length}↳</span>` : '';
+      // Tree connector line for child items.
+      const treeLine = depth > 0 ? '<span class="tree-line"></span>' : '';
 
       html += `<div class="st${active}${leader}" data-id="${st.id}" style="padding-left:${indent + 8}px">
         <div class="st-title" title="${esc(st.title)}">
-          <span class="state-dot ${stateDot}${state.unreadTasks.has(st.id) ? " pulse" : ""}"></span>
-          ${icon} ${esc(st.title)} ${retryBadge}
+          ${treeLine}<span class="state-dot ${stateDot}${state.unreadTasks.has(st.id) ? " pulse" : ""}"></span>
+          ${icon} ${esc(st.title)} ${retryBadge}${childBadge}
           ${state.unreadTasks.has(st.id) ? '<span class="unread-badge">●</span>' : ''}
         </div>
         <div class="st-meta">

@@ -109,6 +109,25 @@ body {
 #task-tabs .st.sel { border-left-color: var(--accent); background: var(--active); }
 #task-tabs .st.leader { border-left-color: var(--amber); }
 #task-tabs .st.leader.sel { border-left-color: #f59e0b; }
+/* Tree connector for parent-child hierarchy */
+#task-tabs .st .tree-line {
+  display: inline-block;
+  width: 12px;
+  height: 100%;
+  margin-right: 2px;
+  border-left: 1.5px solid #30363d;
+  vertical-align: middle;
+  flex-shrink: 0;
+}
+/* Child count badge on re-decomposed management nodes */
+#task-tabs .st .child-count {
+  font-size: 10px;
+  color: #8b949e;
+  background: #21262d;
+  border-radius: 8px;
+  padding: 0 5px;
+  margin-left: 4px;
+}
 #task-tabs .st .st-title {
   font-weight: 500;
   white-space: nowrap;
