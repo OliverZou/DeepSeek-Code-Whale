@@ -1138,9 +1138,9 @@ func (e *TeamEngine) PlanAndRun(ctx context.Context, goal, workdir, masterTaskID
 			}
 			task.BatchID = bid
 			task.UseDW = pt.UseDW
+			task.MasterTaskID = masterTaskID
 			e.DB.UpdateTask(task.ID, map[string]interface{}{
 				"batch_id":       bid,
-					"use_dw":         pt.UseDW,
 				"master_task_id": masterTaskID,
 			})
 			batch.Tasks = append(batch.Tasks, task)
@@ -1264,7 +1264,7 @@ func (e *TeamEngine) PlanAndRun(ctx context.Context, goal, workdir, masterTaskID
 						}
 						task.BatchID = batchID
 						task.UseDW = pt.UseDW
-						_ = e.DB.UpdateTask(task.ID, map[string]interface{}{"batch_id": batchID, "master_task_id": mtID, "use_dw": pt.UseDW})
+						_ = e.DB.UpdateTask(task.ID, map[string]interface{}{"batch_id": batchID, "master_task_id": mtID})
 						return task, nil
 					},
 					func(taskID string, state TaskState, reason string) error {
@@ -1565,7 +1565,7 @@ func (e *TeamEngine) runDWCycle(
 				}
 				task.BatchID = batchID
 				task.UseDW = pt.UseDW
-				_ = e.DB.UpdateTask(task.ID, map[string]interface{}{"batch_id": batchID, "master_task_id": mtID, "use_dw": pt.UseDW})
+				_ = e.DB.UpdateTask(task.ID, map[string]interface{}{"batch_id": batchID, "master_task_id": mtID})
 				return task, nil
 			},
 			func(taskID string, state TaskState, reason string) error {
