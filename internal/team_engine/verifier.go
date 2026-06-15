@@ -62,6 +62,16 @@ CHECKLIST:
 5. Does it follow project conventions?
 %s
 
+CRITICAL — INDEPENDENT VERIFICATION:
+1. The Worker often MISREPORTS its own results. Workers say "failed" when
+   code is actually correct, or "done" when code is broken. NEVER trust
+   their self-assessment. You are the INDEPENDENT JUDGE.
+2. You MUST execute at least 2 different tools (read_file + one of
+   shell_run / grep / list_dir) before giving ANY verdict.  Verify the
+   actual files on disk — do not echo the Worker's conclusions.
+3. If your TOOLS USED list is empty, or if your EVIDENCE just repeats the
+   Worker's words, your verdict is INVALID and will be rejected automatically.
+
 IMPORTANT — TOOL-GROUNDED VERIFICATION:
 Your verdict MUST be based on actual external tool execution, NOT on your own reasoning.
 - For code tasks: use shell_run to execute tests (go test, pytest, etc.), linter, or build
@@ -95,6 +105,16 @@ func BuildContentVerifierPrompt(task *Task, workerOutput string) string {
 You are a Content Verifier. Critically examine this output against the
 original task. Be skeptical — challenge weak claims, unverifiable data,
 and logical inconsistencies.
+
+CRITICAL — INDEPENDENT VERIFICATION:
+1. The Worker often MISREPORTS its own results. Workers say "failed" when
+   output is actually correct, or "done" when output is broken. NEVER trust
+   their self-assessment. You are the INDEPENDENT JUDGE.
+2. You MUST execute at least 2 different tools (read_file + one of
+   list_dir / grep / web_search) before giving ANY verdict.  Verify the
+   actual files and facts on disk — do not echo the Worker's conclusions.
+3. If your TOOLS USED list is empty, or if your EVIDENCE just repeats the
+   Worker's words, your verdict is INVALID and will be rejected automatically.
 
 IMPORTANT — INCREMENTAL PROGRESS:
 Large documents (requirements, architecture, analysis reports) often
@@ -226,6 +246,20 @@ func (v *Verifier) Verify(task *Task) (passed bool, retry bool, feedback string,
 	result := v.runner.RunVerifier(prompt, workdir, v.timeout, v.model)
 
 	output := result.Stdout
+
+	// Guard: if the verifier produced a lazy verdict (no tools, no evidence,
+	// bare PASS/FAIL), re-run once with a hardened prompt that explicitly
+	// demands tool usage.  This prevents the model from echoing the Worker's
+	// self-assessment without independent verification.
+	if v.isLazyVerdict(output) {
+		hardenedPrompt := "YOUR PREVIOUS RESPONSE WAS REJECTED — it lacked tool evidence. " +
+			"You MUST run at least 2 tools (read_file + shell_run or grep) and report " +
+			"their ACTUAL output. A bare PASS/FAIL without tool output will be rejected again.\n\n" +
+			prompt
+		result2 := v.runner.RunVerifier(hardenedPrompt, workdir, v.timeout, v.model)
+		output = result2.Stdout
+	}
+
 	// Persist the verifier result to the whiteboard.
 	if err := v.whiteboard.WriteVerifier(task.ID, output); err != nil {
 		return false, false, output, fmt.Errorf("write verifier result: %w", err)
@@ -252,6 +286,31 @@ func (v *Verifier) Verify(task *Task) (passed bool, retry bool, feedback string,
 	// No clear verdict → treat as FAIL to be safe.
 
 	return passed, retry, output, nil
+}
+
+// isLazyVerdict detects verifier responses that lack independent tool evidence.
+// A "lazy" verdict is one where the LLM echoed the Worker's self-assessment
+// without running any tools — typically very short and missing the TOOLS USED
+// section required by the prompt.
+func (v *Verifier) isLazyVerdict(output string) bool {
+	trimmed := strings.TrimSpace(output)
+	// Too short to contain tool evidence — the required format alone
+	// (TOOLS USED + VERDICT + EVIDENCE + ISSUES + FINDINGS) is >100 chars.
+	if len(trimmed) < 100 {
+		return true
+	}
+	// The prompt mandates a "TOOLS USED:" section.  Missing it is a strong
+	// signal that the model skipped verification.
+	upper := strings.ToUpper(trimmed)
+	if !strings.Contains(upper, "TOOLS USED:") {
+		return true
+	}
+	// Must mention at least one recognizable tool name.
+	re := regexp.MustCompile(`TOOLS USED:.*(read_file|list_dir|shell_run|grep|search_files|web_search|web_fetch|fetch)`)
+	if !re.MatchString(trimmed) {
+		return true
+	}
+	return false
 }
 
 // ParseFindings extracts structured Finding objects from verifier output.

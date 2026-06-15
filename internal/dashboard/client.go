@@ -12,6 +12,7 @@ import (
 
 	"github.com/gorilla/websocket"
 
+	"github.com/usewhale/whale/internal/eventbus"
 	"github.com/usewhale/whale/internal/team_engine"
 )
 
@@ -121,78 +122,127 @@ func (c *Client) wsLoop() {
 	}
 }
 
-// connectAndRead opens a WebSocket connection and reads messages.
-func (c *Client) connectAndRead() {
-	u := url.URL{Scheme: "ws", Host: "127.0.0.1:8520", Path: "/ws", RawQuery: "wsid=" + c.wsID}
-	conn, _, err := websocket.DefaultDialer.Dial(u.String(), nil)
-	if err != nil {
-		return
-	}
-	defer func() {
+	// connectAndRead opens a WebSocket connection and reads messages.
+	// Bridges the process-local EventBus to the WebSocket so that events
+	// published in the dashboard process reach the whale CLI and vice versa.
+	func (c *Client) connectAndRead() {
+		u := url.URL{Scheme: "ws", Host: "127.0.0.1:8520", Path: "/ws", RawQuery: "wsid=" + c.wsID}
+		conn, _, err := websocket.DefaultDialer.Dial(u.String(), nil)
+		if err != nil {
+			return
+		}
+		defer func() {
+			c.wsConnMu.Lock()
+			c.wsConn = nil
+			c.wsConnMu.Unlock()
+			conn.Close()
+		}()
+
 		c.wsConnMu.Lock()
-		c.wsConn = nil
+		c.wsConn = conn
 		c.wsConnMu.Unlock()
-		conn.Close()
-	}()
+		log.Printf("dashboard: ws connected as %s", c.wsID)
+		if team_engine.DefaultTeamLog != nil { team_engine.DefaultTeamLog.CLIWSConnect(c.wsID, nil) }
 
-	c.wsConnMu.Lock()
-	c.wsConn = conn
-	c.wsConnMu.Unlock()
-	log.Printf("dashboard: ws connected as %s", c.wsID)
-	if team_engine.DefaultTeamLog != nil { team_engine.DefaultTeamLog.CLIWSConnect(c.wsID, nil) }
+		// Enable cross-process EventBus bridge.  bridgeOut carries events
+		// published in THIS process (send to dashboard over WebSocket);
+		// bridgeIn receives events from the dashboard (inject locally).
+		bridgeOut, bridgeIn := eventbus.EnableGlobalBridge()
 
-	// Write loop: periodic heartbeat pings.
-	heartbeatDone := make(chan struct{})
-	go func() {
-		ticker := time.NewTicker(heartbeatInterval)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-c.done:
-				return
-			case <-heartbeatDone:
-				return
-			case <-ticker.C:
-				if err := conn.WriteMessage(websocket.PingMessage, nil); err != nil {
+		// Forward whale CLI-side EventBus events to the dashboard.
+		bridgeDone := make(chan struct{})
+		defer close(bridgeDone)
+		go func() {
+			for {
+				select {
+				case <-bridgeDone:
 					return
+				case be, ok := <-bridgeOut:
+					if !ok {
+						return
+					}
+					if team_engine.DefaultTeamLog != nil {
+						team_engine.DefaultTeamLog.Log("bridge", "cli → dashboard: topic=%s type=%s", be.Topic, be.Event.Type)
+					}
+					data, err := json.Marshal(be)
+					if err != nil {
+						continue
+					}
+					if werr := conn.WriteMessage(websocket.TextMessage, data); werr != nil {
+						log.Printf("dashboard: bridge write failed: %v", werr)
+						return
+					}
+				}
+			}
+		}()
+
+		// Write loop: periodic heartbeat pings.
+		heartbeatDone := make(chan struct{})
+		go func() {
+			ticker := time.NewTicker(heartbeatInterval)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-c.done:
+					return
+				case <-heartbeatDone:
+					return
+				case <-ticker.C:
+					if err := conn.WriteMessage(websocket.PingMessage, nil); err != nil {
+						return
+					}
+				}
+			}
+		}()
+
+		// Read loop: receive bridged events and commands from dashboard.
+		for {
+			_, msg, err := conn.ReadMessage()
+			if err != nil {
+				close(heartbeatDone)
+				return
+			}
+
+			// Try BridgedEvent format first (cross-process EventBus).
+			var be eventbus.BridgedEvent
+			if err := json.Unmarshal(msg, &be); err == nil && be.Topic != "" {
+				if team_engine.DefaultTeamLog != nil {
+					team_engine.DefaultTeamLog.Log("bridge", "cli ← dashboard: topic=%s type=%s", be.Topic, be.Event.Type)
+				}
+				select {
+				case bridgeIn <- be:
+				default:
+					log.Printf("dashboard: cli bridgeIn full, dropped topic=%s type=%s", be.Topic, be.Event.Type)
+				}
+				continue
+			}
+
+			// Legacy: direct command format.
+			var body struct {
+				Command      string `json:"command"`
+				MasterTaskID string `json:"master_task_id"`
+			}
+			if err := json.Unmarshal(msg, &body); err != nil {
+				continue
+			}
+			if body.Command == "resume" && body.MasterTaskID != "" {
+				log.Printf("dashboard: received resume command for master task %s", body.MasterTaskID)
+				c.pendingResumeMu.Lock()
+				c.pendingResume = body.MasterTaskID
+				c.pendingResumeMu.Unlock()
+				if c.OnResume != nil {
+					if team_engine.DefaultTeamLog != nil { team_engine.DefaultTeamLog.CLIReceiveResume(body.MasterTaskID) }
+					c.OnResume(body.MasterTaskID)
+				}
+			}
+			if body.Command == "cancel_master" && body.MasterTaskID != "" {
+				log.Printf("dashboard: received cancel command for master task %s", body.MasterTaskID)
+				if c.OnCancel != nil {
+					c.OnCancel(body.MasterTaskID)
 				}
 			}
 		}
-	}()
-
-	// Read loop: receive commands from dashboard.
-	for {
-		_, msg, err := conn.ReadMessage()
-		if err != nil {
-			close(heartbeatDone)
-			return
-		}
-
-		var body struct {
-			Command      string `json:"command"`
-			MasterTaskID string `json:"master_task_id"`
-		}
-		if err := json.Unmarshal(msg, &body); err != nil {
-			continue
-		}
-		if body.Command == "resume" && body.MasterTaskID != "" {
-			log.Printf("dashboard: received resume command for master task %s", body.MasterTaskID)
-			c.pendingResumeMu.Lock()
-			c.pendingResume = body.MasterTaskID
-			c.pendingResumeMu.Unlock()
-			if c.OnResume != nil {
-				if team_engine.DefaultTeamLog != nil { team_engine.DefaultTeamLog.CLIReceiveResume(body.MasterTaskID) }
-				c.OnResume(body.MasterTaskID)
-			}
-		}
-		if body.Command == "cancel_master" && body.MasterTaskID != "" {
-			log.Printf("dashboard: received cancel command for master task %s", body.MasterTaskID)
-			if c.OnCancel != nil {
-				c.OnCancel(body.MasterTaskID)
-			}
-		}
 	}
-}
 
 // Deregister unregisters from the dashboard.
 func (c *Client) Deregister() {

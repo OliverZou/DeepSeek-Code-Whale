@@ -40,14 +40,18 @@ func (esc *Escalator) StuckTasks(batch *Batch, getTask func(string) (*Task, erro
 }
 
 // ReplaceTaskWithSubtasks marks the original task as done (replaced) and
-// inserts the new smaller subtasks into the same batch.
+// inserts the new smaller subtasks into the same batch.  Child tasks get
+// parentIDs pointing back to the original so the tree view and resume logic
+// know they were decomposed from it.
 func (esc *Escalator) ReplaceTaskWithSubtasks(original *Task, smaller []PlanTask, masterTaskID string,
-	createTask func(PlanTask, string, string) (*Task, error),
+	createTask func(PlanTask, string, string, []string) (*Task, error),
 	transitionState func(string, TaskState, string) error) {
 
+	// Mark the original as done — it becomes a virtual management node.
+	// Its children's completion represents the original's completion.
 	_ = transitionState(original.ID, TaskStateDone, "re-decomposed into smaller tasks")
 	for _, pt := range smaller {
-		task, err := createTask(pt, original.BatchID, masterTaskID)
+		task, err := createTask(pt, original.BatchID, masterTaskID, []string{original.ID})
 		if err != nil {
 			continue
 		}
@@ -59,7 +63,7 @@ func (esc *Escalator) ReplaceTaskWithSubtasks(original *Task, smaller []PlanTask
 // Returns the number of tasks that were re-decomposed.
 func (esc *Escalator) ProcessBatch(batch *Batch, masterTaskID, workdir string, timeout time.Duration, model string,
 	getTask func(string) (*Task, error),
-	createTask func(PlanTask, string, string) (*Task, error),
+	createTask func(PlanTask, string, string, []string) (*Task, error),
 	transitionState func(string, TaskState, string) error) int {
 
 	stuck := esc.StuckTasks(batch, getTask)

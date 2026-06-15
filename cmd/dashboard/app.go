@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/usewhale/whale/internal/dashboard"
+	"github.com/usewhale/whale/internal/eventbus"
 	"github.com/usewhale/whale/internal/team_engine"
 	teampglog "github.com/usewhale/whale/internal/team_engine/log"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
@@ -40,20 +41,17 @@ func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
 	team_engine.DefaultTeamLog.Log("startup", "started, DefaultTeamLog=%v", team_engine.DefaultTeamLog != nil)
 
-	// Register event callback: engine 状态变化 → 实时推送到前端。
 	evtCtx := a.ctx
 	a.mgr.OnEngineEvent(func(event team_engine.TaskEvent) {
 		runtime.EventsEmit(evtCtx, "task-event", event)
 	})
 
-	// Start background HTTP server for whale registration.
 	a.wg.Add(1)
 	go func() {
 		defer a.wg.Done()
 		a.startRegistrationServer()
 	}()
 
-	// Discover running Whale instances and auto-register their workspaces.
 	for _, path := range dashboard.DiscoverWhaleWorkspaces() {
 		if ws, err := a.mgr.Register(path); err != nil {
 			log.Printf("dashboard: auto-register %s: %v", path, err)
@@ -64,12 +62,87 @@ func (a *App) startup(ctx context.Context) {
 
 	a.mgr.LoadWorkspacePaths()
 
-	// Push workspace updates to the frontend every 2 seconds.
+	// Event-driven updates via EventBus.
 	a.wg.Add(1)
 	go func() {
 		defer a.wg.Done()
-		a.pushLoop()
+		a.eventLoop()
 	}()
+}
+
+// eventLoop subscribes to the global EventBus and pushes live updates to the
+// frontend.  Uses a debounce timer (500ms) to avoid flooding the UI when
+// many events arrive in rapid succession.
+func (a *App) eventLoop() {
+	time.Sleep(3 * time.Second) // wait for frontend listeners
+	a.emitUpdate()
+
+	teCh := eventbus.Global().Subscribe(eventbus.TopicTeamEngine, 128)
+	defer eventbus.Global().Unsubscribe(eventbus.TopicTeamEngine, teCh)
+	wsCh := eventbus.Global().Subscribe(eventbus.TopicWorkspace, 16)
+	defer eventbus.Global().Unsubscribe(eventbus.TopicWorkspace, wsCh)
+
+	var debounceCh <-chan time.Time
+	emitPending := false
+
+	for {
+		select {
+		case <-a.done:
+			return
+		case <-teCh:
+			emitPending = true
+		case ev := <-wsCh:
+			if ev.Type == eventbus.EventWSEngineReady {
+				a.handleEngineReady(ev)
+			}
+			emitPending = true
+		case <-debounceCh:
+			if emitPending {
+				a.emitUpdate()
+				emitPending = false
+				debounceCh = nil
+			}
+		}
+		if emitPending && debounceCh == nil {
+			debounceCh = time.After(500 * time.Millisecond)
+		}
+	}
+}
+
+// handleEngineReady processes an engine_ready event: a team_plan just created
+// the DB for this workspace, so we can load the engine immediately.
+func (a *App) handleEngineReady(ev eventbus.Event) {
+	var path string
+	// Payload arrives as map[string]interface{} after JSON unmarshal across
+	// the EventBus bridge, not map[string]string.
+	switch p := ev.Payload.(type) {
+	case map[string]string:
+		path = p["path"]
+	case map[string]interface{}:
+		if v, ok := p["path"].(string); ok {
+			path = v
+		}
+	}
+	if path == "" {
+		return
+	}
+	if err := a.mgr.LoadEngineByPath(path); err != nil {
+		log.Printf("dashboard: engine_ready load %s: %v", path, err)
+	}
+}
+
+var lastUpdateJSON string
+
+func (a *App) emitUpdate() {
+	tasks := a.mgr.GetMasterTasks()
+	data, _ := json.Marshal(tasks)
+	payload := string(data)
+	if payload == lastUpdateJSON {
+		return
+	}
+	lastUpdateJSON = payload
+	team_engine.DefaultTeamLog.Log("frontend", "emitUpdate: %d tasks", len(tasks))
+	runtime.EventsEmit(a.ctx, "update", tasks)
 }
 
 func (a *App) shutdown(ctx context.Context) {
@@ -120,6 +193,12 @@ func (a *App) handleRegister(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+
+	eventbus.Global().Publish(eventbus.TopicWorkspace, eventbus.Event{
+		Type:    eventbus.EventWSRegistered,
+		Payload: map[string]string{"id": ws.ID, "path": req.Path},
+	})
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"id": ws.ID})
 }
@@ -138,6 +217,12 @@ func (a *App) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
 	}
+
+	eventbus.Global().Publish(eventbus.TopicWorkspace, eventbus.Event{
+		Type:    eventbus.EventWSHeartbeat,
+		Payload: map[string]string{"id": req.ID},
+	})
+
 	resp := map[string]interface{}{}
 	if mtID, ok := a.mgr.DequeueResume(req.ID); ok {
 		resp["command"] = "resume"
@@ -162,38 +247,6 @@ func (a *App) handleDeregister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
-}
-
-func (a *App) pushLoop() {
-	// Wait for frontend to register event listeners before first push.
-	time.Sleep(3 * time.Second)
-	ticker := time.NewTicker(2 * time.Second)
-	defer ticker.Stop()
-	a.emitUpdate()
-	for {
-		select {
-		case <-a.done:
-			return
-		case <-ticker.C:
-			a.emitUpdate()
-		}
-	}
-}
-
-var lastUpdateJSON string
-
-func (a *App) emitUpdate() {
-	tasks := a.mgr.GetMasterTasks()
-	// Skip if nothing changed — prevents stale push-loop events from
-	// overwriting a just-deleted master task list (race with engine reopen).
-	data, _ := json.Marshal(tasks)
-	payload := string(data)
-	if payload == lastUpdateJSON {
-		return
-	}
-	lastUpdateJSON = payload
-	team_engine.DefaultTeamLog.Log("frontend", "emitUpdate: %d tasks", len(tasks))
-	runtime.EventsEmit(a.ctx, "update", tasks)
 }
 
 // --- Frontend-callable methods ---

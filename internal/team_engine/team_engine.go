@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/usewhale/whale/internal/eventbus"
 	"github.com/usewhale/whale/internal/team_engine/log"
 )
 
@@ -256,8 +257,9 @@ func (e *TeamEngine) FireEvent(event TaskEvent) {
 	e.fireEvent(event)
 }
 
-// fireEvent 向所有订阅者广播事件。
+// fireEvent 向所有订阅者广播事件，同时发布到全局 EventBus。
 func (e *TeamEngine) fireEvent(event TaskEvent) {
+	// 1. 本地订阅者（向后兼容）
 	e.mu.Lock()
 	cbs := make([]TaskEventCallback, len(e.eventCallbacks))
 	copy(cbs, e.eventCallbacks)
@@ -267,6 +269,35 @@ func (e *TeamEngine) fireEvent(event TaskEvent) {
 			defer func() { recover() }()
 			cb(event)
 		}()
+	}
+
+	// 2. 发布到全局 EventBus，供 Dashboard 等跨模块消费者
+	eventType := taskEventToBusType(event.Type)
+	if eventType != "" {
+		eventbus.Global().Publish(eventbus.TopicTeamEngine, eventbus.Event{
+			Type:    eventType,
+			Payload: event,
+		})
+	}
+}
+
+// taskEventToBusType maps internal event types to EventBus event type strings.
+func taskEventToBusType(t TaskEventType) string {
+	switch t {
+	case EventStateChanged:
+		return eventbus.EventStateChanged
+	case EventWorkerOutput:
+		return eventbus.EventWorkerOutput
+	case EventVerifierResult:
+		return eventbus.EventVerifierResult
+	case EventTaskDone:
+		return eventbus.EventTaskDone
+	case EventLeaderLog:
+		return eventbus.EventLeaderLog
+	case EventAgentLog:
+		return eventbus.EventAgentLog
+	default:
+		return ""
 	}
 }
 
@@ -390,6 +421,14 @@ func (e *TeamEngine) CreateMasterTask(goal, workspacePath string) (*MasterTask, 
 	if err := e.DB.InsertMasterTask(mt); err != nil {
 		return nil, fmt.Errorf("insert master task: %w", err)
 	}
+
+	// Notify dashboard that this workspace now has an engine (DB created).
+	eventbus.Global().Publish(eventbus.TopicWorkspace, eventbus.Event{
+		Type: eventbus.EventWSEngineReady,
+		Payload: map[string]string{
+			"path": workspacePath,
+		},
+	})
 	return mt, nil
 }
 
@@ -436,9 +475,10 @@ func (e *TeamEngine) ListSuspendedMasterTasks() ([]*MasterTask, error) {
 }
 
 // saveCheckpoint persists PlanAndRun progress for later Resume.
-func (e *TeamEngine) saveCheckpoint(masterTaskID string, completed map[string]bool, outputs map[string]string, batches []*Batch) {
+func (e *TeamEngine) saveCheckpoint(masterTaskID string, completed map[string]bool, passed map[string]bool, outputs map[string]string, batches []*Batch) {
 	type checkpoint struct {
 		CompletedBatches []string            `json:"completed_batches"`
+		PassedBatches    []string            `json:"passed_batches,omitempty"`
 		BatchCycles      map[string]int      `json:"batch_cycles"`
 		CompletedOutputs map[string]string   `json:"completed_outputs,omitempty"`
 		BatchDependsOn   map[string][]string `json:"batch_depends_on,omitempty"`
@@ -451,12 +491,16 @@ func (e *TeamEngine) saveCheckpoint(masterTaskID string, completed map[string]bo
 	}
 	cp := checkpoint{
 		CompletedBatches: make([]string, 0),
+		PassedBatches:    make([]string, 0),
 		BatchCycles:      make(map[string]int),
 		CompletedOutputs: outputs,
 		BatchDependsOn:   deps,
 	}
 	for id := range completed {
 		cp.CompletedBatches = append(cp.CompletedBatches, id)
+	}
+	for id := range passed {
+		cp.PassedBatches = append(cp.PassedBatches, id)
 	}
 	for _, b := range batches {
 		cp.BatchCycles[b.ID] = b.CycleCount
@@ -473,6 +517,7 @@ func (e *TeamEngine) ResumeMasterTask(ctx context.Context, masterTaskID, goal, w
 	}
 	type checkpoint struct {
 		CompletedBatches []string            `json:"completed_batches"`
+		PassedBatches    []string            `json:"passed_batches,omitempty"`
 		BatchCycles      map[string]int      `json:"batch_cycles"`
 		CompletedOutputs map[string]string   `json:"completed_outputs,omitempty"`
 		BatchDependsOn   map[string][]string `json:"batch_depends_on,omitempty"`
@@ -496,12 +541,58 @@ func (e *TeamEngine) ResumeMasterTask(ctx context.Context, masterTaskID, goal, w
 	for _, id := range cp.CompletedBatches {
 		completedBatches[id] = true
 	}
+	passedBatches := make(map[string]bool)
+	for _, id := range cp.PassedBatches {
+		passedBatches[id] = true
+	}
 
 	allTasks, err := e.DB.ListTasksByMasterTask(masterTaskID)
 	if err != nil {
 		return nil, fmt.Errorf("list subtasks: %w", err)
 	}
+
+	// Build set of task IDs that are parents (have been re-decomposed
+	// into children).  These are virtual management nodes —
+	// they should not be executed, only track child progress.
+	isParent := make(map[string]bool)
 	for _, t := range allTasks {
+		for _, pid := range t.ParentIDs {
+			isParent[pid] = true
+		}
+	}
+
+	// Cross-validate completedBatches from checkpoint: for legacy checkpoints
+	// or batches that were marked completed without a passedBatches entry,
+	// verify that all non-management tasks in the batch are actually Done.
+	// If they are, promote to passedBatches; otherwise remove from completedBatches
+	// so the batch will be re-executed instead of being incorrectly skipped.
+	if len(passedBatches) == 0 {
+		// Legacy checkpoint — derive passedBatches from actual task states.
+		for id := range completedBatches {
+			allDone := true
+			for _, t := range allTasks {
+				if t.BatchID == id && !isParent[t.ID] {
+					if t.State != TaskStateDone {
+						allDone = false
+						break
+					}
+				}
+			}
+			if allDone {
+				passedBatches[id] = true
+			}
+		}
+	}
+
+	for _, t := range allTasks {
+		// Skip management nodes: they were decomposed into children
+		// and should not be retried.
+		if isParent[t.ID] {
+			if t.State != TaskStateDone {
+				_ = e.DB.ForceTransitionState(t.ID, TaskStateDone, "management node")
+			}
+			continue
+		}
 		newState := ResetForResume(t.State)
 		if newState != t.State {
 			_ = e.DB.UpdateTask(t.ID, map[string]interface{}{"state": string(newState)})
@@ -548,12 +639,12 @@ func (e *TeamEngine) ResumeMasterTask(ctx context.Context, masterTaskID, goal, w
 	leaderModel := e.Router.ResolveModel("planner")
 
 	for _, batch := range batches {
-		if completedBatches[batch.ID] {
-			continue
+		if passedBatches[batch.ID] {
+			continue // already passed — skip
 		}
 		select {
 		case <-ctx.Done():
-			e.saveCheckpoint(masterTaskID, completedBatches, cp.CompletedOutputs, batches)
+			e.saveCheckpoint(masterTaskID, completedBatches, passedBatches, cp.CompletedOutputs, batches)
 			return batches, fmt.Errorf("resume cancelled: %w", ctx.Err())
 		default:
 		}
@@ -565,12 +656,12 @@ func (e *TeamEngine) ResumeMasterTask(ctx context.Context, masterTaskID, goal, w
 
 		if batch.UseDW {
 			// DW pipeline execution: multi-verifier per task, no Leader review.
-			e.runDWCycle(ctx, batch, cycleLimit, masterTaskID, completedBatches, cp.CompletedOutputs, batches, escalator, workdir, decomposerTimeout, leaderModel)
+			e.runDWCycle(ctx, batch, cycleLimit, masterTaskID, completedBatches, passedBatches, cp.CompletedOutputs, batches, escalator, workdir, decomposerTimeout, leaderModel)
 		} else {
 			for cycle := 0; cycle < cycleLimit; cycle++ {
 				batch.CycleCount = cycle + 1
 				if err := e.RunBatch(ctx, batch); err != nil {
-					e.saveCheckpoint(masterTaskID, completedBatches, cp.CompletedOutputs, batches)
+					e.saveCheckpoint(masterTaskID, completedBatches, passedBatches, cp.CompletedOutputs, batches)
 					return batches, fmt.Errorf("run batch %s cycle %d: %w", batch.ID, cycle, err)
 				}
 				if e.Loggers != nil {
@@ -583,7 +674,7 @@ func (e *TeamEngine) ResumeMasterTask(ctx context.Context, masterTaskID, goal, w
 				review, reviewOutput, err := leader.ReviewCycleFull(goal, report, workdir, decomposerTimeout, leaderModel)
 				if err != nil {
 					completedBatches[batch.ID] = true
-					e.saveCheckpoint(masterTaskID, completedBatches, cp.CompletedOutputs, batches)
+					e.saveCheckpoint(masterTaskID, completedBatches, passedBatches, cp.CompletedOutputs, batches)
 					break
 				}
 				if e.Loggers != nil && reviewOutput != "" {
@@ -593,7 +684,8 @@ func (e *TeamEngine) ResumeMasterTask(ctx context.Context, masterTaskID, goal, w
 				switch review.Decision {
 				case CycleAccept:
 					completedBatches[batch.ID] = true
-					e.saveCheckpoint(masterTaskID, completedBatches, cp.CompletedOutputs, batches)
+					passedBatches[batch.ID] = true
+					e.saveCheckpoint(masterTaskID, completedBatches, passedBatches, cp.CompletedOutputs, batches)
 					cp.CompletedOutputs[batch.ID] = e.collectBatchOutputs(batch)
 					break
 				case CycleReject:
@@ -633,7 +725,7 @@ if e.Loggers != nil {
 	e.Loggers.LogLeader("summary", goal, summary, 0, nil)
 	e.fireEvent(TaskEvent{Type: EventLeaderLog})
 }
-e.saveCheckpoint(masterTaskID, completedBatches, cp.CompletedOutputs, batches)
+e.saveCheckpoint(masterTaskID, completedBatches, passedBatches, cp.CompletedOutputs, batches)
 return batches, nil
 }
 
@@ -1005,6 +1097,15 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 		if idx := strings.Index(task.Description, "\n\n[VERIFIER FEEDBACK"); idx >= 0 {
 			task.Description = task.Description[:idx]
 		}
+		// Guard: empty feedback from a lazy verifier wastes Worker time.
+			// Generate a meaningful default so the Worker knows what to fix.
+			if len(strings.TrimSpace(feedback)) < 30 {
+				feedback = "Previous attempt did not pass verification. " +
+					"Please re-read the original task requirements carefully and " +
+					"ensure ALL requirements are met. Verify your output is " +
+					"complete — no truncated code, all functions implemented, " +
+					"and the deliverable compiles or passes basic checks."
+			}
 		task.Description += fmt.Sprintf(
 			"\n\n[VERIFIER FEEDBACK - Attempt %d]\n%s",
 			task.RetryCount, feedback,
@@ -1163,21 +1264,23 @@ func (e *TeamEngine) PlanAndRun(ctx context.Context, goal, workdir, masterTaskID
 	})
 	escalator := NewEscalator(leader.planner).WithLoggers(e.Loggers)
 	completedBatches := make(map[string]bool)
+	passedBatches := make(map[string]bool) // only CycleAccept; controls dep gating
 	// Track completed batch outputs for cross-stage injection.
 	completedBatchOutputs := make(map[string]string)
 
 	for _, batch := range batches {
-		// Check batch dependencies.
+		// Check batch dependencies — use passedBatches so a failed batch
+		// does NOT unblock downstream batches (Bug 1 fix).
 		allDepsPassed := true
 		for _, depID := range batch.DependsOn {
-			if !completedBatches[depID] {
+			if !passedBatches[depID] {
 				allDepsPassed = false
 				break
 			}
 		}
 		if !allDepsPassed {
 			batch.Status = BatchStatusFailed
-			e.saveCheckpoint(masterTaskID, completedBatches, completedBatchOutputs, batches)
+			e.saveCheckpoint(masterTaskID, completedBatches, passedBatches, completedBatchOutputs, batches)
 			return batches, fmt.Errorf("batch %s: dependency %v not satisfied", batch.ID, batch.DependsOn)
 		}
 
@@ -1194,7 +1297,7 @@ func (e *TeamEngine) PlanAndRun(ctx context.Context, goal, workdir, masterTaskID
 				}
 			}
 			_ = e.DB.UpdateMasterTaskStatus(masterTaskID, "")
-			e.saveCheckpoint(masterTaskID, completedBatches, completedBatchOutputs, batches)
+			e.saveCheckpoint(masterTaskID, completedBatches, passedBatches, completedBatchOutputs, batches)
 			e.fireEvent(TaskEvent{Type: EventStateChanged})
 			return batches, fmt.Errorf("cancelled: %w", ctx.Err())
 		default:
@@ -1208,11 +1311,11 @@ func (e *TeamEngine) PlanAndRun(ctx context.Context, goal, workdir, masterTaskID
 
 		if batch.UseDW {
 			// DW pipeline execution: multi-verifier per task, no Leader review.
-			e.runDWCycle(ctx, batch, cycleLimit, masterTaskID, completedBatches, completedBatchOutputs, batches, escalator, workdir, decomposerTimeout, leaderModel)
+			e.runDWCycle(ctx, batch, cycleLimit, masterTaskID, completedBatches, passedBatches, completedBatchOutputs, batches, escalator, workdir, decomposerTimeout, leaderModel)
 			// Cross-stage artifact passing for completed DW batch.
 			if completedBatches[batch.ID] {
 				completedBatchOutputs[batch.ID] = e.collectBatchOutputs(batch)
-				e.saveCheckpoint(masterTaskID, completedBatches, completedBatchOutputs, batches)
+				e.saveCheckpoint(masterTaskID, completedBatches, passedBatches, completedBatchOutputs, batches)
 				if depArtifacts := e.buildStageArtifactContext(completedBatchOutputs, batch.DependsOn); depArtifacts != "" {
 					for _, t := range batch.Tasks {
 						updated := t.Description + depArtifacts
@@ -1231,7 +1334,7 @@ func (e *TeamEngine) PlanAndRun(ctx context.Context, goal, workdir, masterTaskID
 
 				// Execute all tasks in this batch (parallel if concurrency > 0).
 				if err := e.RunBatch(ctx, batch); err != nil {
-					e.saveCheckpoint(masterTaskID, completedBatches, completedBatchOutputs, batches)
+					e.saveCheckpoint(masterTaskID, completedBatches, passedBatches, completedBatchOutputs, batches)
 					return batches, fmt.Errorf("run batch %s cycle %d: %w", batch.ID, cycle, err)
 				}
 
@@ -1245,7 +1348,7 @@ func (e *TeamEngine) PlanAndRun(ctx context.Context, goal, workdir, masterTaskID
 						}
 						completedBatches[batch.ID] = true
 						completedBatchOutputs[batch.ID] = e.collectBatchOutputs(batch)
-						e.saveCheckpoint(masterTaskID, completedBatches, completedBatchOutputs, batches)
+						e.saveCheckpoint(masterTaskID, completedBatches, passedBatches, completedBatchOutputs, batches)
 						break batchCycleLoop
 					}
 				} else {
@@ -1256,9 +1359,9 @@ func (e *TeamEngine) PlanAndRun(ctx context.Context, goal, workdir, masterTaskID
 				// Check for tasks needing re-decomposition (retries exhausted).
 				escalator.ProcessBatch(batch, masterTaskID, workdir, decomposerTimeout, leaderModel,
 					func(id string) (*Task, error) { return e.DB.GetTask(id) },
-					func(pt PlanTask, batchID, mtID string) (*Task, error) {
+					func(pt PlanTask, batchID, mtID string, parentIDs []string) (*Task, error) {
 						profile := ToolProfile(pt.Profile)
-						task, err := e.CreateTask(pt.Title, pt.Description, AgentRole(pt.Role), profile, nil, 0, workdir, pt.VerifierFocus)
+						task, err := e.CreateTask(pt.Title, pt.Description, AgentRole(pt.Role), profile, parentIDs, 0, workdir, pt.VerifierFocus)
 						if err != nil {
 							return nil, err
 						}
@@ -1283,18 +1386,19 @@ func (e *TeamEngine) PlanAndRun(ctx context.Context, goal, workdir, masterTaskID
 				if err != nil {
 					// If review fails, accept by default (don't block pipeline).
 					completedBatches[batch.ID] = true
-					e.saveCheckpoint(masterTaskID, completedBatches, completedBatchOutputs, batches)
+					e.saveCheckpoint(masterTaskID, completedBatches, passedBatches, completedBatchOutputs, batches)
 					break batchCycleLoop
 				}
 
 				switch review.Decision {
 				case CycleAccept:
 					completedBatches[batch.ID] = true
+						passedBatches[batch.ID] = true
 					// Cross-stage artifact passing:
 					// Collect outputs from completed batch tasks so the
 					// next batch can reference them.
 					completedBatchOutputs[batch.ID] = e.collectBatchOutputs(batch)
-					e.saveCheckpoint(masterTaskID, completedBatches, completedBatchOutputs, batches)
+					e.saveCheckpoint(masterTaskID, completedBatches, passedBatches, completedBatchOutputs, batches)
 					if depArtifacts := e.buildStageArtifactContext(completedBatchOutputs, batch.DependsOn); depArtifacts != "" {
 						// Inject dependency artifacts into this batch's tasks.
 						for _, t := range batch.Tasks {
@@ -1335,7 +1439,7 @@ func (e *TeamEngine) PlanAndRun(ctx context.Context, goal, workdir, masterTaskID
 					e.handleEscalation(batch, review)
 					// After escalation, continue based on user decision.
 					completedBatches[batch.ID] = true
-					e.saveCheckpoint(masterTaskID, completedBatches, completedBatchOutputs, batches)
+					e.saveCheckpoint(masterTaskID, completedBatches, passedBatches, completedBatchOutputs, batches)
 					break batchCycleLoop
 				}
 			}
@@ -1347,10 +1451,11 @@ func (e *TeamEngine) PlanAndRun(ctx context.Context, goal, workdir, masterTaskID
 				if err != nil {
 					// Leader unavailable: accept whatever we have (don't block).
 					completedBatches[batch.ID] = true
-					e.saveCheckpoint(masterTaskID, completedBatches, completedBatchOutputs, batches)
+					e.saveCheckpoint(masterTaskID, completedBatches, passedBatches, completedBatchOutputs, batches)
 				} else {
 					switch review.Decision {
 					case CycleAccept:
+						passedBatches[batch.ID] = true
 						completedBatches[batch.ID] = true
 						completedBatchOutputs[batch.ID] = e.collectBatchOutputs(batch)
 					default:
@@ -1358,7 +1463,7 @@ func (e *TeamEngine) PlanAndRun(ctx context.Context, goal, workdir, masterTaskID
 						batch.Status = BatchStatusFailed
 						completedBatches[batch.ID] = true
 					}
-					e.saveCheckpoint(masterTaskID, completedBatches, completedBatchOutputs, batches)
+					e.saveCheckpoint(masterTaskID, completedBatches, passedBatches, completedBatchOutputs, batches)
 					if e.Loggers != nil {
 							e.Loggers.LogLeader("review", fmt.Sprintf("Batch: %s\nDecision: %s (final)", batch.LabelOrID(), review.Decision), fmt.Sprintf("Final review: %s\nFeedback: %s", review.Decision, review.Feedback), decomposerTimeout, nil)
 						e.fireEvent(TaskEvent{Type: EventLeaderLog})
@@ -1499,6 +1604,7 @@ func (e *TeamEngine) runDWCycle(
 	cycleLimit int,
 	masterTaskID string,
 	completedBatches map[string]bool,
+	passedBatches map[string]bool,
 	completedBatchOutputs map[string]string,
 	batches []*Batch,
 	escalator *Escalator,
@@ -1528,7 +1634,7 @@ func (e *TeamEngine) runDWCycle(
 
 		// Execute all tasks in parallel (each with DW verification if task.UseDW).
 		if err := e.RunBatch(ctx, batch); err != nil {
-			e.saveCheckpoint(masterTaskID, completedBatches, completedBatchOutputs, batches)
+			e.saveCheckpoint(masterTaskID, completedBatches, passedBatches, completedBatchOutputs, batches)
 			return
 		}
 
@@ -1546,7 +1652,7 @@ func (e *TeamEngine) runDWCycle(
 				}
 				completedBatches[batch.ID] = true
 				completedBatchOutputs[batch.ID] = e.collectBatchOutputs(batch)
-				e.saveCheckpoint(masterTaskID, completedBatches, completedBatchOutputs, batches)
+				e.saveCheckpoint(masterTaskID, completedBatches, passedBatches, completedBatchOutputs, batches)
 				return
 			}
 		} else {
@@ -1557,9 +1663,9 @@ func (e *TeamEngine) runDWCycle(
 		// Escalator: re-decompose stuck tasks (retries exhausted).
 		escalator.ProcessBatch(batch, masterTaskID, workdir, decomposerTimeout, leaderModel,
 			func(id string) (*Task, error) { return e.DB.GetTask(id) },
-			func(pt PlanTask, batchID, mtID string) (*Task, error) {
+			func(pt PlanTask, batchID, mtID string, parentIDs []string) (*Task, error) {
 				profile := ToolProfile(pt.Profile)
-				task, err := e.CreateTask(pt.Title, pt.Description, AgentRole(pt.Role), profile, nil, 0, workdir, pt.VerifierFocus)
+				task, err := e.CreateTask(pt.Title, pt.Description, AgentRole(pt.Role), profile, parentIDs, 0, workdir, pt.VerifierFocus)
 				if err != nil {
 					return nil, err
 				}
@@ -1600,7 +1706,7 @@ func (e *TeamEngine) runDWCycle(
 		if allPassed {
 			completedBatches[batch.ID] = true
 			completedBatchOutputs[batch.ID] = e.collectBatchOutputs(batch)
-			e.saveCheckpoint(masterTaskID, completedBatches, completedBatchOutputs, batches)
+			e.saveCheckpoint(masterTaskID, completedBatches, passedBatches, completedBatchOutputs, batches)
 			return
 		}
 	}
@@ -1608,7 +1714,7 @@ func (e *TeamEngine) runDWCycle(
 	// Max cycles reached — auto-accept whatever we have.
 	completedBatches[batch.ID] = true
 	completedBatchOutputs[batch.ID] = e.collectBatchOutputs(batch)
-	e.saveCheckpoint(masterTaskID, completedBatches, completedBatchOutputs, batches)
+	e.saveCheckpoint(masterTaskID, completedBatches, passedBatches, completedBatchOutputs, batches)
 	if e.Loggers != nil {
 		e.Loggers.Engine("DW batch %s: max cycles (%d) reached, auto-accepting", batch.ID, cycleLimit)
 	}
@@ -1623,8 +1729,7 @@ func (e *TeamEngine) RunBatch(ctx context.Context, batch *Batch) error {
 
 	tasks := batch.Tasks
 	if len(tasks) == 0 {
-		batch.Status = BatchStatusPassed
-		return nil
+		return nil // empty batch is a no-op; Leader review decides outcome
 	}
 
 	concurrency := batch.Concurrency
@@ -1668,24 +1773,18 @@ func (e *TeamEngine) RunBatch(ctx context.Context, batch *Batch) error {
 		sem <- struct{}{}
 	}
 
-	// Collect results.
-	close(resultCh)
-	allPassed := true
-	for res := range resultCh {
-		if res.err != nil || !res.ok {
-			allPassed = false
+		// Drain result channel to unblock goroutines.
+		close(resultCh)
+		for range resultCh {
 		}
-	}
+
 
 	// Estimate batch cost: worker + verifier tokens per task × rounds.
 	for _, t := range batch.Tasks {
 		batch.TotalTokens += (t.RetryCount + 1) * 10000 // ~10K tokens per worker+verifier round
 	}
-	if allPassed {
-		batch.Status = BatchStatusPassed
-	} else {
-		batch.Status = BatchStatusFailed
-	}
+	// Batch status is determined by Leader review in the cycle loop above;
+	// RunBatch only reports whether all tasks ran without errors.
 	if DefaultTeamLog != nil { DefaultTeamLog.BatchDone(batch.ID, string(batch.Status), 0) }
 	return nil
 }

@@ -151,8 +151,7 @@ function updateUI() {
       loadSubtasks(mt.workspace_id, mt.id);
     }
   } else {
-    state.subtasks = [];
-    state.selStId = null;
+    state.subtasks = []; state.selStId = null; $('#task-tabs').innerHTML = '<div class="empty"><div class="icon">📋</div>Select a master task</div>';
   }
 }
 
@@ -167,6 +166,14 @@ function renderSidebar() {
   }
   let html = '';
   for (const mt of state.masterTasks) {
+    // Placeholder: idle (no DB yet) or ready (DB exists, no master tasks).
+    // Show a clean one-liner — no meta clutter, progress bar, or buttons.
+    if (mt.status === 'idle' || mt.status === 'ready') {
+      html += `<div class="mt idle" data-id="" data-goal="${esc(mt.goal)}" data-wsid="${esc(mt.workspace_id)}">
+        <div class="goal" title="${esc(mt.goal)}">${esc(mt.goal)}</div>
+      </div>`;
+      continue;
+    }
     const active = state.selMtId === mt.id ? ' active' : '';
     const goalShort = esc(mt.goal).length > 50 ? esc(mt.goal).slice(0, 50) + '…' : esc(mt.goal);
     const pct = mt.task_count > 0 ? Math.round(mt.done_count / mt.task_count * 100) : 0;
@@ -247,6 +254,7 @@ function selectMasterTask(id) {
 }
 
 // ---------- Subtask List ----------
+// ---------- Subtask List ----------
 function renderSubtasks() {
   const list = $('#task-tabs');
   if (!state.subtasks.length) {
@@ -256,34 +264,51 @@ function renderSubtasks() {
   let html = '';
   // Determine workspace ID for stop button calls.
   const wsid = state.selMtId ? (getSelMt() ? getSelMt().workspace_id : '') : '';
-  for (const st of state.subtasks) {
-    const active = state.selStId === st.id ? ' sel' : '';
-    const leader = st.id === '__leader__' ? ' leader' : '';
-    const stateDot = st.id === '__leader__' ? 'leader-dot'
-      : st.state === 'done' ? 'done'
-      : st.state === 'running' || st.state === 'producing' || st.state === 'verifying' ? 'running'
-      : st.state === 'suspended' ? 'suspended'
-      : st.state === 'failed' ? 'failed' : 'pending';
-    const icon = st.id === '__leader__' ? '📋' : '🎭';
+  // Recursive tree render helper.
+  const renderTree = (tasks, depth) => {
+    for (const st of tasks) {
+      const active = state.selStId === st.id ? ' sel' : '';
+      const leader = st.id === '__leader__' ? ' leader' : '';
+      const exhausted = (st.retry_count > 0 && st.max_retries > 0 && st.retry_count >= st.max_retries);
+      const stateDot = st.id === '__leader__' ? 'leader-dot'
+        : st.state === 'done' ? 'done'
+        : st.state === 'running' || st.state === 'producing' || st.state === 'verifying' ? 'running'
+        : st.state === 'suspended' ? 'suspended'
+        : st.state === 'failed' ? 'failed'
+        : exhausted ? 'failed'
+        : 'pending';
+      const icon = st.id === '__leader__' ? '📋'
+        : (st.children && st.children.length > 0) ? '📂'
+        : '🎭';
+      const indent = depth * 16;
+      const hasChildren = st.children && st.children.length > 0;
+      const retryBadge = exhausted ? '<span class="retry-badge" title="重试耗尽，已被重新分解">🔄</span>' : '';
 
-	
-    html += `<div class="st${active}${leader}" data-id="${st.id}">
-      <div class="st-title" title="${esc(st.title)}">
-        <span class="state-dot ${stateDot}${state.unreadTasks.has(st.id) ? " pulse" : ""}"></span>
-        ${icon} ${esc(st.title)}
-	        ${state.unreadTasks.has(st.id) ? '<span class="unread-badge">●</span>' : ''}
-      </div>
-      <div class="st-meta">
-        <span>${esc(st.role)}</span>
-        <span>${st.progress}%</span>
+      html += `<div class="st${active}${leader}" data-id="${st.id}" style="padding-left:${indent + 8}px">
+        <div class="st-title" title="${esc(st.title)}">
+          <span class="state-dot ${stateDot}${state.unreadTasks.has(st.id) ? " pulse" : ""}"></span>
+          ${icon} ${esc(st.title)} ${retryBadge}
+          ${state.unreadTasks.has(st.id) ? '<span class="unread-badge">●</span>' : ''}
         </div>
-    </div>`;
-  }
+        <div class="st-meta">
+          <span>${esc(st.role)}</span>
+          ${exhausted ? '<span class="exhausted-label">已重分解</span>' : ''}
+          <span>${st.progress}%</span>
+        </div>
+      </div>`;
+      // Render children if any.
+      if (hasChildren) {
+        renderTree(st.children, depth + 1);
+      }
+    }
+  };
+  renderTree(state.subtasks, 0);
   list.innerHTML = html;
   list.querySelectorAll('.st').forEach(el => {
     el.onclick = (e) => selectSubtask(el.dataset.id);
   });
 }
+
 
 function selectSubtask(id) {
   state.selStId = id;
@@ -369,6 +394,12 @@ function renderFlowchart(svg) {
   if (!svg) {
     view.innerHTML = '<div class="empty"><div class="icon">📊</div>No plan data</div>';
     return;
+  }
+  // Extract viewBox dimensions and set them as explicit SVG width/height
+  // so the SVG renders at exactly its viewBox size.
+  const m = svg.match(/viewBox="0 0 (\d+) (\d+)"/);
+  if (m) {
+    svg = svg.replace('<svg', `<svg width="${m[1]}" height="${m[2]}"`);
   }
   view.innerHTML = svg;
 }

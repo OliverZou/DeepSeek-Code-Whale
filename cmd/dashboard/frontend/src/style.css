@@ -43,6 +43,9 @@ body {
 }
 #mt-list .mt:hover { background: var(--active); }
 #mt-list .mt.active { border-left-color: var(--accent); background: var(--active); }
+#mt-list .mt.idle { color: var(--muted); font-style: italic; cursor: default; }
+#mt-list .mt.idle:hover { background: transparent; }
+#mt-list .mt.idle .goal { font-weight: 400; }
 #mt-list .mt .goal {
   font-weight: 600; font-size: 13px;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
@@ -215,11 +218,14 @@ body {
 /* flowchart view */
 #flowchart-view {
   flex: 1; overflow: auto; padding: 16px;
-  display: flex; align-items: flex-start; justify-content: center;
 }
 #flowchart-view svg {
-  max-width: 100%; height: auto;
+  display: block;
 }
+
+/* retry-exhausted badge */
+.retry-badge { font-size: 10px; margin-left: 4px; }
+.exhausted-label { font-size: 9px; color: #f85149; background: #f8514922; padding: 0 4px; border-radius: 3px; margin-right: 6px; }
 
 /* context menu */
 .ctx-menu {

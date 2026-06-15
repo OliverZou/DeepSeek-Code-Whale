@@ -18,6 +18,7 @@ import (
 	"unsafe"
 
 	"github.com/gorilla/websocket"
+	"github.com/usewhale/whale/internal/eventbus"
 	"github.com/usewhale/whale/internal/team_engine"
 	teampglog "github.com/usewhale/whale/internal/team_engine/log"
 	"golang.org/x/sys/windows"
@@ -67,13 +68,18 @@ type MasterTaskJSON struct {
 
 // SubtaskJSON is a subtask in a master task's plan.
 type SubtaskJSON struct {
-	ID          string `json:"id"`
-	Title       string `json:"title"`
-	Description string `json:"description"`
-	Role        string `json:"role"`
-	State       string `json:"state"`
-	Progress    int    `json:"progress"`
-	CreatedAt   string `json:"created_at"`
+	ID          string        `json:"id"`
+	Title       string        `json:"title"`
+	Description string        `json:"description"`
+	Role        string        `json:"role"`
+	State       string        `json:"state"`
+	Progress    int           `json:"progress"`
+	CreatedAt   string        `json:"created_at"`
+	ParentIDs   []string      `json:"parent_ids"`
+	BatchID     string        `json:"batch_id"`
+	RetryCount  int           `json:"retry_count"`
+	MaxRetries  int           `json:"max_retries"`
+	Children    []SubtaskJSON `json:"children,omitempty"`
 }
 
 // AgentDialogueJSON is one message in the agent's conversation.
@@ -115,6 +121,12 @@ type MultiEngineManager struct {
     
 	// wsConns tracks active WebSocket connections keyed by workspace ID.
 	wsConns map[string]*websocket.Conn
+
+	// EventBus bridge fan-out: one goroutine reads from the global
+	// bridgeOut and fans out to all connected whale CLI processes.
+	bridgeFanOut    sync.Once
+	bridgeWriters   map[string]chan<- []byte // wsID → write channel
+	bridgeWritersMu sync.Mutex
 
 	// dashboardDir is the directory containing the dashboard executable,
 	// used for persisting workspace discovery data (workspaces.json).
@@ -203,6 +215,53 @@ func (m *MultiEngineManager) UnregisterWSConn(wsID string) {
 	delete(m.wsConns, wsID)
 }
 
+// startBridgeFanOut ensures a single goroutine reads from the global
+// EventBus bridgeOut and fans events out to all connected WebSocket
+// clients.  Safe to call multiple times (runs once).
+func (m *MultiEngineManager) startBridgeFanOut() {
+	m.bridgeFanOut.Do(func() {
+		bridgeOut, _ := eventbus.EnableGlobalBridge()
+		log.Printf("dashboard: bridge fan-out started")
+		go func() {
+			for be := range bridgeOut {
+				data, err := json.Marshal(be)
+				if err != nil {
+					continue
+				}
+				if team_engine.DefaultTeamLog != nil {
+					team_engine.DefaultTeamLog.Log("bridge", "dashboard → ws: topic=%s type=%s writers=%d", be.Topic, be.Event.Type, len(m.bridgeWriters))
+				}
+				m.bridgeWritersMu.Lock()
+				for wsID, ch := range m.bridgeWriters {
+					select {
+					case ch <- data:
+					default:
+						log.Printf("dashboard: bridge fan-out drop for %s (slow consumer)", wsID)
+					}
+				}
+				m.bridgeWritersMu.Unlock()
+			}
+		}()
+	})
+}
+
+// registerBridgeWriter registers a WebSocket write channel for EventBus bridge fan-out.
+func (m *MultiEngineManager) registerBridgeWriter(wsID string) chan []byte {
+	ch := make(chan []byte, 64)
+	m.bridgeWritersMu.Lock()
+	m.bridgeWriters[wsID] = ch
+	m.bridgeWritersMu.Unlock()
+	m.startBridgeFanOut()
+	return ch
+}
+
+// unregisterBridgeWriter removes a WebSocket write channel.
+func (m *MultiEngineManager) unregisterBridgeWriter(wsID string) {
+	m.bridgeWritersMu.Lock()
+	delete(m.bridgeWriters, wsID)
+	m.bridgeWritersMu.Unlock()
+}
+
 // HandleWebSocket upgrades an HTTP connection to WebSocket and registers
 // it for the workspace identified by ?wsid= query parameter.
 func (m *MultiEngineManager) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
@@ -222,20 +281,55 @@ func (m *MultiEngineManager) HandleWebSocket(w http.ResponseWriter, r *http.Requ
 	if team_engine.DefaultTeamLog != nil { team_engine.DefaultTeamLog.DashboardWSConnect(wsID, true, nil) }
 	log.Printf("dashboard: ws connected for workspace %s", wsID)
 
-	// Read loop — forward task events to frontend, detect disconnects.
+	// Notify eventLoop so the frontend sees WorkspaceOnline=true immediately.
+	eventbus.Global().Publish(eventbus.TopicWorkspace, eventbus.Event{Type: "ws_connected", Payload: map[string]string{"id": wsID}})
+
+	// Enable cross-process EventBus bridge.
+	_, bridgeIn := eventbus.EnableGlobalBridge()
+
+	// Register for bridge fan-out: dashboard-side EventBus events
+	// are broadcast to all connected whale CLI processes.
+	bridgeCh := m.registerBridgeWriter(wsID)
+	defer m.unregisterBridgeWriter(wsID)
+
+	// Writer goroutine: forward bridge events to this whale CLI.
+	go func() {
+		for data := range bridgeCh {
+			if werr := conn.WriteMessage(websocket.TextMessage, data); werr != nil {
+				return
+			}
+		}
+	}()
+
+	// Read loop — receive events from whale CLI and inject them into
+	// the dashboard's EventBus.  Also handles legacy TaskEvent format.
 	go func() {
 		defer func() {
 			conn.Close()
 			m.UnregisterWSConn(wsID)
 			if team_engine.DefaultTeamLog != nil { team_engine.DefaultTeamLog.DashboardWSDisconnect(wsID) }
 			log.Printf("dashboard: ws disconnected for workspace %s", wsID)
+			eventbus.Global().Publish(eventbus.TopicWorkspace, eventbus.Event{Type: "ws_disconnected", Payload: map[string]string{"id": wsID}})
 		}()
 		for {
 			_, msg, err := conn.ReadMessage()
 			if err != nil {
 				return
 			}
-			// Try to parse as a task event from the whale CLI.
+			// Try BridgedEvent format first (cross-process EventBus).
+			var be eventbus.BridgedEvent
+			if err := json.Unmarshal(msg, &be); err == nil && be.Topic != "" {
+				if team_engine.DefaultTeamLog != nil {
+					team_engine.DefaultTeamLog.Log("bridge", "dashboard ← ws(%s): topic=%s type=%s", wsID, be.Topic, be.Event.Type)
+				}
+				select {
+				case bridgeIn <- be:
+				default:
+					log.Printf("dashboard: bridgeIn full, dropped topic=%s type=%s from ws=%s", be.Topic, be.Event.Type, wsID)
+				}
+				continue
+			}
+			// Fallback: legacy TaskEvent format.
 			var event team_engine.TaskEvent
 			if err := json.Unmarshal(msg, &event); err == nil && event.Type > 0 {
 				m.fireEngineEvent(event)
@@ -269,8 +363,9 @@ func (m *MultiEngineManager) fireEngineEvent(event team_engine.TaskEvent) {
 // NewMultiEngineManager creates an empty manager.
 func NewMultiEngineManager(dashboardDir string) *MultiEngineManager {
 	return &MultiEngineManager{
-		states:       make(map[string]*WorkspaceState),
-		dashboardDir: dashboardDir,
+		states:        make(map[string]*WorkspaceState),
+		dashboardDir:  dashboardDir,
+		bridgeWriters: make(map[string]chan<- []byte),
 	}
 }
 
@@ -285,7 +380,7 @@ func (m *MultiEngineManager) Register(workspacePath string) (*WorkspaceState, er
 
 	// Deduplicate by path.
 			for _, ws := range m.states {
-		if ws.Path == workspacePath {
+		if pathsEqual(ws.Path, workspacePath) {
 			ws.LastSeen = time.Now()
 			// Try lazy-load engine if the db was created after first registration.
 			if ws.Engine == nil {
@@ -385,6 +480,37 @@ func (m *MultiEngineManager) Deregister(wsID string) error {
 	delete(m.states, wsID)
 	log.Printf("dashboard: deregistered workspace %s (%s)", wsID, ws.Label)
 	return nil
+}
+
+// LoadEngineByPath finds a workspace by its filesystem path and (re)loads the
+// engine.  Called in response to engine_ready events from the EventBus.
+func (m *MultiEngineManager) LoadEngineByPath(workspacePath string) error {
+	workspacePath = filepath.Clean(workspacePath)
+	dbPath := filepath.Join(workspacePath, ".whale", "team_engine.db")
+	if _, err := os.Stat(dbPath); err != nil {
+		return fmt.Errorf("no db at %s", dbPath)
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	for _, ws := range m.states {
+		if pathsEqual(ws.Path, workspacePath) {
+			wbDir := filepath.Join(workspacePath, ".whale", "team_tasks")
+			eng, err := team_engine.New(dbPath, wbDir, "", nil)
+			if err != nil {
+				return fmt.Errorf("load engine: %w", err)
+			}
+			if ws.Engine != nil {
+				_ = ws.Engine.Close()
+			}
+			m.wireEngine(eng)
+			ws.Engine = eng
+			log.Printf("dashboard: LoadEngineByPath (re)loaded %s", workspacePath)
+			return nil
+		}
+	}
+	return fmt.Errorf("workspace %s not registered", workspacePath)
 }
 
 // PruneStale is a no-op: workspaces are never removed from the dashboard.
@@ -651,32 +777,22 @@ func (m *MultiEngineManager) GetMasterTasks() []MasterTaskJSON {
 	for _, ws := range m.states {
 		log.Printf("dashboard:   ws=%s path=%s engine=%v", ws.ID, ws.Path, ws.Engine != nil)
 		if ws.Engine == nil {
-			// Workspace registered but no engine yet (no team_plan run).
-			// Show as idle so the dashboard user knows the workspace is online.
-			out = append(out, MasterTaskJSON{
-				ID:             "",
-				Goal:           "(空闲 — 等待 team_plan)",
-				WorkspaceID:    ws.ID,
-				WorkspacePath:  ws.Path,
-				WorkspaceLabel: ws.Label,
-				Status:         "idle",
-				CreatedAt:      ws.Registered.Format(time.RFC3339),
-				WorkspaceOnline: m.isOnline(ws),
-			})
-			continue
+			continue // no DB -> nothing to show
 		}
 		mts, err := ws.Engine.ListMasterTasks()
 		if err != nil {
 			log.Printf("dashboard: list master tasks for %s: %v", ws.ID, err)
 			continue
 		}
+		if len(mts) == 0 {
+			continue // no master tasks -> nothing to show
+		}
 		for _, mt := range mts {
-			// Dedup: same workspace path + same master task ID → skip.
-			key := ws.Path + ":" + mt.ID
-			if seen[key] {
+			// Dedup by master task ID (UUID — globally unique).
+			if seen[mt.ID] {
 				continue
 			}
-			seen[key] = true
+			seen[mt.ID] = true
 
 			subtasks, _ := ws.Engine.ListTasksByMasterTask(mt.ID)
 			taskCount := len(subtasks)
@@ -733,20 +849,12 @@ func (m *MultiEngineManager) GetSubtasks(wsID, masterTaskID string) []SubtaskJSO
 		return []SubtaskJSON{}
 	}
 
-	out := make([]SubtaskJSON, 0, 1+len(tasks))
-	// Prepend synthetic 任务规划 entry — only when subtasks exist.
-	if len(tasks) > 0 {
-		out = append(out, SubtaskJSON{
-			ID:          "__leader__",
-			Title:       "📋 任务规划",
-			Description: masterTaskID,
-			Role:        "teamleader",
-			State:       "done",
-			Progress:    100,
-		})
-	}
+	// Build a map from task ID to its JSON node, then assemble a tree
+	// using ParentIDs so the frontend can render parent-child indentation.
+	nodeMap := make(map[string]*SubtaskJSON, len(tasks))
+	taskList := make([]*SubtaskJSON, 0, len(tasks))
 	for _, t := range tasks {
-		out = append(out, SubtaskJSON{
+		sj := &SubtaskJSON{
 			ID:          t.ID,
 			Title:       t.Title,
 			Description: t.Description,
@@ -754,9 +862,42 @@ func (m *MultiEngineManager) GetSubtasks(wsID, masterTaskID string) []SubtaskJSO
 			State:       string(t.State),
 			Progress:    team_engine.GetProgress(t.State),
 			CreatedAt:   t.CreatedAt,
-		})
+			ParentIDs:   t.ParentIDs,
+			RetryCount:  t.RetryCount,
+			MaxRetries:  t.MaxRetries,
+			BatchID:     t.BatchID,
+		}
+		nodeMap[t.ID] = sj
+		taskList = append(taskList, sj)
 	}
-	return out
+	// Attach children to their parents.
+	roots := make([]SubtaskJSON, 0, 1+len(tasks))
+	for _, sj := range taskList {
+		hasParent := false
+		for _, pid := range sj.ParentIDs {
+			if parent, ok := nodeMap[pid]; ok {
+				parent.Children = append(parent.Children, *sj)
+				hasParent = true
+			}
+		}
+		if !hasParent {
+			roots = append(roots, *sj)
+		}
+	}
+	// Prepend synthetic 任务规划 entry — only when tasks exist.
+	if len(tasks) > 0 {
+		leader := SubtaskJSON{
+			ID:          "__leader__",
+			Title:       "📋 任务规划",
+			Description: masterTaskID,
+			Role:        "teamleader",
+			State:       "done",
+			Progress:    100,
+			Children:    roots,
+		}
+		return []SubtaskJSON{leader}
+	}
+	return roots
 }
 
 // GetAgentDialogue returns the multi-round Worker ⟷ Verifier conversation.
@@ -863,7 +1004,7 @@ func (m *MultiEngineManager) GetLeaderPlan(wsID string) []AgentDialogueJSON {
 		path := filepath.Join(leaderDir, fmt.Sprintf("decompose_%03d.md", round))
 		content, err := readFileString(path)
 		if err != nil {
-			break
+			continue // missing round
 		}
 		if content != "" {
 			dialogue = append(dialogue, AgentDialogueJSON{
@@ -878,7 +1019,7 @@ func (m *MultiEngineManager) GetLeaderPlan(wsID string) []AgentDialogueJSON {
 		path := filepath.Join(leaderDir, fmt.Sprintf("review_%03d.md", round))
 		content, err := readFileString(path)
 		if err != nil {
-			break
+			continue // missing round
 		}
 		if content != "" {
 			dialogue = append(dialogue, AgentDialogueJSON{
@@ -893,7 +1034,7 @@ func (m *MultiEngineManager) GetLeaderPlan(wsID string) []AgentDialogueJSON {
 		path := filepath.Join(leaderDir, fmt.Sprintf("summary_%03d.md", round))
 		content, err := readFileString(path)
 		if err != nil {
-			break
+			continue // missing round
 		}
 		if content != "" {
 			dialogue = append(dialogue, AgentDialogueJSON{
@@ -962,16 +1103,21 @@ func (m *MultiEngineManager) GetLeaderFlowchart(wsID, masterTaskID string) strin
 	padX := 60
 	padY := 55
 	swimH := 60
-	tasksPerCol := 6
+	maxTasks := 1
+		for _, bg := range batches {
+			if len(bg.Tasks) > maxTasks {
+				maxTasks = len(bg.Tasks)
+			}
+		}
 
 	colW := boxW + padX*2
-	totalW := len(batchOrder) * colW
+	totalW := len(batchOrder)*colW + padX
 	if totalW < 600 {
 		totalW = 600
 	}
-	totalH := swimH + tasksPerCol*(boxH+padY) + padY
+	totalH := swimH + maxTasks*(boxH+padY) + padY*2
 
-	svg := fmt.Sprintf(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 %d %d" style="max-width:100%%;background:#181b22;border-radius:8px;font-family:system-ui,sans-serif;">`, totalW, totalH)
+	svg := fmt.Sprintf(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 %d %d" style="background:#181b22;font-family:system-ui,sans-serif;">`, totalW, totalH)
 	svg += `<defs><marker id="arrow" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,0 L10,5 L0,10 Z" fill="#58a6ff"/></marker></defs>`
 
 	// Draw batch labels as column headers
@@ -1009,7 +1155,7 @@ func (m *MultiEngineManager) GetLeaderFlowchart(wsID, masterTaskID string) strin
 			title := safeTruncate(t.Title, 16)
 			pct := team_engine.GetProgress(t.State)
 			statusLine := fmt.Sprintf("%s %d%%", string(t.State), pct)
-			fullTitle := fmt.Sprintf("%s\n[%s] %s\n%s %d%%", t.Title, t.State, string(t.Role), string(t.State), pct)
+			fullTitle := fmt.Sprintf("%s\nRole: %s\nState: %s (%d%%)", t.Title, string(t.Role), string(t.State), pct)
 			role := string(t.Role)
 
 			// Box
@@ -1489,6 +1635,13 @@ func readProcessMem(h windows.Handle, addr uintptr, ptr unsafe.Pointer, size uin
 	return windows.ReadProcessMemory(h, addr, (*byte)(ptr), size, nil)
 }
 
+
+// pathsEqual compares two filesystem paths for equality.
+// On Windows this is case-insensitive.
+func pathsEqual(a, b string) bool {
+	return strings.EqualFold(a, b)
+}
+
 func readFileString(path string) (string, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -1525,7 +1678,7 @@ func (m *MultiEngineManager) sendWSCommand(wsID, command, masterTaskID string) {
 
 func (m *MultiEngineManager) logResumeDiag(ws *WorkspaceState, format string, args ...interface{}) {
 	msg := fmt.Sprintf(format, args...)
-	log.Printf("dashboard: " + msg)
+	log.Print("dashboard: " + msg)
 	if ws == nil || ws.Path == "" {
 		return
 	}
