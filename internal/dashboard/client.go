@@ -63,7 +63,6 @@ func (c *Client) tryRegister() {
 		bytes.NewReader(payload),
 	)
 	if err != nil {
-		log.Printf("dashboard: register failed: %v", err)
 		if team_engine.DefaultTeamLog != nil { team_engine.DefaultTeamLog.CLIHeartbeat("", false) }
 		return
 	}
