@@ -88,6 +88,7 @@ async function loadMasterTasks() {
       if (planned) {
         state.selMtId = planned.id;
         state._lastMtId = null;
+        loadSubtasks(planned.workspace_id, planned.id);
       }
     }
     updateUI();
