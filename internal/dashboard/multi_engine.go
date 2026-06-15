@@ -1407,6 +1407,8 @@ func (m *MultiEngineManager) CancelMasterTask(wsID, masterTaskID string) (int, e
 		}
 		cancelled++
 	}
+	// Cancel the engine's batch loop so it stops between batches / tasks.
+	ws.Engine.CancelMasterTaskExecution(masterTaskID)
 	// Notify the whale CLI to stop execution immediately.
 	m.sendWSCommand(wsID, "cancel_master", masterTaskID)
 	return cancelled, nil

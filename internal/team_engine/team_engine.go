@@ -69,6 +69,11 @@ type TeamEngine struct {
 	// activeCancels tracks cancel functions for running subagent spawns.
 	activeCancels map[string]context.CancelFunc // taskID → cancel
 
+	// masterTaskCancels stores cancel functions for active PlanAndRun /
+	// ResumeMasterTask executions.  When the user clicks "stop" in the
+	// dashboard, the corresponding cancel is called to abort the batch loop.
+	masterTaskCancels map[string]context.CancelFunc // masterTaskID → cancel
+
 	// shutdownCtx / shutdownCancel define the engine's lifecycle.
 	shutdownCtx    context.Context
 	shutdownCancel context.CancelFunc
@@ -152,6 +157,7 @@ func New(dbPath, whiteboardDir, configPath string, spawner SubagentSpawner) (*Te
 		timeout:    defaultTimeout,
 		activeTrees:    make(map[string]string),
 		activeCancels:  make(map[string]context.CancelFunc),
+	masterTaskCancels: make(map[string]context.CancelFunc),
 		shutdownCtx:    shutdownCtx,
 		shutdownCancel: shutdownCancel,
 	}
@@ -192,6 +198,22 @@ func (e *TeamEngine) Close() error {
 	}
 
 	return e.DB.Close()
+}
+
+// CancelMasterTaskExecution cancels a running PlanAndRun / ResumeMasterTask
+// for the given masterTaskID.  It is called from the dashboard stop button.
+// Returns true if a running execution was found and cancelled.
+func (e *TeamEngine) CancelMasterTaskExecution(masterTaskID string) bool {
+	e.mu.Lock()
+	cancel, ok := e.masterTaskCancels[masterTaskID]
+	if ok {
+		delete(e.masterTaskCancels, masterTaskID)
+	}
+	e.mu.Unlock()
+	if ok {
+		cancel()
+	}
+	return ok
 }
 
 // CleanupInterruptedTasks opens the database at dbPath, resets tasks
@@ -511,6 +533,18 @@ func (e *TeamEngine) saveCheckpoint(masterTaskID string, completed map[string]bo
 
 // ResumeMasterTask resumes a previously suspended master task.
 func (e *TeamEngine) ResumeMasterTask(ctx context.Context, masterTaskID, goal, workdir string) ([]*Batch, error) {
+	// Register cancel so dashboard stop button can interrupt resume.
+	execCtx, execCancel := context.WithCancel(ctx)
+	defer execCancel()
+	e.mu.Lock()
+	e.masterTaskCancels[masterTaskID] = execCancel
+	e.mu.Unlock()
+	defer func() {
+		e.mu.Lock()
+		delete(e.masterTaskCancels, masterTaskID)
+		e.mu.Unlock()
+	}()
+
 	progressJSON, err := e.DB.GetMasterTaskProgress(masterTaskID)
 	if err != nil {
 		return nil, fmt.Errorf("load checkpoint: %w", err)
@@ -643,7 +677,7 @@ func (e *TeamEngine) ResumeMasterTask(ctx context.Context, masterTaskID, goal, w
 			continue // already passed — skip
 		}
 		select {
-		case <-ctx.Done():
+		case <-execCtx.Done():
 			e.saveCheckpoint(masterTaskID, completedBatches, passedBatches, cp.CompletedOutputs, batches)
 			return batches, fmt.Errorf("resume cancelled: %w", ctx.Err())
 		default:
@@ -660,7 +694,7 @@ func (e *TeamEngine) ResumeMasterTask(ctx context.Context, masterTaskID, goal, w
 		} else {
 			for cycle := 0; cycle < cycleLimit; cycle++ {
 				batch.CycleCount = cycle + 1
-				if err := e.RunBatch(ctx, batch); err != nil {
+				if err := e.RunBatch(execCtx, batch); err != nil {
 					e.saveCheckpoint(masterTaskID, completedBatches, passedBatches, cp.CompletedOutputs, batches)
 					return batches, fmt.Errorf("run batch %s cycle %d: %w", batch.ID, cycle, err)
 				}
@@ -1120,6 +1154,22 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 			return false, fmt.Errorf("update task for retry: %w", err)
 		}
 
+		// Early escalation: if the verifier reported the same findings for
+		// 2 consecutive rounds, suspend now so the escalator can re-decompose
+		// the task into smaller pieces — no point wasting another retry.
+		if attempt >= 2 {
+			prevFindings := ParseFindings(task.VerifierFeedback)
+			currFindings := ParseFindings(feedback)
+			if findingsAreSame(prevFindings, currFindings) {
+				if err := e.DB.TransitionState(taskID, TaskStateSuspended, "same findings 2 rounds — early re-decomposition", feedback); err != nil {
+					e.mu.Unlock()
+					return false, fmt.Errorf("transition to suspended: %w", err)
+				}
+				e.mu.Unlock()
+				return false, nil
+			}
+		}
+
 		if task.RetryCount >= task.MaxRetries {
 			// Don't fail — the leader should re-decompose just this task.
 			if err := e.DB.TransitionState(taskID, TaskStateSuspended, "retries exhausted — needs re-decomposition", feedback); err != nil {
@@ -1159,6 +1209,18 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 //                  → gate: all PASS → next batch, any FAIL → abort
 //              → write board.md + deliverable.md
 func (e *TeamEngine) PlanAndRun(ctx context.Context, goal, workdir, masterTaskID string) ([]*Batch, error) {
+	// Register a cancel for this execution so the dashboard stop button works.
+	execCtx, execCancel := context.WithCancel(ctx)
+	defer execCancel()
+	e.mu.Lock()
+	e.masterTaskCancels[masterTaskID] = execCancel
+	e.mu.Unlock()
+	defer func() {
+		e.mu.Lock()
+		delete(e.masterTaskCancels, masterTaskID)
+		e.mu.Unlock()
+	}()
+
 	leader := NewLeader(e.Runner).WithLoggers(e.Loggers).WithTeam(e.team).WithOnLog(func() {
 		e.fireEvent(TaskEvent{Type: EventLeaderLog})
 	})
@@ -1286,7 +1348,7 @@ func (e *TeamEngine) PlanAndRun(ctx context.Context, goal, workdir, masterTaskID
 
 		// Check for cancellation between batches.
 		select {
-		case <-ctx.Done():
+		case <-execCtx.Done():
 			// Suspend all non-terminal tasks so the dashboard shows them as
 			// stopped rather than still running.
 			for _, b := range batches {
@@ -1333,7 +1395,7 @@ func (e *TeamEngine) PlanAndRun(ctx context.Context, goal, workdir, masterTaskID
 				batch.CycleCount = cycle + 1
 
 				// Execute all tasks in this batch (parallel if concurrency > 0).
-				if err := e.RunBatch(ctx, batch); err != nil {
+				if err := e.RunBatch(execCtx, batch); err != nil {
 					e.saveCheckpoint(masterTaskID, completedBatches, passedBatches, completedBatchOutputs, batches)
 					return batches, fmt.Errorf("run batch %s cycle %d: %w", batch.ID, cycle, err)
 				}
@@ -2281,4 +2343,31 @@ func GetRetryDelay(retryCount int) int {
 		return 120
 	}
 	return delay
+}
+
+// findingsAreSame returns true if two finding sets share the same IDs and
+// severities, indicating the verifier reported the same issues again —
+// the Worker did not fix anything new between rounds.
+func findingsAreSame(prev, curr []Finding) bool {
+	if len(prev) == 0 || len(curr) == 0 {
+		return false
+	}
+	prevKeys := make(map[string]string, len(prev))
+	for _, f := range prev {
+		prevKeys[f.ID] = f.Severity
+	}
+	for _, f := range curr {
+		if sev, ok := prevKeys[f.ID]; !ok || sev != f.Severity {
+			return false
+		}
+	}
+	// Must have at least one critical/major overlap
+	for _, f := range curr {
+		if f.Severity == "critical" || f.Severity == "major" {
+			if _, ok := prevKeys[f.ID]; ok {
+				return true
+			}
+		}
+	}
+	return false
 }
