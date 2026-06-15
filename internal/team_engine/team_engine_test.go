@@ -50,7 +50,7 @@ func TestCreateTask(t *testing.T) {
 	eng := newTestEngine(t)
 	defer eng.Close()
 
-	task, err := eng.CreateTask("Build API", "Write a FastAPI app", RoleDeveloper, "", nil, 0, ".", "")
+	task, err := eng.CreateTask("Build API", "Write a FastAPI app", RoleDeveloper, "", nil, 0, ".", "", "", "")
 	if err != nil {
 		t.Fatalf("create task: %v", err)
 	}
@@ -80,7 +80,7 @@ func TestCreateTaskWithProfile(t *testing.T) {
 	eng := newTestEngine(t)
 	defer eng.Close()
 
-	task, err := eng.CreateTask("Research", "Find information", RoleResearcher, "", nil, 0, ".", "sources")
+	task, err := eng.CreateTask("Research", "Find information", RoleResearcher, "", nil, 0, ".", "sources", "", "")
 	if err != nil {
 		t.Fatalf("create task: %v", err)
 	}
@@ -141,7 +141,7 @@ func TestCancelTask(t *testing.T) {
 	eng := newTestEngine(t)
 	defer eng.Close()
 
-	task, _ := eng.CreateTask("Test", "Cancel test", RoleDeveloper, "", nil, 0, ".", "")
+	task, _ := eng.CreateTask("Test", "Cancel test", RoleDeveloper, "", nil, 0, ".", "", "", "")
 	if err := eng.CancelTask(task.ID); err != nil {
 		t.Fatalf("cancel task: %v", err)
 	}
@@ -156,7 +156,7 @@ func TestCancelTerminalTask(t *testing.T) {
 	eng := newTestEngine(t)
 	defer eng.Close()
 
-	task, _ := eng.CreateTask("Test", "Terminal cancel", RoleDeveloper, "", nil, 0, ".", "")
+	task, _ := eng.CreateTask("Test", "Terminal cancel", RoleDeveloper, "", nil, 0, ".", "", "", "")
 	// Manually transition to a terminal state via valid path.
 	_ = eng.DB.TransitionState(task.ID, TaskStateAssigned, "", "")
 	_ = eng.DB.TransitionState(task.ID, TaskStateFailed, "manually failed", "")
@@ -183,7 +183,7 @@ func TestSendFeedback(t *testing.T) {
 	eng := newTestEngine(t)
 	defer eng.Close()
 
-	task, _ := eng.CreateTask("Feedback", "Original", RoleDeveloper, "", nil, 0, ".", "")
+	task, _ := eng.CreateTask("Feedback", "Original", RoleDeveloper, "", nil, 0, ".", "", "", "")
 	if err := eng.SendFeedback(task.ID, "Please add input validation"); err != nil {
 		t.Fatalf("send feedback: %v", err)
 	}
@@ -254,8 +254,8 @@ func TestListTasks(t *testing.T) {
 	eng := newTestEngine(t)
 	defer eng.Close()
 
-	eng.CreateTask("Task 1", "First", RoleDeveloper, "", nil, 0, ".", "")
-	eng.CreateTask("Task 2", "Second", RoleResearcher, "", nil, 0, ".", "")
+	eng.CreateTask("Task 1", "First", RoleDeveloper, "", nil, 0, ".", "", "", "")
+	eng.CreateTask("Task 2", "Second", RoleResearcher, "", nil, 0, ".", "", "", "")
 
 	tasks, err := eng.ListTasks()
 	if err != nil {
@@ -270,8 +270,8 @@ func TestListTasksByState(t *testing.T) {
 	eng := newTestEngine(t)
 	defer eng.Close()
 
-	t1, _ := eng.CreateTask("Task 1", "First", RoleDeveloper, "", nil, 0, ".", "")
-	t2, _ := eng.CreateTask("Task 2", "Second", RoleResearcher, "", nil, 0, ".", "")
+	t1, _ := eng.CreateTask("Task 1", "First", RoleDeveloper, "", nil, 0, ".", "", "", "")
+	t2, _ := eng.CreateTask("Task 2", "Second", RoleResearcher, "", nil, 0, ".", "", "", "")
 
 	// Transition t1 to ASSIGNED.
 	eng.DB.TransitionState(t1.ID, TaskStateAssigned, "", "")
@@ -303,7 +303,7 @@ func TestWhiteboardInit(t *testing.T) {
 	eng := newTestEngine(t)
 	defer eng.Close()
 
-	task, _ := eng.CreateTask("WB Test", "Whiteboard test", RoleDeveloper, "", nil, 0, ".", "")
+	task, _ := eng.CreateTask("WB Test", "Whiteboard test", RoleDeveloper, "", nil, 0, ".", "", "", "")
 
 	if err := eng.Whiteboard.InitTask(task.ID, task.Description); err != nil {
 		t.Fatalf("init whiteboard: %v", err)
@@ -322,7 +322,7 @@ func TestWhiteboardWriteRead(t *testing.T) {
 	eng := newTestEngine(t)
 	defer eng.Close()
 
-	task, _ := eng.CreateTask("WB RW", "Read/Write test", RoleDeveloper, "", nil, 0, ".", "")
+	task, _ := eng.CreateTask("WB RW", "Read/Write test", RoleDeveloper, "", nil, 0, ".", "", "", "")
 	eng.Whiteboard.InitTask(task.ID, "input")
 
 	if err := eng.Whiteboard.WriteOutput(task.ID, "worker output"); err != nil {
@@ -456,7 +456,7 @@ func TestAgentChannelKill(t *testing.T) {
 	eng := newTestEngine(t)
 	defer eng.Close()
 
-	task, _ := eng.CreateTask("Kill Test", "To be killed", RoleDeveloper, "", nil, 0, ".", "")
+	task, _ := eng.CreateTask("Kill Test", "To be killed", RoleDeveloper, "", nil, 0, ".", "", "", "")
 	if err := eng.Kill(nil, task.ID); err != nil {
 		t.Fatalf("kill task: %v", err)
 	}
@@ -471,7 +471,7 @@ func TestAgentChannelAbort(t *testing.T) {
 	eng := newTestEngine(t)
 	defer eng.Close()
 
-	task, _ := eng.CreateTask("Abort Test", "To be aborted", RoleDeveloper, "", nil, 0, ".", "")
+	task, _ := eng.CreateTask("Abort Test", "To be aborted", RoleDeveloper, "", nil, 0, ".", "", "", "")
 	if err := eng.Abort(nil, task.ID); err != nil {
 		t.Fatalf("abort task: %v", err)
 	}
@@ -507,7 +507,7 @@ func TestAgentChannelPrompt(t *testing.T) {
 	eng := newTestEngine(t)
 	defer eng.Close()
 
-	task, _ := eng.CreateTask("Prompt Test", "Original", RoleDeveloper, "", nil, 0, ".", "")
+	task, _ := eng.CreateTask("Prompt Test", "Original", RoleDeveloper, "", nil, 0, ".", "", "", "")
 
 	// Fire-and-forget prompt.
 	reply, err := eng.Prompt(nil, PromptRequest{
@@ -544,7 +544,7 @@ func TestWriteAndReadInbox(t *testing.T) {
 	eng := newTestEngine(t)
 	defer eng.Close()
 
-	task, _ := eng.CreateTask("Inbox Test", "Test inbox", RoleDeveloper, "", nil, 0, ".", "")
+	task, _ := eng.CreateTask("Inbox Test", "Test inbox", RoleDeveloper, "", nil, 0, ".", "", "", "")
 
 	msg1 := NewMessage(task.ID, "human", "First message", "")
 	msg2 := NewMessage(task.ID, "agent:worker-1", "Second message", "")
@@ -588,7 +588,7 @@ func TestBuildInboxContext(t *testing.T) {
 	eng := newTestEngine(t)
 	defer eng.Close()
 
-	task, _ := eng.CreateTask("Ctx Test", "Test context", RoleDeveloper, "", nil, 0, ".", "")
+	task, _ := eng.CreateTask("Ctx Test", "Test context", RoleDeveloper, "", nil, 0, ".", "", "", "")
 
 	// No messages → empty context.
 	ctx, err := eng.Whiteboard.BuildInboxContext(task.ID)
@@ -648,7 +648,7 @@ func TestSuspendAndResumeTransition(t *testing.T) {
 	eng := newTestEngine(t)
 	defer eng.Close()
 
-	task, err := eng.CreateTask("Test", "Resume test", RoleDeveloper, "", nil, 0, ".", "")
+	task, err := eng.CreateTask("Test", "Resume test", RoleDeveloper, "", nil, 0, ".", "", "", "")
 	if err != nil {
 		t.Fatalf("create task: %v", err)
 	}
@@ -687,7 +687,7 @@ func TestListSuspendedMasterTasks(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create master task: %v", err)
 	}
-	task, err := eng.CreateTask("Sub", "subtask", RoleDeveloper, "", nil, 0, ".", "")
+	task, err := eng.CreateTask("Sub", "subtask", RoleDeveloper, "", nil, 0, ".", "", "", "")
 	if err != nil {
 		t.Fatalf("create subtask: %v", err)
 	}
@@ -747,7 +747,7 @@ func TestResumeMasterTask(t *testing.T) {
 		t.Fatalf("create master task: %v", err)
 	}
 
-	t1, _ := eng.CreateTask("Done task", "This task is done", RoleDeveloper, "", nil, 0, ".", "")
+	t1, _ := eng.CreateTask("Done task", "This task is done", RoleDeveloper, "", nil, 0, ".", "", "", "")
 	t1.MasterTaskID = mt.ID
 	t1.BatchID = "batch-research"
 	eng.DB.UpdateTaskMasterTaskID(t1.ID, mt.ID)
@@ -755,7 +755,7 @@ func TestResumeMasterTask(t *testing.T) {
 	eng.DB.TransitionState(t1.ID, TaskStateAssigned, "", "")
 	eng.DB.TransitionState(t1.ID, TaskStateDone, "", "")
 
-	t2, _ := eng.CreateTask("Suspended task", "This task got killed", RoleDeveloper, "", nil, 0, ".", "")
+	t2, _ := eng.CreateTask("Suspended task", "This task got killed", RoleDeveloper, "", nil, 0, ".", "", "", "")
 	t2.MasterTaskID = mt.ID
 	t2.BatchID = "batch-coding"
 	eng.DB.UpdateTaskMasterTaskID(t2.ID, mt.ID)

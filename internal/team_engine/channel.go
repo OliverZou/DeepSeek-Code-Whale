@@ -160,7 +160,7 @@ func (e *TeamEngine) Spawn(_ context.Context, req SpawnRequest) (*Task, error) {
 		req.ParentIDs,
 		req.MaxRetries,
 		req.Workdir,
-		req.VerifierFocus,
+		req.VerifierFocus, "", "",
 	)
 }
 

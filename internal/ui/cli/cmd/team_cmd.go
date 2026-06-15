@@ -71,7 +71,7 @@ Subcommands:
 				title, description,
 				team_engine.AgentRole(role),
 				team_engine.ToolProfile(profile),
-				nil, maxRetries, workdir, verifierFocus,
+				nil, maxRetries, workdir, verifierFocus, "", "",
 			)
 			if err != nil {
 				return fmt.Errorf("create task: %w", err)

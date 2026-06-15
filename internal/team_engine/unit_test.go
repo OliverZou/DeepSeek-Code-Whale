@@ -15,7 +15,7 @@ func TestDeleteTask(t *testing.T) {
 	eng := newTestEngine(t)
 	defer eng.Close()
 
-	task, _ := eng.CreateTask("ToDelete", "Will be deleted", RoleDeveloper, "", nil, 0, ".", "")
+	task, _ := eng.CreateTask("ToDelete", "Will be deleted", RoleDeveloper, "", nil, 0, ".", "", "", "")
 	if err := eng.DeleteTask(task.ID); err != nil {
 		t.Fatalf("delete task: %v", err)
 	}
@@ -33,7 +33,7 @@ func TestDeleteMasterTaskCascades(t *testing.T) {
 	mt, _ := eng.CreateMasterTask("cascade test", "/tmp")
 	// Create 3 subtasks.
 	for i := 0; i < 3; i++ {
-		task, _ := eng.CreateTask("Sub", "subtask", RoleDeveloper, "", nil, 0, ".", "")
+		task, _ := eng.CreateTask("Sub", "subtask", RoleDeveloper, "", nil, 0, ".", "", "", "")
 		task.MasterTaskID = mt.ID
 		eng.DB.UpdateTask(task.ID, map[string]interface{}{"master_task_id": mt.ID})
 	}
@@ -59,7 +59,7 @@ func TestForceTransitionState(t *testing.T) {
 	eng := newTestEngine(t)
 	defer eng.Close()
 
-	task, _ := eng.CreateTask("Force", "Force transition", RoleDeveloper, "", nil, 0, ".", "")
+	task, _ := eng.CreateTask("Force", "Force transition", RoleDeveloper, "", nil, 0, ".", "", "", "")
 
 	// Normal CanTransition from PENDING to DONE is not valid.
 	if CanTransition(TaskStatePending, TaskStateDone) {
@@ -93,7 +93,7 @@ func TestUpdateTaskFields(t *testing.T) {
 	eng := newTestEngine(t)
 	defer eng.Close()
 
-	task, _ := eng.CreateTask("Update", "Original desc", RoleDeveloper, "", nil, 0, ".", "")
+	task, _ := eng.CreateTask("Update", "Original desc", RoleDeveloper, "", nil, 0, ".", "", "", "")
 
 	if err := eng.DB.UpdateTask(task.ID, map[string]interface{}{
 		"description":     "Updated desc",
@@ -294,19 +294,19 @@ func TestEscalatorStuckTasks(t *testing.T) {
 	defer eng.Close()
 
 	// Create tasks and set their state in DB.
-	t1, _ := eng.CreateTask("Normal", "ok", RoleDeveloper, "", nil, 0, ".", "")
+	t1, _ := eng.CreateTask("Normal", "ok", RoleDeveloper, "", nil, 0, ".", "", "", "")
 	eng.DB.UpdateTask(t1.ID, map[string]interface{}{"retry_count": 2})
 	eng.DB.TransitionState(t1.ID, TaskStateAssigned, "", "")
 	eng.DB.TransitionState(t1.ID, TaskStateProducing, "", "")
 	// t1 is producing, retries not exhausted → not stuck
 
-	t2, _ := eng.CreateTask("Stuck", "stuck", RoleDeveloper, "", nil, 0, ".", "")
+	t2, _ := eng.CreateTask("Stuck", "stuck", RoleDeveloper, "", nil, 0, ".", "", "", "")
 	eng.DB.UpdateTask(t2.ID, map[string]interface{}{"retry_count": 3, "max_retries": 3})
 	eng.DB.TransitionState(t2.ID, TaskStateAssigned, "", "")
 	eng.DB.ForceTransitionState(t2.ID, TaskStateSuspended, "retries exhausted")
 	// t2 is suspended with retries exhausted → stuck
 
-	t3, _ := eng.CreateTask("Done", "done", RoleDeveloper, "", nil, 0, ".", "")
+	t3, _ := eng.CreateTask("Done", "done", RoleDeveloper, "", nil, 0, ".", "", "", "")
 	eng.DB.TransitionState(t3.ID, TaskStateAssigned, "", "")
 	eng.DB.TransitionState(t3.ID, TaskStateDone, "", "")
 	// t3 is done → not stuck
@@ -347,7 +347,7 @@ func TestWhiteboardCleanupTask(t *testing.T) {
 	eng := newTestEngine(t)
 	defer eng.Close()
 
-	task, _ := eng.CreateTask("Cleanup", "Will be cleaned", RoleDeveloper, "", nil, 0, ".", "")
+	task, _ := eng.CreateTask("Cleanup", "Will be cleaned", RoleDeveloper, "", nil, 0, ".", "", "", "")
 	eng.Whiteboard.InitTask(task.ID, "input")
 	eng.Whiteboard.WriteOutput(task.ID, "output")
 	eng.Whiteboard.WriteVerifier(task.ID, "verifier")
@@ -373,7 +373,7 @@ func TestWhiteboardCleanupMasterTask(t *testing.T) {
 	eng := newTestEngine(t)
 	defer eng.Close()
 
-	task, _ := eng.CreateTask("SubClean", "Sub task", RoleDeveloper, "", nil, 0, ".", "")
+	task, _ := eng.CreateTask("SubClean", "Sub task", RoleDeveloper, "", nil, 0, ".", "", "", "")
 	eng.Whiteboard.InitTask(task.ID, "input")
 
 	// Write board and deliverable.

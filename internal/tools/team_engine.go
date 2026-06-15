@@ -449,7 +449,7 @@ func (b *Toolset) teamCreateTool() toolFn {
 			}
 			defer eng.Close()
 
-			task, err := eng.CreateTask(args.Title, args.Description, team_engine.AgentRole(args.Role), "", nil, 3, b.root, "")
+			task, err := eng.CreateTask(args.Title, args.Description, team_engine.AgentRole(args.Role), "", nil, 3, b.root, "", "", "")
 			if err != nil {
 				return toolError("create: %v", err), nil
 			}

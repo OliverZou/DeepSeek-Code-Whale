@@ -280,7 +280,7 @@ function renderSubtasks() {
       const icon = st.id === '__leader__' ? '📋'
         : (st.children && st.children.length > 0) ? '📂'
         : '🎭';
-      const indent = depth * 24; // 24px per level for clear hierarchy
+      const indent = depth * 18; // 18px per level for visible but compact hierarchy
       const hasChildren = st.children && st.children.length > 0;
       const retryBadge = exhausted ? '<span class="retry-badge" title="重试耗尽，已被重新分解">🔄</span>' : '';
       // Show child count for re-decomposed (management) nodes.

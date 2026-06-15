@@ -828,7 +828,7 @@ func (e *TeamEngine) buildExecutionSummary(batches []*Batch, goal, workdir strin
 }
 
 // CreateTask creates a new task and persists it to the database.
-func (e *TeamEngine) CreateTask(title, description string, role AgentRole, profile ToolProfile, parentIDs []string, maxRetries int, workdir, verifierFocus string) (*Task, error) {
+func (e *TeamEngine) CreateTask(title, description string, role AgentRole, profile ToolProfile, parentIDs []string, maxRetries int, workdir, verifierFocus, batchID, masterTaskID string) (*Task, error) {
 	id := uuid.New().String()
 	if profile == "" {
 		// Resolve profile from config based on role.
@@ -845,7 +845,7 @@ func (e *TeamEngine) CreateTask(title, description string, role AgentRole, profi
 			title, maxRetries, maxRetriesWarn)
 	}
 
-	task := NewTask(id, title, description, role, profile, maxRetries, workdir, parentIDs, "", "")
+	task := NewTask(id, title, description, role, profile, maxRetries, workdir, parentIDs, batchID, masterTaskID)
 	task.VerifierFocus = verifierFocus
 
 	if err := e.DB.InsertTask(task); err != nil {
@@ -1294,7 +1294,7 @@ func (e *TeamEngine) PlanAndRun(ctx context.Context, goal, workdir, masterTaskID
 				nil, // parent IDs now handled at batch level
 				0, // 0 = use NewTask default (9)
 				workdir,
-				pt.VerifierFocus,
+				pt.VerifierFocus, bid, masterTaskID,
 			)
 			if err != nil {
 				return nil, fmt.Errorf("create subtask %s: %w", pt.Title, err)
@@ -1423,7 +1423,7 @@ func (e *TeamEngine) PlanAndRun(ctx context.Context, goal, workdir, masterTaskID
 					func(id string) (*Task, error) { return e.DB.GetTask(id) },
 					func(pt PlanTask, batchID, mtID string, parentIDs []string) (*Task, error) {
 						profile := ToolProfile(pt.Profile)
-						task, err := e.CreateTask(pt.Title, pt.Description, AgentRole(pt.Role), profile, parentIDs, 0, workdir, pt.VerifierFocus)
+						task, err := e.CreateTask(pt.Title, pt.Description, AgentRole(pt.Role), profile, parentIDs, 0, workdir, pt.VerifierFocus, batchID, mtID)
 						if err != nil {
 							return nil, err
 						}
@@ -1727,7 +1727,7 @@ func (e *TeamEngine) runDWCycle(
 			func(id string) (*Task, error) { return e.DB.GetTask(id) },
 			func(pt PlanTask, batchID, mtID string, parentIDs []string) (*Task, error) {
 				profile := ToolProfile(pt.Profile)
-				task, err := e.CreateTask(pt.Title, pt.Description, AgentRole(pt.Role), profile, parentIDs, 0, workdir, pt.VerifierFocus)
+				task, err := e.CreateTask(pt.Title, pt.Description, AgentRole(pt.Role), profile, parentIDs, 0, workdir, pt.VerifierFocus, batchID, mtID)
 				if err != nil {
 					return nil, err
 				}
@@ -1882,7 +1882,7 @@ func (e *TeamEngine) PlanAndRunLegacy(goal, workdir string) ([]*Task, error) {
 			}
 		}
 		profile := ToolProfile(pt.Profile)
-		task, err := e.CreateTask(pt.Title, pt.Description, AgentRole(pt.Role), profile, parentIDs, 0, workdir, pt.VerifierFocus)
+		task, err := e.CreateTask(pt.Title, pt.Description, AgentRole(pt.Role), profile, parentIDs, 0, workdir, pt.VerifierFocus, "", "")
 		if err != nil {
 			return nil, fmt.Errorf("create subtask %d: %w", i, err)
 		}
