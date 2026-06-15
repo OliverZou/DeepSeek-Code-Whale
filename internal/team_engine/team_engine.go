@@ -867,7 +867,17 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 		// hardcoded default.  Research/deep-analysis roles need more
 		// time (900-1800s) than the default 300s.
 		taskTimeout := time.Duration(e.Router.ResolveTimeout(task.Role, false)) * time.Second
-		result := e.Runner.RunWithContext(ctx, prompt, workdir, toolsStr, taskTimeout, liveOutput)
+		// Register a per-task cancel so Close() / Kill() can immediately
+		// abort running subagents instead of waiting for them to finish.
+		taskCtx, taskCancel := context.WithCancel(ctx)
+		e.mu.Lock()
+		e.activeCancels[taskID] = taskCancel
+		e.mu.Unlock()
+		result := e.Runner.RunWithContext(taskCtx, prompt, workdir, toolsStr, taskTimeout, liveOutput)
+		e.mu.Lock()
+		delete(e.activeCancels, taskID)
+		e.mu.Unlock()
+		taskCancel()
 
 		if !result.Success {
 			errorContent := fmt.Sprintf("\nERROR (exit %d):\n%s", result.ExitCode, result.Stderr)

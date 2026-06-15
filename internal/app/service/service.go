@@ -322,6 +322,9 @@ func (s *Service) Close() error {
 	if s.serviceCtxCancel != nil {
 		s.serviceCtxCancel()
 	}
+	// Cancel any running team-engine background execution so the engine
+	// shuts down promptly instead of blocking on task timeouts.
+	s.app.CancelAutoExecute()
 	s.bgWG.Wait()
 	return s.app.Close()
 }

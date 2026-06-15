@@ -133,6 +133,15 @@ func ViewModeToggleMessage(mode string) string {
 	return "Focus view disabled"
 }
 
+// CancelAutoExecute cancels the running AutoExecuteMasterTask (team engine).
+// Called during shutdown so the engine stops promptly instead of running
+// until its natural timeout.
+func (a *App) CancelAutoExecute() {
+	if a != nil && a.toolset != nil {
+		a.toolset.CancelAutoExecute()
+	}
+}
+
 func (a *App) Close() error {
 	if a == nil {
 		return nil
