@@ -81,7 +81,16 @@ func (esc *Escalator) ProcessBatch(batch *Batch, masterTaskID, workdir string, t
 			esc.loggers.Engine("escalator: re-decompose task %s (%s) after %d retries", t.ID[:8], t.Title, t.MaxRetries)
 		}
 		smaller, err := esc.planner.DecomposeTask(t, workdir, timeout, model)
-		if err != nil || len(smaller) <= 1 {
+		if err != nil {
+			if esc.loggers != nil {
+				esc.loggers.Engine("escalator: DecomposeTask FAILED for %s (%s): %v", t.ID[:8], t.Title, err)
+			}
+			continue
+		}
+		if len(smaller) <= 1 {
+			if esc.loggers != nil {
+				esc.loggers.Engine("escalator: DecomposeTask for %s returned only %d tasks — cannot split further", t.ID[:8], len(smaller))
+			}
 			continue
 		}
 		esc.ReplaceTaskWithSubtasks(t, smaller, masterTaskID, createTask, transitionState)
