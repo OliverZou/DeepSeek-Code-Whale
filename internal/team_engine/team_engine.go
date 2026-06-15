@@ -719,6 +719,7 @@ func (e *TeamEngine) ResumeMasterTask(ctx context.Context, masterTaskID, goal, w
 				case CycleAccept:
 					completedBatches[batch.ID] = true
 					passedBatches[batch.ID] = true
+					batch.Status = BatchStatusPassed
 					e.saveCheckpoint(masterTaskID, completedBatches, passedBatches, cp.CompletedOutputs, batches)
 					cp.CompletedOutputs[batch.ID] = e.collectBatchOutputs(batch)
 					break
@@ -1461,6 +1462,7 @@ func (e *TeamEngine) PlanAndRun(ctx context.Context, goal, workdir, masterTaskID
 				case CycleAccept:
 					completedBatches[batch.ID] = true
 						passedBatches[batch.ID] = true
+						batch.Status = BatchStatusPassed
 					// Cross-stage artifact passing:
 					// Collect outputs from completed batch tasks so the
 					// next batch can reference them.
@@ -1523,6 +1525,7 @@ func (e *TeamEngine) PlanAndRun(ctx context.Context, goal, workdir, masterTaskID
 					switch review.Decision {
 					case CycleAccept:
 						passedBatches[batch.ID] = true
+						batch.Status = BatchStatusPassed
 						completedBatches[batch.ID] = true
 						completedBatchOutputs[batch.ID] = e.collectBatchOutputs(batch)
 					default:
