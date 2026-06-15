@@ -893,9 +893,9 @@ func (m *MultiEngineManager) GetSubtasks(wsID, masterTaskID string) []SubtaskJSO
 			Role:        "teamleader",
 			State:       "done",
 			Progress:    100,
-			Children:    roots,
+			// leader is a header sibling, not a parent wrapper
 		}
-		return []SubtaskJSON{leader}
+			return append([]SubtaskJSON{leader}, roots...)
 	}
 	return roots
 }
@@ -1139,8 +1139,36 @@ func (m *MultiEngineManager) GetLeaderFlowchart(wsID, masterTaskID string) strin
 		bg := batches[bid]
 		x := ci*colW + padX
 
+		// Build child-of map: which tasks are re-decomposed children
+		// of another task in this batch.
+		isChild := make(map[string]string) // childID → parentID
+		for _, t := range bg.Tasks {
+			for _, pid := range t.ParentIDs {
+				for _, pt := range bg.Tasks {
+					if pt.ID == pid {
+						isChild[t.ID] = pid
+						break
+					}
+				}
+			}
+		}
+
+		childX := int(float64(boxW) * 0.08) // indent for child tasks
+		childW := boxW - childX - 4
+
 		for ti, t := range bg.Tasks {
 			y := swimH + ti*(boxH+padY) + padY/2
+			bx := x // box x
+			bw := boxW
+			if isChild[t.ID] != "" {
+				bx = x + childX
+				bw = childW
+				// Connector line from parent to child
+				if parentNode, ok := placed[isChild[t.ID]]; ok {
+					svg += fmt.Sprintf(`<path d="M%d,%d L%d,%d" stroke="#8b949e" stroke-width="1" stroke-dasharray="3,2" fill="none" opacity="0.6"/>`,
+						parentNode.x, parentNode.y, bx, y+boxH/2)
+				}
+			}
 			color := "#4299e1"
 			switch t.State {
 			case "done", "passed":
@@ -1159,21 +1187,21 @@ func (m *MultiEngineManager) GetLeaderFlowchart(wsID, masterTaskID string) strin
 			role := string(t.Role)
 
 			// Box
-			svg += fmt.Sprintf(`<rect x="%d" y="%d" width="%d" height="%d" rx="6" fill="%s22" stroke="%s" stroke-width="1.5"/>`, x, y, boxW, boxH, color, color)
-			svg += fmt.Sprintf(`<text x="%d" y="%d" fill="#c9d1d9" font-size="12" font-weight="500" text-anchor="middle">%s</text>`, x+boxW/2, y+24, escSVG(title))
-			svg += fmt.Sprintf(`<text x="%d" y="%d" fill="#8b949e" font-size="10" text-anchor="middle">%s</text>`, x+boxW/2, y+44, escSVG(role))
-			svg += fmt.Sprintf(`<text x="%d" y="%d" fill="#8b949e" font-size="9" text-anchor="middle">%s</text>`, x+boxW/2, y+58, escSVG(statusLine))
+			svg += fmt.Sprintf(`<rect x="%d" y="%d" width="%d" height="%d" rx="6" fill="%s22" stroke="%s" stroke-width="1.5"/>`, bx, y, bw, boxH, color, color)
+			svg += fmt.Sprintf(`<text x="%d" y="%d" fill="#c9d1d9" font-size="12" font-weight="500" text-anchor="middle">%s</text>`, bx+bw/2, y+24, escSVG(title))
+			svg += fmt.Sprintf(`<text x="%d" y="%d" fill="#8b949e" font-size="10" text-anchor="middle">%s</text>`, bx+bw/2, y+44, escSVG(role))
+			svg += fmt.Sprintf(`<text x="%d" y="%d" fill="#8b949e" font-size="9" text-anchor="middle">%s</text>`, bx+bw/2, y+58, escSVG(statusLine))
 			// Tooltip — shows full title, role, state on hover
 			svg += fmt.Sprintf(`<title>%s</title>`, escSVG(fullTitle))
 
-			placed[t.ID] = node{x: x + boxW, y: y + boxH/2}
+			placed[t.ID] = node{x: bx + bw, y: y + boxH/2}
 
-			// Arrow from previous batch tasks
-			if ci > 0 {
+			// Arrow from previous batch tasks (root tasks only, not children)
+			if ci > 0 && isChild[t.ID] == "" {
 				for _, prevID := range prevBatchTasks {
 					if p, ok := placed[prevID]; ok {
 						svg += fmt.Sprintf(`<path d="M%d,%d L%d,%d" stroke="#58a6ff" stroke-width="1.5" marker-end="url(#arrow)" fill="none" opacity="0.5"/>`,
-							p.x, p.y, x, y+boxH/2)
+							p.x, p.y, bx, y+boxH/2)
 					}
 				}
 			}
