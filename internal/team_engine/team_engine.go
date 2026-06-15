@@ -1268,7 +1268,7 @@ func (e *TeamEngine) PlanAndRun(ctx context.Context, goal, workdir, masterTaskID
 		bg := batchMap[bid]
 		concurrency := bg.concurrency
 		if concurrency <= 0 {
-			concurrency = e.Config.Batch.DefaultConcurrency
+			concurrency = e.Config.Batch.MaxAgents
 		}
 		maxCycles := bg.maxCycles
 		if maxCycles <= 0 {
@@ -1804,7 +1804,10 @@ func (e *TeamEngine) RunBatch(ctx context.Context, batch *Batch) error {
 
 	concurrency := batch.Concurrency
 	if concurrency <= 0 {
-		concurrency = len(tasks) // unlimited
+		concurrency = e.Config.Batch.MaxAgents
+	}
+	if concurrency <= 0 || concurrency > len(tasks) {
+		concurrency = len(tasks) // cap at task count; 0 = unlimited in config
 	}
 
 	// Use a semaphore channel to limit concurrency.

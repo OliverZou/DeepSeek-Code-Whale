@@ -22,8 +22,8 @@ type RoleEntry struct {
 
 // BatchConfig defines default batch execution parameters.
 type BatchConfig struct {
-	DefaultConcurrency int `yaml:"default_concurrency"`  // 0 = unlimited
-	DefaultMaxCycles   int `yaml:"default_max_cycles"`    // 0 = unlimited
+	MaxAgents        int `yaml:"max_agents"`          // max simultaneous agents; 0 = unlimited
+	DefaultMaxCycles int `yaml:"default_max_cycles"`  // 0 = unlimited
 }
 
 // RoutingConfig defines how tasks are routed to tool profiles.
@@ -63,8 +63,8 @@ var Defaults = Config{
 		DecomposerTimeoutSec: 300,  // 5 min — plan decomposition (v4-pro needs ~90s, v4-flash ~30s)
 	},
 	Batch: BatchConfig{
-		DefaultConcurrency: 0,  // unlimited
-		DefaultMaxCycles:   10, // safety cap — real exit is loop-until-dry
+		MaxAgents:        9,  // max simultaneous Worker+Verifier pairs
+		DefaultMaxCycles: 10, // safety cap — real exit is loop-until-dry
 	},
 }
 
@@ -129,8 +129,8 @@ func mergeConfig(base, override Config) Config {
 	}
 
 	// Batch config merge.
-	if override.Batch.DefaultConcurrency > 0 {
-		result.Batch.DefaultConcurrency = override.Batch.DefaultConcurrency
+	if override.Batch.MaxAgents > 0 {
+		result.Batch.MaxAgents = override.Batch.MaxAgents
 	}
 	if override.Batch.DefaultMaxCycles > 0 {
 		result.Batch.DefaultMaxCycles = override.Batch.DefaultMaxCycles
