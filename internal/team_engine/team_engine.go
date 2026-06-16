@@ -7,6 +7,7 @@ import (
 	"math"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -962,7 +963,10 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 
 ## Self-Split Capability
 Before producing the deliverable, assess whether you can complete this task in a single pass.
-If the task is too large to finish in one output:
+RULE OF THUMB: if the expected output exceeds ~200 lines or ~10 sections, SPLIT IT.
+Do NOT try to squeeze a large document into one pass — it will be truncated and rejected.
+
+If the task is too large:
 1. Do NOT produce a partial deliverable
 2. Instead, output a split plan starting with the exact line [SPLIT_PLAN]
 3. Follow with a JSON array of 2-3 smaller subtasks, each with:
@@ -973,7 +977,7 @@ If the task is too large to finish in one output:
 4. The engine will run these child tasks, then call you back to assemble the final deliverable
 5. Do NOT nest further — you can only split into ONE level of children
 
-If the task fits in one pass, produce the deliverable normally (no [SPLIT_PLAN] marker).`, task.Role)
+If the task fits in one pass (~200 lines or fewer), produce the deliverable normally.`, task.Role)
 		if err := e.Whiteboard.InitTask(task.ID, prompt); err != nil {
 			return false, fmt.Errorf("init whiteboard: %w", err)
 		}
@@ -1411,6 +1415,10 @@ func (e *TeamEngine) PlanAndRun(ctx context.Context, goal, workdir, masterTaskID
 		}
 		DefaultTeamLog.Log("plan", "plan: %d batches ready, starting execution", len(batches))
 	}
+
+	// Write plan.md — structured overview of the goal and all batches/tasks.
+	e.writePlanMarkdown(goal, batches, workdir)
+
 	// Flush WAL so dashboard's separate DB connection can see new tasks.
 	if err := e.DB.Checkpoint(); err != nil {
 	}
@@ -2543,4 +2551,37 @@ func countBatches(tasks []PlanTask) int {
 		seen[bid] = true
 	}
 	return len(seen)
+}
+
+// writePlanMarkdown writes plan.md — the structured plan overview.
+func (e *TeamEngine) writePlanMarkdown(goal string, batches []*Batch, workdir string) {
+	path := filepath.Join(workdir, "plan.md")
+	f, err := os.Create(path)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+
+	f.WriteString(fmt.Sprintf("# Plan\n\n**Goal:** %s\n\n", goal))
+	f.WriteString(fmt.Sprintf("**Batches:** %d | **Tasks:** %d\n\n", len(batches), countTasks(batches)))
+
+	for i, batch := range batches {
+		label := batch.LabelOrID()
+		if label == "" {
+			label = batch.ID
+		}
+		f.WriteString(fmt.Sprintf("## Batch %d: %s\n\n", i+1, label))
+		for _, t := range batch.Tasks {
+			f.WriteString(fmt.Sprintf("- **%s** (%s)\n", t.Title, t.Role))
+		}
+		f.WriteString("\n")
+	}
+}
+
+func countTasks(batches []*Batch) int {
+	n := 0
+	for _, b := range batches {
+		n += len(b.Tasks)
+	}
+	return n
 }
