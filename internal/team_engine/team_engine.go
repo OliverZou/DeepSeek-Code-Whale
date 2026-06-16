@@ -1320,6 +1320,9 @@ func (e *TeamEngine) PlanAndRun(ctx context.Context, goal, workdir, masterTaskID
 		batches = append(batches, batch)
 	}
 
+	// Notify dashboard that tasks have been created.
+	e.fireEvent(TaskEvent{Type: EventStateChanged})
+
 	// Step 3: Execute batches in order with dependency gating + CycleReport
 	//         + cross-stage artifact passing (场景4).
 	leader = NewLeader(e.Runner).WithLoggers(e.Loggers).WithTeam(e.team).WithOnLog(func() {
