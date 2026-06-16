@@ -444,6 +444,14 @@ func (e *TeamEngine) CreateMasterTask(goal, workspacePath string) (*MasterTask, 
 		return nil, fmt.Errorf("insert master task: %w", err)
 	}
 
+	// Flush WAL so the dashboard's separate DB connection can see the
+	// newly created master task immediately.  Without this checkpoint,
+	// the dashboard will open the DB right after receiving engine_ready
+	// but see zero master tasks — the data is still in the WAL journal.
+	if err := e.DB.Checkpoint(); err != nil && DefaultTeamLog != nil {
+		DefaultTeamLog.Log("plan", "checkpoint after InsertMasterTask failed: %v", err)
+	}
+
 	// Notify dashboard that this workspace now has an engine (DB created).
 	eventbus.Global().Publish(eventbus.TopicWorkspace, eventbus.Event{
 		Type: eventbus.EventWSEngineReady,
@@ -1215,7 +1223,9 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 //                  → wait for all tasks to finish (sync.WaitGroup)
 //                  → gate: all PASS → next batch, any FAIL → abort
 //              → write board.md + deliverable.md
-func (e *TeamEngine) PlanAndRun(ctx context.Context, goal, workdir, masterTaskID string) ([]*Batch, error) {
+// PlanAndRun accepts optional pre-decomposed planTasks.  When provided, the
+// internal decompose step is skipped and the pre-computed plan is used directly.
+func (e *TeamEngine) PlanAndRun(ctx context.Context, goal, workdir, masterTaskID string, preDecomposed ...PlanTask) ([]*Batch, error) {
 	// Register a cancel for this execution so the dashboard stop button works.
 	execCtx, execCancel := context.WithCancel(ctx)
 	defer execCancel()
@@ -1233,26 +1243,35 @@ func (e *TeamEngine) PlanAndRun(ctx context.Context, goal, workdir, masterTaskID
 	})
 	decomposerTimeout := time.Duration(e.Router.ResolveDecomposerTimeout()) * time.Second
 	leaderModel := e.Router.ResolveModel("planner")
-	if DefaultTeamLog != nil {
-		DefaultTeamLog.Log("plan", "plan: decompose START model=%s", leaderModel)
-	}
-	planTasks, err := leader.Decompose(goal, workdir, decomposerTimeout, leaderModel)
-	if err != nil {
+
+	var planTasks []PlanTask
+	if len(preDecomposed) > 0 {
+		planTasks = preDecomposed
 		if DefaultTeamLog != nil {
-			DefaultTeamLog.Log("plan", "plan: decompose FAIL: %v", err)
+			DefaultTeamLog.Log("plan", "plan: using pre-decomposed plan: %d tasks in %d batches", len(planTasks), countBatches(planTasks))
 		}
-		return nil, fmt.Errorf("decompose goal: %w", err)
-	}
-	if len(planTasks) == 0 {
+	} else {
 		if DefaultTeamLog != nil {
-			DefaultTeamLog.Log("plan", "plan: decompose EMPTY")
+			DefaultTeamLog.Log("plan", "plan: decompose START model=%s", leaderModel)
 		}
-		return nil, fmt.Errorf("plan is empty")
+		var err error
+		planTasks, err = leader.Decompose(goal, workdir, decomposerTimeout, leaderModel)
+		if err != nil {
+			if DefaultTeamLog != nil {
+				DefaultTeamLog.Log("plan", "plan: decompose FAIL: %v", err)
+			}
+			return nil, fmt.Errorf("decompose goal: %w", err)
+		}
+		if len(planTasks) == 0 {
+			if DefaultTeamLog != nil {
+				DefaultTeamLog.Log("plan", "plan: decompose EMPTY")
+			}
+			return nil, fmt.Errorf("plan is empty")
+		}
+		if DefaultTeamLog != nil {
+			DefaultTeamLog.Log("plan", "plan: decompose OK: %d tasks in %d batches", len(planTasks), countBatches(planTasks))
+		}
 	}
-	if DefaultTeamLog != nil {
-		DefaultTeamLog.Log("plan", "plan: decompose OK: %d tasks in %d batches", len(planTasks), countBatches(planTasks))
-	}
-	fmt.Fprintf(os.Stderr, "PLAN: decompose OK — %d tasks, entering batch creation\n", len(planTasks))
 
 	// Step 1: Group PlanTasks into batches by batch_id.
 	type batchGroup struct {
@@ -1344,6 +1363,9 @@ func (e *TeamEngine) PlanAndRun(ctx context.Context, goal, workdir, masterTaskID
 			DefaultTeamLog.Log("plan", "plan: batch %s created — %d tasks", batch.LabelOrID(), len(batch.Tasks))
 		}
 		DefaultTeamLog.Log("plan", "plan: %d batches ready, starting execution", len(batches))
+	}
+	// Flush WAL so dashboard's separate DB connection can see new tasks.
+	if err := e.DB.Checkpoint(); err != nil {
 	}
 	// Notify dashboard that tasks have been created.
 	e.fireEvent(TaskEvent{Type: EventStateChanged})
@@ -1465,6 +1487,10 @@ func (e *TeamEngine) PlanAndRun(ctx context.Context, goal, workdir, masterTaskID
 						return e.DB.ForceTransitionState(taskID, state, reason)
 					},
 				)
+				// Flush WAL so dashboard sees new re-decomposed tasks.
+				if len(newTasks) > 0 {
+					_ = e.DB.Checkpoint()
+				}
 				// Add new child tasks to the batch so RunBatch picks them up.
 				batch.Tasks = append(batch.Tasks, newTasks...)
 				// If new child tasks were created by the escalator, extend the
@@ -1783,6 +1809,10 @@ func (e *TeamEngine) runDWCycle(
 			},
 		)
 		batch.Tasks = append(batch.Tasks, newTasks...)
+		// Flush WAL so dashboard sees new re-decomposed tasks.
+		if len(newTasks) > 0 {
+			_ = e.DB.Checkpoint()
+		}
 		if recount > 0 {
 			if cycle == cycleLimit-1 {
 				cycleLimit++

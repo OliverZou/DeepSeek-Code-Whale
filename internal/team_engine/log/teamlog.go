@@ -73,7 +73,9 @@ func (t *TeamLog) write(cat, format string, args ...interface{}) {
 	if t.f == nil && t.aux == nil {
 		return
 	}
-	t.mu.Lock()
+	if !t.mu.TryLock() {
+		return // avoid deadlock — drop log if mutex is contested
+	}
 	defer t.mu.Unlock()
 	ts := time.Now().Format(time.RFC3339)
 	msg := fmt.Sprintf(format, args...)

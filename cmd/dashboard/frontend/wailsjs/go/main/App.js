@@ -50,6 +50,10 @@ export function GetWorkspaces() {
   return window['go']['main']['App']['GetWorkspaces']();
 }
 
+export function LogFrontend(arg1) {
+  return window['go']['main']['App']['LogFrontend'](arg1);
+}
+
 export function RegisterWorkspace(arg1) {
   return window['go']['main']['App']['RegisterWorkspace'](arg1);
 }

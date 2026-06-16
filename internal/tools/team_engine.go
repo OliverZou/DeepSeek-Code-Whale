@@ -254,76 +254,17 @@ func (b *Toolset) runTeamPlan(ctx context.Context, call core.ToolCall, progress 
 				return toolError("create master task: %v", mtErr), nil
 			}
 
-			// --- Phase 2: Decompose (LLM call, may take 30-90s) ----------------
-			decomposerTimeout := time.Duration(eng.Router.ResolveDecomposerTimeout()) * time.Second
-			// Always use v4-pro for decomposition — flash produces
-			// truncated JSON that wastes time on retries.
-			leaderModel := eng.Router.ResolveModel("planner")
-			planPreview := "⏳ Decomposing — team leader is analysing the goal...\n"
-			if planTasks, err := team_engine.NewLeader(eng.Runner).WithLoggers(eng.Loggers).WithTeam(eng.Team()).WithOnLog(func() {
-				eng.FireEvent(team_engine.TaskEvent{Type: team_engine.EventLeaderLog})
-			}).Decompose(args.Goal, workdir, decomposerTimeout, leaderModel); err == nil && len(planTasks) > 0 {
-				// Group planTasks into batches for preview.
-				type planBatch struct {
-					label string
-					tasks []team_engine.PlanTask
-				}
-				batchMap := make(map[string]*planBatch)
-				var batchOrder []string
-				for _, pt := range planTasks {
-					bid := pt.BatchID
-					if bid == "" {
-						bid = "default"
-					}
-					if _, ok := batchMap[bid]; !ok {
-						batchMap[bid] = &planBatch{label: pt.BatchLabel}
-						batchOrder = append(batchOrder, bid)
-					}
-					batchMap[bid].tasks = append(batchMap[bid].tasks, pt)
-				}
+			// Async mode: return immediately so the agent can review later.
+		// The master task is already visible in the dashboard.
+		if args.Async {
+			return core.ToolResult{
+				Content: fmt.Sprintf("📋 Master task created: `%s`\nRun `team_plan goal=\"...\"` (without async) to execute.", masterTask.ID),
+				Metadata: map[string]any{"master_task_id": masterTask.ID, "mode": "async"},
+			}, nil
+		}
 
-				var preview string
-				preview += fmt.Sprintf("📋 **Plan: %d batches, %d tasks**\n\n", len(batchOrder), len(planTasks))
-				for i, bid := range batchOrder {
-					bg := batchMap[bid]
-					label := bg.label
-					if label == "" {
-						label = bid
-					}
-					preview += fmt.Sprintf("### Batch %d: %s (%d task", i+1, label, len(bg.tasks))
-					if len(bg.tasks) > 1 {
-						preview += "s"
-					}
-					preview += ")\n"
-					for _, pt := range bg.tasks {
-						preview += fmt.Sprintf("- **%s** (%s)\n", pt.Title, pt.Role)
-					}
-					preview += "\n"
-				}
-				preview += "⏳ Executing...\n"
-				planPreview = preview
-			}
-
-			// --- Phase 3: Execute (async or sync) ------------------------------
-			// Async mode: return the decomposition plan immediately without executing.
-			// The agent can review the plan, then call team_plan again (sync) to execute.
-			// Or use team_create + team_run for manual orchestration.
-			if args.Async {
-				planPreview += fmt.Sprintf("\n---\n## 📋 任务分解完成 (异步模式)\n\n")
-				planPreview += fmt.Sprintf("**Master Task ID**: `%s`\n", masterTask.ID)
-				planPreview += "\n审查以上计划，然后运行:\n"
-				planPreview += "- `team_plan goal=\"...\"` (不加 async) — 执行完整计划\n"
-				planPreview += "- 或逐任务 `team_create` + `team_run` 手动编排\n"
-				metadata := map[string]any{
-					"master_task_id": masterTask.ID,
-					"mode":           "async",
-					"plan":           planPreview,
-				}
-				return core.ToolResult{Content: planPreview, Metadata: metadata}, nil
-			}
-
-			// Synchronous mode: execute everything and wait.
-			batches, err := eng.PlanAndRun(ctx, args.Goal, b.root, masterTask.ID)
+		// Synchronous mode: PlanAndRun handles decompose + execution in one step.
+		batches, err := eng.PlanAndRun(ctx, args.Goal, b.root, masterTask.ID)
 			if err != nil {
 				var s string
 				for _, batch := range batches {
@@ -334,7 +275,7 @@ func (b *Toolset) runTeamPlan(ctx context.Context, call core.ToolCall, progress 
 					}
 				}
 				if s != "" {
-					s = planPreview + "\n---\n## Results (partial)\n\n" + s + fmt.Sprintf("\nCancelled: %v", err)
+					s = "\n---\n## Results (partial)\n\n" + s + fmt.Sprintf("\nCancelled: %v", err)
 					return toolResult(s), nil
 				}
 				return toolError("plan: %v", err), nil
@@ -407,7 +348,7 @@ func (b *Toolset) runTeamPlan(ctx context.Context, call core.ToolCall, progress 
 				overallStatus = fmt.Sprintf("⏳ 部分完成 (%d/%d)", doneCount, len(allTasks))
 			}
 
-			fullResult := fmt.Sprintf("%s\n\n---\n## 执行结果: %s\n%s", planPreview, overallStatus, mdResults)
+			fullResult := fmt.Sprintf("## 执行结果: %s\n%s", overallStatus, mdResults)
 
 			// Also return structured metadata for programmatic consumption.
 			metadata := map[string]any{

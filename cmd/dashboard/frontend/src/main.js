@@ -1,4 +1,4 @@
-// Whale Dashboard — Wails frontend
+﻿// Whale Dashboard — Wails frontend
 // Calls Go backend via window.go.main.App.<Method>()
 // Listens for updates via window.runtime.EventsOn("update", ...)
 
@@ -61,8 +61,9 @@ function onTaskEvent(event) {
 		loadMasterTasks().then(() => {
 			// Auto-select the first master task with subtasks if none selected.
 			if (!state.selMtId && state.masterTasks.length > 0) {
-				const planned = state.masterTasks.find(mt => (mt.task_count || 0) > 0);
-				if (planned) selectMasterTask(planned.id);
+				let planned = state.masterTasks.find(mt => (mt.task_count || 0) > 0);
+				if (!planned) planned = state.masterTasks.find(mt => mt.status === 'running');
+					if (planned) selectMasterTask(planned.id);
 			}
 		});
 		const mt0 = getSelMt();
@@ -102,7 +103,8 @@ async function loadMasterTasks() {
     // Auto-select the first master task with subtasks when nothing
     // is selected yet (e.g. planning just finished).
     if (!state.selMtId) {
-      const planned = newTasks.find(mt => (mt.task_count || 0) > 0);
+      let planned = newTasks.find(mt => (mt.task_count || 0) > 0);
+      if (!planned) planned = newTasks.find(mt => mt.status === 'running');
       if (planned) {
         state.selMtId = planned.id;
         state._lastMtId = null;
@@ -336,18 +338,31 @@ function renderSubtasks() {
   list.querySelectorAll('.st').forEach(el => {
     el.onclick = (e) => selectSubtask(el.dataset.id);
   });
-n  } catch (e) {
+  } catch (e) {
     window.go.main.App.LogFrontend('renderSubtasks: ' + (e.message || e));
     list.innerHTML = '<div class="empty">Render error: ' + (e.message || e) + '</div>';
 }
+}
 
+
+// Recursively find a subtask by ID in the nested children tree.
+function findSubtask(tasks, id) {
+  for (const t of tasks) {
+    if (t.id === id) return t;
+    if (t.children && t.children.length > 0) {
+      const found = findSubtask(t.children, id);
+      if (found) return found;
+    }
+  }
+  return null;
+}
 
 function selectSubtask(id) {
   state.selStId = id;
   state.activeTab = 'dialogue';
   renderSubtasks();
 
-  const st = state.subtasks.find(s => s.id === id);
+  const st = findSubtask(state.subtasks, id);
   const mt = getSelMt();
   if (!st || !mt) return;
 
@@ -531,8 +546,9 @@ function showMasterTaskContextMenu(x, y, mtId, wsId, goal) {
 	    setTimeout(async () => {
 	      await loadMasterTasks();
 	      if (!state.selMtId && state.masterTasks.length > 0) {
-	        const planned = state.masterTasks.find(mt => (mt.task_count || 0) > 0);
-	        if (planned) selectMasterTask(planned.id);
+	        let planned = state.masterTasks.find(mt => (mt.task_count || 0) > 0);
+	        if (!planned) planned = state.masterTasks.find(mt => mt.status === 'running');
+					if (planned) selectMasterTask(planned.id);
 	      }
 	    }, 200);
   };

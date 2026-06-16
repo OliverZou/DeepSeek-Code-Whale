@@ -26,6 +26,8 @@ export function GetTasks(arg1:string):Promise<Array<dashboard.TaskJSON>>;
 
 export function GetWorkspaces():Promise<Array<dashboard.WorkspaceJSON>>;
 
+export function LogFrontend(arg1:string):Promise<void>;
+
 export function RegisterWorkspace(arg1:string):Promise<string>;
 
 export function ResumeMasterTask(arg1:string,arg2:string):Promise<string>;

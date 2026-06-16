@@ -58,6 +58,13 @@ func (tdb *TaskDB) Checkpoint() error {
 	return err
 }
 
+// checkpointAfterWrite is called after every write operation to ensure
+// cross-process readers (Dashboard) can see the latest data immediately.
+// Errors are silently ignored — the write itself already succeeded.
+func (tdb *TaskDB) checkpointAfterWrite() {
+	_, _ = tdb.db.Exec("PRAGMA wal_checkpoint(PASSIVE)")
+}
+
 // ---------------------------------------------------------------------------
 // Schema migration
 // ---------------------------------------------------------------------------
@@ -164,6 +171,7 @@ func (tdb *TaskDB) RecordStateHistory(taskID, oldState, newState, errorMsg strin
 		 VALUES (?, ?, ?, ?, ?)`,
 		taskID, old, newState, errorMsg, now,
 	)
+	tdb.checkpointAfterWrite()
 	return err
 }
 
@@ -227,6 +235,7 @@ func (tdb *TaskDB) InsertMasterTask(mt *MasterTask) error {
 		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
 		mt.ID, mt.Goal, mt.WorkspacePath, mt.Status, mt.BatchProgress, mt.CreatedAt, mt.UpdatedAt,
 	)
+	tdb.checkpointAfterWrite()
 	return err
 }
 
@@ -258,6 +267,7 @@ func (tdb *TaskDB) SaveMasterTaskProgress(masterTaskID, progressJSON string) err
 		`UPDATE master_tasks SET batch_progress = ?, updated_at = ? WHERE id = ?`,
 		progressJSON, time.Now().UTC().Format(time.RFC3339), masterTaskID,
 	)
+	tdb.checkpointAfterWrite()
 	return err
 }
 
@@ -279,6 +289,7 @@ func (tdb *TaskDB) UpdateTaskMasterTaskID(taskID, masterTaskID string) error {
 		`UPDATE tasks SET master_task_id = ? WHERE id = ?`,
 		masterTaskID, taskID,
 	)
+	tdb.checkpointAfterWrite()
 	return err
 }
 
@@ -329,6 +340,7 @@ func (tdb *TaskDB) UpdateMasterTaskStatus(id, status string) error {
 		`UPDATE master_tasks SET status = ?, updated_at = ? WHERE id = ?`,
 		status, now, id,
 	)
+	tdb.checkpointAfterWrite()
 	return err
 }
 
@@ -358,6 +370,7 @@ func (tdb *TaskDB) InsertTask(task *Task) error {
 	}
 	// Record initial state.
 	_ = tdb.RecordStateHistory(task.ID, "", string(task.State), "")
+	tdb.checkpointAfterWrite()
 	return nil
 }
 
@@ -436,6 +449,7 @@ func (tdb *TaskDB) UpdateTask(id string, fields map[string]interface{}) error {
 	if err != nil {
 		return fmt.Errorf("update task %s: %w", id, err)
 	}
+	tdb.checkpointAfterWrite()
 	return nil
 }
 
@@ -495,6 +509,7 @@ func (tdb *TaskDB) ForceTransitionState(id string, newState TaskState, reason st
 func (tdb *TaskDB) DeleteTask(id string) error {
 	tdb.db.Exec("DELETE FROM state_history WHERE task_id = ?", id)
 	_, err := tdb.db.Exec("DELETE FROM tasks WHERE id = ?", id)
+	tdb.checkpointAfterWrite()
 	return err
 }
 
@@ -506,6 +521,7 @@ func (tdb *TaskDB) DeleteMasterTask(masterTaskID string) error {
 	tdb.db.Exec("DELETE FROM tasks WHERE master_task_id = ?", masterTaskID)
 	// Delete the master task itself.
 	_, err := tdb.db.Exec("DELETE FROM master_tasks WHERE id = ?", masterTaskID)
+	tdb.checkpointAfterWrite()
 	return err
 }
 
@@ -593,6 +609,7 @@ func (tdb *TaskDB) SaveMemory(memory *MemoryEntry) error {
 		 VALUES (?, ?, ?, ?, ?, ?)`,
 		memory.ID, memory.AgentRole, memory.Key, memory.Content, memory.SourceTask, memory.CreatedAt,
 	)
+	tdb.checkpointAfterWrite()
 	return err
 }
 

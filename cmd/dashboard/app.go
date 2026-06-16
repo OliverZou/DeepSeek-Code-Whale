@@ -90,11 +90,13 @@ func (a *App) eventLoop() {
 		case <-a.done:
 			return
 		case <-teCh:
+			a.mgr.BumpUpdateSeq()
 			emitPending = true
 		case ev := <-wsCh:
 			if ev.Type == eventbus.EventWSEngineReady {
 				a.handleEngineReady(ev)
 			}
+			a.mgr.BumpUpdateSeq()
 			emitPending = true
 		case <-debounceCh:
 			if emitPending {
@@ -129,18 +131,18 @@ func (a *App) handleEngineReady(ev eventbus.Event) {
 	if err := a.mgr.LoadEngineByPath(path); err != nil {
 		log.Printf("dashboard: engine_ready load %s: %v", path, err)
 	}
+	a.mgr.BumpUpdateSeq()
 }
 
-var lastUpdateJSON string
+var lastUpdateSeq int64 = -1 // -1 确保首次 emitUpdate 必定推送
 
 func (a *App) emitUpdate() {
-	tasks := a.mgr.GetMasterTasks()
-	data, _ := json.Marshal(tasks)
-	payload := string(data)
-	if payload == lastUpdateJSON {
-		return
+	seq := a.mgr.GetUpdateSeq()
+	if seq == lastUpdateSeq {
+		return // 没有新事件，跳过
 	}
-	lastUpdateJSON = payload
+	lastUpdateSeq = seq
+	tasks := a.mgr.GetMasterTasks()
 	team_engine.DefaultTeamLog.Log("frontend", "emitUpdate: %d tasks", len(tasks))
 	runtime.EventsEmit(a.ctx, "update", tasks)
 }

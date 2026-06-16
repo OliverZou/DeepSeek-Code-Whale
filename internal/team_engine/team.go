@@ -160,20 +160,30 @@ func LoadAllTeamsFromRoots(roots []string) ([]*TeamConfig, error) {
 	return teams, nil
 }
 
-// BuildLeaderPrompt augments the standard decompose prompt with team-specific
+// BuildLeaderPrompt augments the base decompose prompt with team-specific
 // leader instructions, available roles, and rules.
+// When team roles are defined, the generic role list (Rule 5) in the base
+// prompt is REPLACED so the AI does not pick generic names like "developer".
 func (tc *TeamConfig) BuildLeaderPrompt(basePrompt string) string {
 	var sb strings.Builder
+
+	// If team has roles, strip the generic role list (Rule 5) from the base
+	// prompt and replace it with team-specific roles.
+	if len(tc.Roles) > 0 {
+		// Remove the generic "5. Assign an appropriate ROLE..." section.
+		basePrompt = stripGenericRoleSection(basePrompt)
+	}
+
 	sb.WriteString(basePrompt)
+
 	if tc.Leader.Prompt != "" {
 		sb.WriteString("\n\n## Your Role\n")
 		sb.WriteString(tc.Leader.Prompt)
 	}
 
-	// Inject team role names so the decomposer assigns them instead of generic names.
 	if len(tc.Roles) > 0 {
 		sb.WriteString("\n\n## Available Team Roles\n")
-		sb.WriteString("You MUST assign subtasks using ONLY these role names (not generic names like \"researcher\" or \"writer\"):\n\n")
+		sb.WriteString("Rule 5 (ROLE ASSIGNMENT): You MUST assign EVERY subtask using EXACTLY ONE of the role names below. Do NOT invent new role names and do NOT use generic names like \"developer\", \"tester\", or \"researcher\".\n\n")
 		for name, cfg := range tc.Roles {
 			desc := cfg.Description
 			if desc == "" {
@@ -191,4 +201,26 @@ func (tc *TeamConfig) BuildLeaderPrompt(basePrompt string) string {
 		}
 	}
 	return sb.String()
+}
+
+// stripGenericRoleSection removes the generic "5. Assign an appropriate ROLE"
+// section from the base decompose prompt so team-specific roles take precedence.
+func stripGenericRoleSection(prompt string) string {
+	// Find "5. Assign an appropriate ROLE" and remove everything up to the
+	// next numbered rule (6. Group tasks into batches) or to the end of the
+	// role list (ends with "- \"synthesizer\" ...").
+	idx := strings.Index(prompt, "5. Assign an appropriate ROLE")
+	if idx < 0 {
+		return prompt
+	}
+	// Find the next rule "6." that starts after the role list.
+	endIdx := strings.Index(prompt[idx:], "\n6. Group tasks into **batches**")
+	if endIdx < 0 {
+		// Fallback: find "6. Group" without bold markers.
+		endIdx = strings.Index(prompt[idx:], "\n6. Group tasks into batches")
+	}
+	if endIdx > 0 {
+		return prompt[:idx] + prompt[idx+endIdx:]
+	}
+	return prompt[:idx]
 }

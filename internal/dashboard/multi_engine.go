@@ -113,6 +113,7 @@ type MultiEngineManager struct {
 	mu           sync.RWMutex
 	states       map[string]*WorkspaceState
 	seq          int64
+	updateSeq    int64 // 单调递增版本号，emitUpdate 用去重
 	eventHandler func(event team_engine.TaskEvent) // 可选的事件回调
 
 	// pendingResume maps wsID → masterTaskID for commands waiting to be
@@ -139,6 +140,21 @@ func (m *MultiEngineManager) OnEngineEvent(handler func(event team_engine.TaskEv
 	m.mu.Lock()
 	m.eventHandler = handler
 	m.mu.Unlock()
+}
+
+// BumpUpdateSeq increments the update sequence number to signal that the
+// frontend should refresh.  Safe for concurrent use.
+func (m *MultiEngineManager) BumpUpdateSeq() {
+	m.mu.Lock()
+	m.updateSeq++
+	m.mu.Unlock()
+}
+
+// GetUpdateSeq returns the current update sequence number.
+func (m *MultiEngineManager) GetUpdateSeq() int64 {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.updateSeq
 }
 
 // QueueResume pushes a resume command to the workspace's WebSocket
@@ -328,6 +344,20 @@ func (m *MultiEngineManager) HandleWebSocket(w http.ResponseWriter, r *http.Requ
 				case bridgeIn <- be:
 				default:
 					log.Printf("dashboard: bridgeIn full, dropped topic=%s type=%s from ws=%s", be.Topic, be.Event.Type, wsID)
+				}
+				// Also forward team_engine events to the frontend via
+				// fireEngineEvent so task-event listeners can react.
+				if be.Topic == eventbus.TopicTeamEngine {
+					if evt, ok := be.Event.Payload.(team_engine.TaskEvent); ok {
+						m.fireEngineEvent(evt)
+					} else if payloadMap, ok := be.Event.Payload.(map[string]interface{}); ok {
+						// Payload arrives as map after JSON round-trip.
+						data, _ := json.Marshal(payloadMap)
+						var evt team_engine.TaskEvent
+						if json.Unmarshal(data, &evt) == nil && evt.Type > 0 {
+							m.fireEngineEvent(evt)
+						}
+					}
 				}
 				continue
 			}
@@ -773,6 +803,14 @@ func (m *MultiEngineManager) GetMasterTasks() []MasterTaskJSON {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
+	// Force WAL checkpoint on all engines so reads see the latest writes
+	// from the CLI process that shares this SQLite file.
+	for _, ws := range m.states {
+		if ws.Engine != nil {
+			_ = ws.Engine.DB.Checkpoint()
+		}
+	}
+
 	if team_engine.DefaultTeamLog != nil { team_engine.DefaultTeamLog.Log("dashboard", "GetMasterTasks ENTRY: %d workspaces", len(m.states)) }
 	var out []MasterTaskJSON
 	seen := make(map[string]bool) // "path:mtID" dedup key
@@ -881,6 +919,16 @@ func (m *MultiEngineManager) GetSubtasks(wsID, masterTaskID string) []SubtaskJSO
 			if parent, ok := nodeMap[pid]; ok {
 				parent.Children = append(parent.Children, *child)
 			}
+		}
+	}
+	// Recalculate progress for parents: use average of children's progress.
+	for _, sj := range taskList {
+		if len(sj.Children) > 0 {
+			sum := 0
+			for _, c := range sj.Children {
+				sum += c.Progress
+			}
+			sj.Progress = sum / len(sj.Children)
 		}
 	}
 	// Second pass: collect roots (tasks without parents).
@@ -1145,9 +1193,10 @@ func (m *MultiEngineManager) GetLeaderFlowchart(wsID, masterTaskID string) strin
 		bg := batches[bid]
 		x := ci*colW + padX
 		label := safeTruncate(bg.Label, 16)
-		// Batch header
+		// Batch header — wrap in <g> with <title> first.
+		svg += fmt.Sprintf(`<g><title>%s</title>`, escSVG(bg.Label))
 		svg += fmt.Sprintf(`<rect x="%d" y="10" width="%d" height="40" rx="6" fill="#1f6feb33" stroke="#58a6ff" stroke-width="1"/>`, x-10, colW-20)
-		svg += fmt.Sprintf(`<text x="%d" y="35" fill="#c9d1d9" font-size="14" font-weight="600" text-anchor="middle">%s</text><title>%s</title>`, x+boxW/2, escSVG(label), escSVG(bg.Label))
+		svg += fmt.Sprintf(`<text x="%d" y="35" fill="#c9d1d9" font-size="14" font-weight="600" text-anchor="middle">%s</text></g>`, x+boxW/2, escSVG(label))
 	}
 
 	// Draw task boxes and arrows
@@ -1230,16 +1279,16 @@ func (m *MultiEngineManager) GetLeaderFlowchart(wsID, masterTaskID string) strin
 			title := safeTruncate(t.Title, 16)
 			pct := team_engine.GetProgress(t.State)
 			statusLine := fmt.Sprintf("%s %d%%", string(t.State), pct)
-			fullTitle := fmt.Sprintf("%s\nRole: %s\nState: %s (%d%%)", t.Title, string(t.Role), string(t.State), pct)
 			role := string(t.Role)
+			tooltip := fmt.Sprintf("【%s】 %s | %s (%d%%)", role, t.Title, t.State, pct)
 
-			// Box
+			// Box — wrap in <g> with <title> first so tooltip works correctly.
+			svg += fmt.Sprintf(`<g><title>%s</title>`, escSVG(tooltip))
 			svg += fmt.Sprintf(`<rect x="%d" y="%d" width="%d" height="%d" rx="6" fill="%s22" stroke="%s" stroke-width="1.5"/>`, bx, y, bw, boxH, color, color)
 			svg += fmt.Sprintf(`<text x="%d" y="%d" fill="#c9d1d9" font-size="12" font-weight="500" text-anchor="middle">%s</text>`, bx+bw/2, y+24, escSVG(title))
 			svg += fmt.Sprintf(`<text x="%d" y="%d" fill="#8b949e" font-size="10" text-anchor="middle">%s</text>`, bx+bw/2, y+44, escSVG(role))
 			svg += fmt.Sprintf(`<text x="%d" y="%d" fill="#8b949e" font-size="9" text-anchor="middle">%s</text>`, bx+bw/2, y+58, escSVG(statusLine))
-			// Tooltip — shows full title, role, state on hover
-			svg += fmt.Sprintf(`<title>%s</title>`, escSVG(fullTitle))
+			svg += `</g>`
 
 			placed[t.ID] = node{x: bx + bw, y: y + boxH/2}
 
@@ -1773,6 +1822,6 @@ func (m *MultiEngineManager) logResumeDiag(ws *WorkspaceState, format string, ar
 // LogFrontend writes a message from the frontend JavaScript to the team engine log.
 func (m *MultiEngineManager) LogFrontend(msg string) {
 	if team_engine.DefaultTeamLog != nil {
-		team_engine.DefaultTeamLog.Log("frontend", msg)
+		team_engine.DefaultTeamLog.Log("frontend", "%s", msg)
 	}
 }

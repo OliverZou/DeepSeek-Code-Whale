@@ -43,160 +43,35 @@ func (p *Planner) WithOnLog(fn func()) *Planner {
 }
 
 // DecomposePrompt returns the prompt template for task decomposition.
+// Leader splits by domain/role only. Worker agents handle their own
+// size assessment and can self-split if a task is too large.
 func DecomposePrompt(goal string) string {
-	return fmt.Sprintf(`You are a Team Leader Agent. Your job is to decompose the following goal into a structured plan of subtasks that can be executed by specialized worker agents.
+	return fmt.Sprintf(`You are a Team Leader. Decompose the goal into a structured plan of subtasks assigned to specialized roles.
 
 GOAL:
 %s
 
 RULES:
--1. THE CHAIN IS MANDATORY — Every phase feeds the next.  Workers in
-    each phase see ONLY the output of the previous phase, never the
-    original goal.  This is a hard rule:
 
-      Goal → Requirements → Architecture → API Design → Coding → Verify
-
-    The SIZE of each document scales with the goal, but the CHAIN is
-    standard.  A detailed goal means a shorter requirements doc, not
-    a skipped one.  A single-subsystem project means a shorter
-    architecture doc, not a skipped one.
-
-    - Requirements doc: takes goal as input, outputs structured spec.
-      Detailed goal → ≤30 lines of checklist. Vague goal → ≤50 lines.
-    - Architecture doc: takes requirements as input, NOT the goal.
-      Single module → ≤30 lines. Multiple subsystems → ≤60 lines.
-    - API Design: takes architecture as input, NOT the goal.
-    - Coding: takes API design as input, NOT the goal.
-    - Verify: checks code against API design, API design against
-      architecture, architecture against requirements.
-
-    If the goal already specifies phases, use them as top-level
-    batches.  Decompose within each phase using the 3 axes (Rule 4).
-
-0. DEVELOPMENT PROCESS — Every phase produces the basis for the next
-   phase, and every phase is constrained by the phase before it:
+1. DEVELOPMENT CHAIN — Each phase feeds the next. Workers see ONLY the output of the previous phase, never the original goal:
 
      Requirements → Architecture → API Design → Coding → Verification
 
-   - Requirements: must satisfy the user's goal AND be sufficient to
-     guide architecture.  The architect works from this doc, not from
-     guesswork.
-   - Architecture: must satisfy the requirements AND be sufficient to
-     guide API design.
-   - API Design: must satisfy the architecture AND be sufficient to
-     guide coding.  Coders implement to the spec, not to their own
-     judgment.
-   - Coding: implements the API spec.  No feature that is not in the spec.
-   - Verification: checks that the code matches the spec and the spec
-     matches the goal.
+2. SPLIT BY ROLE — Assign each subtask to ONE role. A subtask is a unit of responsibility, not a unit of size. Worker agents handle their own size management — they can self-split if a task is too large. Your job is to assign the right person to the right job.
 
-   SCALE TO THE GOAL — The chain is standard, but the SIZE of each
-   document depends on the scope of the goal.  A small project (one
-   module, one developer) needs a short spec (≤ 30 lines).  A large
-   project (multiple subsystems) needs more.  The rule: write enough
-   for the next phase to proceed without ambiguity — and no more.
+3. ORDER BY DEPENDENCY — Upstream phases before downstream. Foundation before implementation.
 
-1. Break the goal into subtasks.  Most goals need 3-8 subtasks; complex goals
-   may need up to 12.  Fewer, larger tasks are MORE LIKELY TO FAIL than several
-   smaller, focused ones.
+4. BATCHES — A batch is a dependency barrier: all tasks in a batch must finish before the next batch starts. Put independent tasks in the same batch. Use "depends_on_batch" for cross-batch ordering.
 
-2. Each subtask must be self-contained and produce ONE clear deliverable.
-   A Worker should be able to complete it in a single pass.
+5. WITHIN-BATCH DEPENDENCIES — Use "depends_on_index" (-1 means no dependency).
 
-3. Order subtasks by dependency — foundation types and utilities first,
-   code that depends on them later.
+6. VERIFIER FOCUS — For each task, choose the verification lens:
+   - "correctness"   — output is accurate
+   - "completeness"  — covers all requirements
+   - "security"      — security review
+   - "style"         — code style / conventions
 
-4. HOW TO SPLIT — You have 3 independent AXES.  Examine the goal and
-   combine them.  Not every axis applies to every goal.
-
-   ═══ AXIS A — STRUCTURE (what are the pieces?)
-   Split the scope into self-contained units.  The "size ruler" depends
-   on the task TYPE:
-
-     BUILD tasks (code, configs, docs):
-       Split by module / component / file.
-       Size limit: ≤ ~150 lines of code or ≤ ~3 functions per subtask.
-       If a file needs 200+ lines → split into 2 subtasks.
-       Split points: types/constants first, then algorithm core, then
-       integration/glue code last.
-
-     RESEARCH tasks (analysis, investigation, comparison):
-       Split by sub-question / topic / hypothesis.
-       Size limit: each subtask should yield 3-5 concrete findings
-       with 2+ citable sources per finding.
-
-     DECISION tasks (evaluation, recommendation):
-       Split by criterion / option / scenario.
-       Size limit: each subtask covers ONE criterion or ONE option
-       in depth, with evidence and trade-off analysis.
-
-   ═══ AXIS B — PERSPECTIVE (who is looking?)
-   For the SAME scope, assign multiple agents with DIFFERENT
-   verifier_focus values in the SAME batch.  Add a "synthesizer"
-   task in the NEXT batch to merge their findings.
-
-     Used for: high-risk verification, security audits, multi-faceted
-     analysis, adversarial review — any situation where a single
-     viewpoint risks missing something important.
-     Example:
-       Batch 1: security-reviewer + perf-reviewer + correctness-reviewer
-       Batch 2 (depends on Batch 1): synthesizer (aggregate all reviews)
-
-   ═══ AXIS C — DEPTH (how deep do we go?)
-   For goals where the answer is NOT known upfront, use iterative
-   deepening:
-     Pass 1 — BREADTH: cover the surface, identify key areas.
-     Pass 2 — DEPTH: drill into the most important findings.
-     Pass 3 — VERIFY: cross-check and consolidate conclusions.
-
-     Set verifier_focus="exploration" and max_cycles ≥ 3.
-     The engine will keep re-running the batch until no NEW findings
-     emerge (loop-until-dry).
-
-   ═══ COMBINING AXES
-   - A BUILD project (code, docs): Axis A dominates. Axis C optional.
-   - A RESEARCH project: Axis A + C. Axis B for critical claims.
-   - An AUDIT / REVIEW: Axis B dominates. Axis A for scope.
-   - Use ONLY the axes that fit.  Not every goal needs all three.
-
-5. Assign an appropriate ROLE to each subtask:
-   - "developer"   — writing code
-   - "tester"      — writing tests
-   - "reviewer"    — code review
-   - "researcher"  — research/analysis
-   - "writer"      — documentation/writing
-   - "formatter"   — code formatting
-   - "evaluator"   — quality evaluation
-   - "synthesizer" — merge multiple research results into structured conclusions
-
-6. Group tasks into **batches**.  A batch is a DEPENDENCY BARRIER:
-   all tasks in a batch must finish before the next batch starts.
-   Put tasks in the SAME batch when they can run independently.
-   Put tasks in DIFFERENT batches when one MUST wait for another.
-   Use "depends_on_batch" to declare batch-level ordering.
-
-   IMPORTANT — You do NOT control parallelism.  The engine decides
-   how many tasks run simultaneously (respecting a global agent limit).
-   You only declare WHAT depends on WHAT.  If tasks have no dependency,
-   put them in the same batch — the engine parallelizes them for you.
-
-7. Use "depends_on_index" / "depends_on_indices" for task-level
-   dependencies WITHIN a batch.  -1 means no dependency.
-
-8. Use "verifier_focus" to control what the Verifier checks:
-   - "correctness"    — output is accurate (default for code)
-   - "security"       — security vulnerabilities
-   - "performance"    — performance implications
-   - "completeness"   — covers all requirements
-   - "exploration"    — unexplored directions remain (for Axis C)
-   - "style"          — code style / conventions
-   - "sources"        — claims are properly sourced (for research)
-
-9. Use "max_cycles" per-batch to limit retry/exploration loops
-   (default 1, max 10).  For Axis C (exploration), set max_cycles ≥ 3.
-
-10. Set "use_dw": true only for tasks that need multi-perspective
-    verification (Axis B).  DEFAULT: false.
+7. MAX CYCLES — Default 1. Set higher (≤5) for exploratory/research tasks.
 
 OUTPUT FORMAT (pure JSON array, no markdown):
 [
@@ -214,12 +89,7 @@ OUTPUT FORMAT (pure JSON array, no markdown):
   }
 ]
 
-CRITICAL — Before your final response, verify your JSON:
-- Every string is properly closed with double quotes.
-- Every object/array element is separated by commas.
-- No trailing commas after the last element.
-- The outermost structure is a JSON array [ ... ].
-- No text, explanation, or markdown outside the JSON array.`, goal)
+CRITICAL: Verify your JSON — no trailing commas, proper quoting, outermost structure is a JSON array [ ... ].`, goal)
 }
 
 // decomposeInternal runs the leader agent and returns both parsed tasks
@@ -232,7 +102,8 @@ func (p *Planner) decomposeInternal(goal string, workdir string, timeout time.Du
 	if p.team != nil {
 		prompt = p.team.BuildLeaderPrompt(prompt)
 	}
-	if (len(model) == 0 || model[0] == "") && p.team != nil && p.team.Leader.Model != "" {
+	// Team leader model takes priority over router default.
+	if p.team != nil && p.team.Leader.Model != "" {
 		model = []string{p.team.Leader.Model}
 	}
 
@@ -256,7 +127,7 @@ func (p *Planner) decomposeInternal(goal string, workdir string, timeout time.Du
 		if p.loggers != nil {
 			p.loggers.Engine("leader.decompose: model=%s spawner=%s attempt=%d/%d maxTokens=%d prompt=%d completion=%d total=%d dur=%.1fs output=%d chars success=%v diag=%s",
 				mdl, result.SpawnerType, attempt+1, maxRetries+1,
-				ReasoningDecomposerMaxTokens,
+				0,
 				result.UsagePrompt, result.UsageCompletion, totalUsed,
 				dur.Seconds(), len(result.Stdout), result.Success, result.Stderr)
 		}
@@ -330,7 +201,7 @@ func (p *Planner) decomposeInternal(goal string, workdir string, timeout time.Du
 			p.loggers.Engine("leader.decompose: success — %d tasks in plan", len(tasks))
 		}
 		if DefaultTeamLog != nil {
-			DefaultTeamLog.LeaderDecompose(goal, mdl, attempt+1, ReasoningDecomposerMaxTokens, result.UsagePrompt, result.UsageCompletion, dur.Seconds(), len(output), false, true)
+			DefaultTeamLog.LeaderDecompose(goal, mdl, attempt+1, 0, result.UsagePrompt, result.UsageCompletion, dur.Seconds(), len(output), false, true)
 		}
 		return tasks, output, nil
 	}

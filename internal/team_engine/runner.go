@@ -12,32 +12,11 @@ import (
 // Token budget helpers
 // ---------------------------------------------------------------------------
 
-const (
-	// WorkerMaxTokens is the default completion budget for worker agents.
-	// Large enough for code generation, small enough to avoid runaway loops.
-	WorkerMaxTokens = 8000
-
-	// ReasoningMaxTokens is the standard budget for reasoning models.
-	// Reasoning models consume a large portion of tokens on chain-of-thought
-	// that the user never sees, so we give them extra headroom.
-	ReasoningMaxTokens = 32000
-
-	// ReasoningDecomposerMaxTokens is a larger budget specifically for the
-	// decomposer (planner) agent, whose prompt is significantly longer than
-	// typical task prompts and whose output is a potentially large JSON plan.
-	ReasoningDecomposerMaxTokens = 48000
-)
-
 func effectiveMaxTokens(requested int, model string) int {
 	if requested > 0 {
 		return requested
 	}
-	if isReasoningModel(model) {
-		return ReasoningMaxTokens
-	}
-	if isDeepSeekModel(model) {
-		return WorkerMaxTokens
-	}
+	return 0 // let the model/provider decide
 	return 0
 }
 
@@ -219,9 +198,6 @@ func (ar *AgentRunner) RunVerifier(prompt, workdir string, timeout time.Duration
 		req.Model = model[0]
 	}
 	req.MaxTokens = effectiveMaxTokens(0, req.Model)
-	if req.MaxTokens == 0 {
-		req.MaxTokens = WorkerMaxTokens * 2 // verifier needs budget for detailed findings
-	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
@@ -303,13 +279,8 @@ func (ar *AgentRunner) RunDecomposer(prompt, workdir string, timeout time.Durati
 		// the structured_output tool (e.g. DeepSeek).
 		req.OutputSchema = nil
 	}
-	// Decomposer needs a larger budget than the generic ReasoningMaxTokens.
-	// Use ReasoningDecomposerMaxTokens for reasoning models so the
 	// chain-of-thought doesn't starve the JSON plan output.
 	req.MaxTokens = effectiveMaxTokens(0, req.Model)
-	if req.MaxTokens == ReasoningMaxTokens {
-		req.MaxTokens = ReasoningDecomposerMaxTokens
-	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
