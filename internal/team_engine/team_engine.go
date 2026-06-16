@@ -1063,12 +1063,15 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 		var passed, isRetry bool
 		var feedback string
 
+		var verifyDur time.Duration
 		if task.UseDW {
 			// Dynamic Workflow mode: N verifiers in parallel + Synthesizer.
 			passed, isRetry, feedback = e.runDWVerification(task)
 		} else {
 			v := NewVerifier(e.Whiteboard, e.Runner, 0)
+			verifyStart := time.Now()
 			passed, isRetry, feedback, err = v.Verify(task)
+			verifyDur = time.Since(verifyStart)
 			if err != nil {
 				return false, fmt.Errorf("verifier error: %w", err)
 			}
@@ -1092,7 +1095,7 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 				verdict = "FAIL"
 			}
 			verifierPrompt := fmt.Sprintf("Verify output of task %q (role: %s)", task.Title, task.Role)
-			e.Loggers.LogAgent("verifier", taskID, attempt+1, verifierPrompt, fmt.Sprintf("[%s] %s", verdict, feedback), 0, 0, nil)
+			e.Loggers.LogAgent("verifier", taskID, attempt+1, verifierPrompt, fmt.Sprintf("[%s] %s", verdict, feedback), 0, verifyDur, nil)
 			e.fireEvent(TaskEvent{Type: EventAgentLog, TaskID: taskID})
 		}
 
