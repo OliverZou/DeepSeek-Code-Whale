@@ -206,8 +206,11 @@ func (b *Toolset) runTeamPlan(ctx context.Context, call core.ToolCall, progress 
 		eng.OnEvent(func(event team_engine.TaskEvent) {
 			b.dashboardClient.SendTaskEvent(event)
 			// Throttled full sync (max 1 per 2s) after state changes.
-			if event.Type == team_engine.EventStateChanged && time.Since(lastSync) > 2*time.Second {
+			if (event.Type == team_engine.EventStateChanged || event.Type == team_engine.EventAgentLog) && time.Since(lastSync) > 2*time.Second {
 				lastSync = time.Now()
+				if team_engine.DefaultTeamLog != nil {
+					team_engine.DefaultTeamLog.Log("sync", "triggering sync push")
+				}
 				pushSyncState(eng, b.dashboardClient, b.root)
 			}
 		})
@@ -922,7 +925,17 @@ func tick(ok bool) string {
 func pushSyncState(eng *team_engine.TeamEngine, client interface {
 	SyncState(mts []dashboard.MasterTaskJSON, sts map[string][]dashboard.SubtaskJSON, wsLabel string)
 }, workspacePath string) {
+	defer func() {
+		if r := recover(); r != nil {
+			if team_engine.DefaultTeamLog != nil {
+				team_engine.DefaultTeamLog.Log("sync", "pushSyncState panic: %v", r)
+			}
+		}
+	}()
 	mts, err := eng.DB.ListMasterTasks()
+	if team_engine.DefaultTeamLog != nil {
+		team_engine.DefaultTeamLog.Log("sync", "pushSyncState: mts=%d err=%v", len(mts), err)
+	}
 	if err != nil || len(mts) == 0 {
 		return
 	}
