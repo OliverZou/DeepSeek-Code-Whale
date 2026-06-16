@@ -50,6 +50,12 @@ GOAL:
 %s
 
 RULES:
+-1. GOAL FIRST — If the GOAL already contains explicit phases, steps, or
+    a directory structure, FOLLOW IT DIRECTLY.  Do not add extra design or
+    documentation phases that the goal does not ask for.  The user's own
+    structure IS the requirements spec.  Only apply the standard process
+    (Rule 0) when the goal has NO structure of its own.
+
 0. DEVELOPMENT PROCESS — Every phase produces the basis for the next
    phase, and every phase is constrained by the phase before it:
 
