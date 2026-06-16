@@ -45,8 +45,9 @@ func (esc *Escalator) StuckTasks(batch *Batch, getTask func(string) (*Task, erro
 // know they were decomposed from it.
 func (esc *Escalator) ReplaceTaskWithSubtasks(original *Task, smaller []PlanTask, masterTaskID string,
 	createTask func(PlanTask, string, string, []string) (*Task, error),
-	transitionState func(string, TaskState, string) error) {
+	transitionState func(string, TaskState, string) error) []*Task {
 
+	var children []*Task
 	// Mark the original as done — it becomes a virtual management node.
 	// Its children's completion represents the original's completion.
 	_ = transitionState(original.ID, TaskStateDone, "re-decomposed into smaller tasks")
@@ -56,19 +57,23 @@ func (esc *Escalator) ReplaceTaskWithSubtasks(original *Task, smaller []PlanTask
 			continue
 		}
 		_ = transitionState(task.ID, TaskStateAssigned, "re-decomposed from "+original.ID[:8])
+		children = append(children, task)
 	}
+	return children
 }
 
 // ProcessBatch runs the full re-decomposition flow on a batch.
-// Returns the number of tasks that were re-decomposed.
+// Returns the newly created child tasks that must be added to batch.Tasks
+// so they are picked up by the next cycle's RunBatch.
 func (esc *Escalator) ProcessBatch(batch *Batch, masterTaskID, workdir string, timeout time.Duration, model string,
 	getTask func(string) (*Task, error),
 	createTask func(PlanTask, string, string, []string) (*Task, error),
-	transitionState func(string, TaskState, string) error) int {
+	transitionState func(string, TaskState, string) error) ([]*Task, int) {
 
+	var newTasks []*Task
 	stuck := esc.StuckTasks(batch, getTask)
 	if len(stuck) == 0 {
-		return 0
+		return nil, 0
 	}
 
 	count := 0
@@ -93,11 +98,12 @@ func (esc *Escalator) ProcessBatch(batch *Batch, masterTaskID, workdir string, t
 			}
 			continue
 		}
-		esc.ReplaceTaskWithSubtasks(t, smaller, masterTaskID, createTask, transitionState)
+		children := esc.ReplaceTaskWithSubtasks(t, smaller, masterTaskID, createTask, transitionState)
+		newTasks = append(newTasks, children...)
 		if esc.loggers != nil {
 			esc.loggers.Engine("escalator: re-decomposed %s into %d smaller tasks", t.ID[:8], len(smaller))
 		}
 		count++
 	}
-	return count
+	return newTasks, count
 }
