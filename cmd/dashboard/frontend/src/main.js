@@ -58,7 +58,13 @@ function onTaskEvent(event) {
 	// EventStateChanged (type=0): batch/task lifecycle changes.
 	// task_id is empty for global state changes — still refresh.
 	if (event.type === 0) {
-		loadMasterTasks();
+		loadMasterTasks().then(() => {
+			// Auto-select the first master task with subtasks if none selected.
+			if (!state.selMtId && state.masterTasks.length > 0) {
+				const planned = state.masterTasks.find(mt => (mt.task_count || 0) > 0);
+				if (planned) selectMasterTask(planned.id);
+			}
+		});
 		const mt0 = getSelMt();
 		if (mt0 && state.selMtId) {
 			loadSubtasks(mt0.workspace_id, mt0.id);
