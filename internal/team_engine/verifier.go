@@ -315,15 +315,31 @@ func (v *Verifier) isLazyVerdict(output string) bool {
 
 // ParseFindings extracts structured Finding objects from verifier output.
 func ParseFindings(output string) []Finding {
-	// Find JSON array after "FINDINGS" marker.
-	re := regexp.MustCompile(`(?s)FINDINGS.*?(\[.*?\])`)
-	m := re.FindStringSubmatch(output)
-	if len(m) < 2 {
+	// Find the FINDINGS section and extract the JSON array from it,
+	// using the same balanced-bracket + repair logic as the decompose path.
+	idx := strings.Index(output, "## FINDINGS")
+	if idx < 0 {
+		idx = strings.Index(output, "FINDINGS")
+	}
+	if idx < 0 {
 		return nil
 	}
-	var findings []Finding
-	if err := json.Unmarshal([]byte(m[1]), &findings); err != nil {
+	section := output[idx:]
+	jsonStr := extractJSON(section)
+	if jsonStr == "" {
 		return nil
+	}
+	// Try parsing; if truncated, repair and retry.
+	var findings []Finding
+	if err := json.Unmarshal([]byte(jsonStr), &findings); err != nil {
+		repaired := repairJSON(jsonStr)
+		if repaired != jsonStr {
+			if err2 := json.Unmarshal([]byte(repaired), &findings); err2 != nil {
+				return nil
+			}
+		} else {
+			return nil
+		}
 	}
 	return findings
 }

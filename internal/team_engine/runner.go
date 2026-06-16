@@ -219,6 +219,9 @@ func (ar *AgentRunner) RunVerifier(prompt, workdir string, timeout time.Duration
 		req.Model = model[0]
 	}
 	req.MaxTokens = effectiveMaxTokens(0, req.Model)
+	if req.MaxTokens == 0 {
+		req.MaxTokens = WorkerMaxTokens // verifier needs enough budget for findings JSON
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
