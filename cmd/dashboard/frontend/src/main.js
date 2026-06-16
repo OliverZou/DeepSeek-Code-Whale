@@ -135,8 +135,9 @@ async function loadSubtasks(wsID, mtID) {
       if (!found) state.selStId = null;
     }
     renderSubtasks();
-    // Auto-select TeamLeader placeholder if nothing selected and tasks exist.
-    if (newSubtasks.length > 0 && !state.selStId) {
+    // Auto-select TeamLeader placeholder only on first load, never re-select
+    // after user has already picked a subtask (prevSelStId was set).
+    if (newSubtasks.length > 0 && !state.selStId && !prevSelStId) {
       selectSubtask(newSubtasks[0].id);
     }
   } catch (e) {
@@ -176,8 +177,16 @@ function updateUI() {
       state._lastMtId = mt.id;
       loadSubtasks(mt.workspace_id, mt.id);
     }
-  } else {
-    state.subtasks = []; state.selStId = null; $('#task-tabs').innerHTML = '<div class="empty"><div class="icon">📋</div>Select a master task</div>';
+  } else if (!state._didAutoSelect) {
+    // Auto-select on first update only.  Subsequent polls leave the user's
+    // current selection alone.
+    let planned = state.masterTasks.find(mt => (mt.task_count || 0) > 0);
+    if (!planned) planned = state.masterTasks.find(mt => mt.status === 'running');
+    if (planned) {
+      state._didAutoSelect = true;
+      state.selMtId = planned.id;
+      loadSubtasks(planned.workspace_id, planned.id);
+    }
   }
 }
 
@@ -203,8 +212,9 @@ function renderSidebar() {
     const active = state.selMtId === mt.id ? ' active' : '';
     const goalShort = esc(mt.goal).length > 50 ? esc(mt.goal).slice(0, 50) + '…' : esc(mt.goal);
     const pct = mt.task_count > 0 ? Math.round(mt.done_count / mt.task_count * 100) : 0;
-    const isPlanning = (mt.task_count || 0) === 0;
-    const hasRunning = !isPlanning && (mt.active_count || 0) > 0;
+    const isRunning = mt.status === 'running';
+    const isPlanning = !isRunning && (mt.task_count || 0) === 0;
+    const hasRunning = isRunning || (mt.active_count || 0) > 0;
     html += `<div class="mt${active}" data-id="${mt.id}" data-goal="${esc(mt.goal)}" data-wsid="${esc(mt.workspace_id)}">
       <div class="goal" title="${esc(mt.goal)}">${goalShort}</div>
       <div class="meta">

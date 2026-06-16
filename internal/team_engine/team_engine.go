@@ -1579,6 +1579,24 @@ func (e *TeamEngine) PlanAndRun(ctx context.Context, goal, workdir, masterTaskID
 					_ = e.Whiteboard.WriteBoard(boardContent)
 				}
 
+				// Check for self-split children before declaring batch done.
+				anyNew := false
+				for _, t := range batch.Tasks {
+					if children, _ := e.DB.ListTasksByParent(t.ID); len(children) > 0 {
+						for _, c := range children {
+							if c.State == TaskStatePending || c.State == TaskStateAssigned {
+								c.BatchID = batch.ID
+								_ = e.DB.UpdateTask(c.ID, map[string]interface{}{"batch_id": batch.ID, "master_task_id": t.MasterTaskID})
+								batch.Tasks = append(batch.Tasks, c)
+								anyNew = true
+							}
+						}
+					}
+				}
+				if anyNew {
+					continue // run children in next cycle
+				}
+
 				// Batch done. Verifier already judged every task — skip Leader review.
 				completedBatches[batch.ID] = true
 				passedBatches[batch.ID] = true
