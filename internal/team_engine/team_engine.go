@@ -542,6 +542,8 @@ func (e *TeamEngine) saveCheckpoint(masterTaskID string, completed map[string]bo
 
 // ResumeMasterTask resumes a previously suspended master task.
 func (e *TeamEngine) ResumeMasterTask(ctx context.Context, masterTaskID, goal, workdir string) ([]*Batch, error) {
+	// Mark as running so the dashboard shows "Stop" button.
+	_ = e.DB.UpdateMasterTaskStatus(masterTaskID, "running")
 	// Register cancel so dashboard stop button can interrupt resume.
 	execCtx, execCancel := context.WithCancel(ctx)
 	defer execCancel()
@@ -1057,9 +1059,10 @@ If the task fits in one pass (~200 lines or fewer), produce the deliverable norm
 		}
 		if DefaultTeamLog != nil { DefaultTeamLog.WorkerDone(task.ID, result.DurationSeconds, result.ExitCode, len(result.Stdout), result.Success) }
 
-		// Self-split: search for [SPLIT_PLAN] anywhere in Worker output.
+		// Self-split: only top-level tasks (no parents) can split.
+		// Children must complete without further splitting.
 		const splitMarker = "[SPLIT_PLAN]"
-		if result.Success && strings.Contains(result.Stdout, splitMarker) {
+		if len(task.ParentIDs) == 0 && result.Success && strings.Contains(result.Stdout, splitMarker) {
 			idx := strings.Index(result.Stdout, splitMarker)
 			splitJSON := result.Stdout[idx+len(splitMarker):]
 			childPlan, err := ParsePlanTasks(splitJSON)
@@ -1467,7 +1470,6 @@ func (e *TeamEngine) PlanAndRun(ctx context.Context, goal, workdir, masterTaskID
 					}
 				}
 			}
-			_ = e.DB.UpdateMasterTaskStatus(masterTaskID, "")
 			e.saveCheckpoint(masterTaskID, completedBatches, passedBatches, completedBatchOutputs, batches)
 			e.fireEvent(TaskEvent{Type: EventStateChanged})
 			return batches, fmt.Errorf("cancelled: %w", ctx.Err())
@@ -1853,7 +1855,6 @@ func (e *TeamEngine) runDWCycle(
 					_ = e.DB.ForceTransitionState(t.ID, TaskStateSuspended, "cancelled-by-user")
 				}
 			}
-			_ = e.DB.UpdateMasterTaskStatus(masterTaskID, "")
 			e.fireEvent(TaskEvent{Type: EventStateChanged})
 			return
 		default:
