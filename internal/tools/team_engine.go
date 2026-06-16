@@ -238,18 +238,18 @@ func (b *Toolset) runTeamPlan(ctx context.Context, call core.ToolCall, progress 
 	}
 
 	// --- Phase 1: Create master task immediately so dashboard sees it ---
-			// Delete any prior master tasks so the dashboard only
-			// shows the latest run (avoids duplicates on retry).
-			if existing, _ := eng.DB.ListMasterTasks(); len(existing) > 0 {
-				for _, mt := range existing {
-					_ = eng.DeleteMasterTask(mt.ID)
-				}
-				// Clean up old leader decomposition logs so GetLeaderPlan
-				// only shows the current run.
-				leaderDir := filepath.Join(b.root, ".whale", "team_tasks", "logs", "leader")
-				_ = os.RemoveAll(leaderDir)
+			var masterTask *team_engine.MasterTask
+			var mtErr error
+			existing, _ := eng.DB.ListMasterTasks()
+			for _, mt := range existing {
+				if mt.Goal == args.Goal { masterTask = mt; break }
 			}
-			masterTask, mtErr := eng.CreateMasterTask(args.Goal, b.root)
+			if masterTask == nil {
+				masterTask, mtErr = eng.CreateMasterTask(args.Goal, b.root)
+				if mtErr != nil {
+					return toolError("create master task: %v", mtErr), nil
+				}
+			}
 			if mtErr != nil {
 				return toolError("create master task: %v", mtErr), nil
 			}
