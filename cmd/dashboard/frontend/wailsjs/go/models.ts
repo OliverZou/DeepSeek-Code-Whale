@@ -66,6 +66,7 @@ export namespace dashboard {
 	    id: string;
 	    title: string;
 	    description: string;
+	    output: string;
 	    role: string;
 	    state: string;
 	    progress: number;
@@ -85,6 +86,7 @@ export namespace dashboard {
 	        this.id = source["id"];
 	        this.title = source["title"];
 	        this.description = source["description"];
+	        this.output = source["output"];
 	        this.role = source["role"];
 	        this.state = source["state"];
 	        this.progress = source["progress"];

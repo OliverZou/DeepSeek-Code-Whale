@@ -71,6 +71,7 @@ type SubtaskJSON struct {
 	ID          string        `json:"id"`
 	Title       string        `json:"title"`
 	Description string        `json:"description"`
+	Output      string        `json:"output"`
 	Role        string        `json:"role"`
 	State       string        `json:"state"`
 	Progress    int           `json:"progress"`
@@ -902,6 +903,7 @@ func (m *MultiEngineManager) GetSubtasks(wsID, masterTaskID string) []SubtaskJSO
 			ID:          t.ID,
 			Title:       t.Title,
 			Description: t.Description,
+			Output:      t.Output,
 			Role:        string(t.Role),
 			State:       string(t.State),
 			Progress:    team_engine.GetProgress(t.State),

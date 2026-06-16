@@ -323,6 +323,7 @@ function renderSubtasks() {
         </div>
         <div class="st-meta">
           <span>${esc(st.role)}</span>
+          ${st.output ? '<span class="st-output" title="' + esc(st.output) + '">📄 ' + esc(st.output).substring(0, 40) + (st.output.length > 40 ? '…' : '') + '</span>' : ''}
           ${exhausted ? '<span class="exhausted-label">已重分解</span>' : ''}
           <span>${st.progress}%</span>
         </div>

@@ -1578,13 +1578,11 @@ func (e *TeamEngine) PlanAndRun(ctx context.Context, goal, workdir, masterTaskID
 					_ = e.Whiteboard.WriteBoard(boardContent)
 				}
 
-				// Single-cycle batches: no Leader review needed.
-				if cycleLimit <= 1 {
-					completedBatches[batch.ID] = true
-					passedBatches[batch.ID] = true
-					completedBatchOutputs[batch.ID] = e.collectBatchOutputs(batch)
-					break batchCycleLoop
-				}
+				// Batch done. Verifier already judged every task — skip Leader review.
+				completedBatches[batch.ID] = true
+				passedBatches[batch.ID] = true
+				completedBatchOutputs[batch.ID] = e.collectBatchOutputs(batch)
+				break batchCycleLoop
 				// Build and send CycleReport to Leader for review.
 				report := e.buildCycleReport(batch, cycle+1)
 				review, err := leader.ReviewCycle(goal, report, workdir, decomposerTimeout, leaderModel)
