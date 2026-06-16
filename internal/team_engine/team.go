@@ -44,6 +44,7 @@ type TeamRoleConfig struct {
 	Effort          string   `yaml:"effort,omitempty"`
 	PermissionMode  string   `yaml:"permissionMode,omitempty"`
 	Memory          string   `yaml:"memory,omitempty"`
+	Verifier        string   `yaml:"verifier,omitempty"`  // team role to use as verifier
 	MaxToolIters    int      `yaml:"maxToolIters,omitempty"`
 	MaxToolCalls    int      `yaml:"maxToolCalls,omitempty"`
 	Timeout         int      `yaml:"timeout,omitempty"` // seconds
