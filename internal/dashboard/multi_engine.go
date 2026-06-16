@@ -897,7 +897,13 @@ func (m *MultiEngineManager) GetSubtasks(wsID, masterTaskID string) []SubtaskJSO
 			Progress:    100,
 			// leader is a header sibling, not a parent wrapper
 		}
-			return append([]SubtaskJSON{leader}, roots...)
+			for _, r := range roots {
+		if len(r.Children) > 0 {
+			log.Printf("dashboard: GetSubtasks — root %q has %d children", r.Title, len(r.Children))
+		}
+	}
+	log.Printf("dashboard: GetSubtasks — %d roots + leader", len(roots))
+	return append([]SubtaskJSON{leader}, roots...)
 	}
 	return roots
 }
