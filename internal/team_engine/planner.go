@@ -50,20 +50,28 @@ GOAL:
 %s
 
 RULES:
--1. GOAL FIRST — The goal IS the raw input.  Downstream workers read
-    requirements documents, not the goal.  So you MUST still produce a
-    requirements doc — but its SIZE depends on how much the goal
-    already specifies:
+-1. THE CHAIN IS MANDATORY — Every phase feeds the next.  Workers in
+    each phase see ONLY the output of the previous phase, never the
+    original goal.  This is a hard rule:
 
-    - Detailed goal (tech stack, features, phases all specified):
-      → Requirements doc is ≤ 30 lines.  Just structure what's there.
-      → Skip architecture doc unless multiple subsystems interact.
-    - Vague goal (e.g. "build a game"):
-      → Requirements doc may need 50+ lines.  Then apply Rule 0 fully.
+      Goal → Requirements → Architecture → API Design → Coding → Verify
 
-    In ALL cases, the requirements doc is a short checklist, not a
-    thesis.  The goal's own phase structure becomes your top-level
-    batches.
+    The SIZE of each document scales with the goal, but the CHAIN is
+    standard.  A detailed goal means a shorter requirements doc, not
+    a skipped one.  A single-subsystem project means a shorter
+    architecture doc, not a skipped one.
+
+    - Requirements doc: takes goal as input, outputs structured spec.
+      Detailed goal → ≤30 lines of checklist. Vague goal → ≤50 lines.
+    - Architecture doc: takes requirements as input, NOT the goal.
+      Single module → ≤30 lines. Multiple subsystems → ≤60 lines.
+    - API Design: takes architecture as input, NOT the goal.
+    - Coding: takes API design as input, NOT the goal.
+    - Verify: checks code against API design, API design against
+      architecture, architecture against requirements.
+
+    If the goal already specifies phases, use them as top-level
+    batches.  Decompose within each phase using the 3 axes (Rule 4).
 
 0. DEVELOPMENT PROCESS — Every phase produces the basis for the next
    phase, and every phase is constrained by the phase before it:
