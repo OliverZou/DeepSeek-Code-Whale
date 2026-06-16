@@ -1176,7 +1176,34 @@ func (m *MultiEngineManager) GetLeaderFlowchart(wsID, masterTaskID string) strin
 		childX := int(float64(boxW) * 0.08) // indent for child tasks
 		childW := boxW - childX - 4
 
-		for ti, t := range bg.Tasks {
+		// Reorder tasks: parent first, then its children immediately after.
+		// This ensures connector lines are drawn and the hierarchy is visible.
+		ordered := make([]*team_engine.Task, 0, len(bg.Tasks))
+		appended := make(map[string]bool)
+		for _, pt := range bg.Tasks {
+			if isChild[pt.ID] != "" {
+				continue // child — will be appended after its parent
+			}
+			ordered = append(ordered, pt)
+			appended[pt.ID] = true
+			// Append children right after parent.
+			for _, ct := range bg.Tasks {
+				for _, cpid := range ct.ParentIDs {
+					if cpid == pt.ID && !appended[ct.ID] {
+						ordered = append(ordered, ct)
+						appended[ct.ID] = true
+					}
+				}
+			}
+		}
+		// Catch any children whose parent wasn't in this batch.
+		for _, pt := range bg.Tasks {
+			if !appended[pt.ID] {
+				ordered = append(ordered, pt)
+				appended[pt.ID] = true
+			}
+		}
+		for ti, t := range ordered {
 			y := swimH + ti*(boxH+padY) + padY/2
 			bx := x // box x
 			bw := boxW
