@@ -2372,6 +2372,8 @@ func GetProgress(state TaskState) int {
 		return 100
 	case TaskStateFailed:
 		return 100
+	case TaskStateSuspended:
+		return 50 // interrupted mid-execution, actual progress unclear
 	default:
 		return 0
 	}

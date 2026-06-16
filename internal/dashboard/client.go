@@ -170,7 +170,6 @@ func (c *Client) wsLoop() {
 					if err != nil {
 						continue
 					}
-					conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
 					if werr := conn.WriteMessage(websocket.TextMessage, data); werr != nil {
 						log.Printf("dashboard: bridge write failed: %v", werr)
 						// Don't return — a single failed write doesn't mean
@@ -301,7 +300,6 @@ func (c *Client) SyncState(mts []MasterTaskJSON, sts map[string][]SubtaskJSON, w
 		"subtasks":      sts,
 		"workspace_id":  c.wsID,
 	})
-	conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
 	conn.WriteMessage(websocket.TextMessage, msg)
 }
 
@@ -317,7 +315,6 @@ func (c *Client) SendTaskEvent(event team_engine.TaskEvent) {
 	}
 	data, _ := json.Marshal(event)
 	// Set a short write deadline to avoid blocking the publisher.
-	conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
 	if err := conn.WriteMessage(websocket.TextMessage, data); err != nil {
 		// Best-effort; drop on error rather than blocking.
 	}
