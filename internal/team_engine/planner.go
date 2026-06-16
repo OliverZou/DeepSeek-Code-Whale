@@ -85,7 +85,8 @@ OUTPUT FORMAT (pure JSON array, no markdown):
 [
   {
     "title": "subtask title",
-    "description": "detailed instructions for the worker agent",
+    "description": "detailed instructions for the worker agent. Include what inputs this task receives (from upstream tasks)",
+    "output": "the single deliverable this task produces — file path, document, code module, or decision record",
     "role": "developer",
     "batch_id": "phase-1",
     "batch_label": "Foundation",
@@ -96,6 +97,8 @@ OUTPUT FORMAT (pure JSON array, no markdown):
     "max_cycles": 1
   }
 ]
+
+Each task MUST have exactly one output. The output is the input for downstream tasks.
 
 CRITICAL: Verify your JSON — no trailing commas, proper quoting, outermost structure is a JSON array [ ... ].`, goal)
 }

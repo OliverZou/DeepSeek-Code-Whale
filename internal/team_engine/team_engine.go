@@ -1074,6 +1074,7 @@ If the task fits in one pass (~200 lines or fewer), produce the deliverable norm
 						}
 						continue
 					}
+					child.Output = pt.Output
 					child.BatchID = task.BatchID
 					child.MasterTaskID = task.MasterTaskID
 					_ = e.DB.UpdateTask(child.ID, map[string]interface{}{"batch_id": task.BatchID, "master_task_id": task.MasterTaskID})
@@ -1389,6 +1390,7 @@ func (e *TeamEngine) PlanAndRun(ctx context.Context, goal, workdir, masterTaskID
 			if err != nil {
 				return nil, fmt.Errorf("create subtask %s: %w", pt.Title, err)
 			}
+			task.Output = pt.Output
 			task.BatchID = bid
 			task.UseDW = pt.UseDW
 			task.MasterTaskID = masterTaskID

@@ -78,6 +78,7 @@ type Task struct {
 	ID               string     `json:"id"`                // UUID
 	Title            string     `json:"title"`             // 任务标题
 	Description      string     `json:"description"`       // 任务描述（给 Agent 的 prompt）
+	Output           string     `json:"output,omitempty"`  // 声明产出（不进DB，运行时传递）
 	Role             AgentRole  `json:"role"`              // 角色
 	Profile          ToolProfile `json:"profile"`          // 工具权限配置
 	State            TaskState  `json:"state"`             // 当前状态
@@ -160,6 +161,7 @@ func (c *CycleFindingsSet) HasNewFindings(prev *CycleFindingsSet) bool {
 type PlanTask struct {
 	Title            string   `json:"title"`
 	Description      string   `json:"description"`
+	Output           string   `json:"output,omitempty"` // declared deliverable
 	Role             string   `json:"role"`
 	BatchID          string   `json:"batch_id,omitempty"`     // which batch (stage) this belongs to
 	BatchLabel       string   `json:"batch_label,omitempty"`  // human label for the batch
