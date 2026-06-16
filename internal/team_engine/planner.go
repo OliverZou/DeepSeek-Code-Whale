@@ -689,6 +689,14 @@ func structuredToPlanTasks(v any) ([]PlanTask, error) {
 	if err != nil {
 		return nil, fmt.Errorf("marshal structured: %w", err)
 	}
+	// The OutputSchema wraps tasks in {"tasks": [...]}.
+	// Try that first, then fall back to a bare array.
+	var wrapper struct {
+		Tasks []PlanTask `json:"tasks"`
+	}
+	if err := json.Unmarshal(data, &wrapper); err == nil && len(wrapper.Tasks) > 0 {
+		return wrapper.Tasks, nil
+	}
 	var tasks []PlanTask
 	if err := json.Unmarshal(data, &tasks); err != nil {
 		return nil, fmt.Errorf("unmarshal structured: %w", err)

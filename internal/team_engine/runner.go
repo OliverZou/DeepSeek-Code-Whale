@@ -3,60 +3,34 @@ package team_engine
 import (
 	"context"
 	"fmt"
+	"math"
 	"strings"
 	"time"
 )
 
-// ReasoningMaxTokens is the completion token budget for reasoning models
-// (deepseek-v4-pro, deepseek-r1, etc.). These models use thinking tokens
-// that count against the completion budget, so a large budget is needed
-// to leave room for actual output after chain-of-thought.
-const ReasoningMaxTokens = 32768
+// ---------------------------------------------------------------------------
+// Token budget helpers
+// ---------------------------------------------------------------------------
 
-// ReasoningDecomposerMaxTokens is the token budget for the Leader/Decomposer
-// role when using a reasoning model.  The decomposer prompt is long (rules,
-// orchestration patterns, role descriptions, JSON format specification), and
-// the model must think through the decomposition before generating the plan.
-const ReasoningDecomposerMaxTokens = 65536
+const (
+	// WorkerMaxTokens is the default completion budget for worker agents.
+	// Large enough for code generation, small enough to avoid runaway loops.
+	WorkerMaxTokens = 8000
 
-// WorkerMaxTokens is the minimum completion token budget for non-reasoning
-// worker tasks (research, writing, analysis).  When thinking is globally
-// enabled, even flash models consume budget for chain-of-thought.
-const WorkerMaxTokens = 32768
+	// ReasoningMaxTokens is the standard budget for reasoning models.
+	// Reasoning models consume a large portion of tokens on chain-of-thought
+	// that the user never sees, so we give them extra headroom.
+	ReasoningMaxTokens = 32000
 
-// isDeepSeekModel reports whether the model is a known DeepSeek model that
-// should get a larger-than-default token budget.
-func isDeepSeekModel(model string) bool {
-	m := strings.ToLower(strings.TrimSpace(model))
-	return strings.HasPrefix(m, "deepseek-")
-}
+	// ReasoningDecomposerMaxTokens is a larger budget specifically for the
+	// decomposer (planner) agent, whose prompt is significantly longer than
+	// typical task prompts and whose output is a potentially large JSON plan.
+	ReasoningDecomposerMaxTokens = 48000
+)
 
-// isReasoningModel reports whether the model is a reasoning/thinking model
-// that needs a larger token budget for its chain-of-thought.
-func isReasoningModel(model string) bool {
-	if model == "" {
-		return false
-	}
-	m := strings.ToLower(model)
-	// DeepSeek reasoning family.
-	if strings.Contains(m, "deepseek-r1") || strings.Contains(m, "deepseek-v4-pro") {
-		return true
-	}
-	// Generic reasoning model suffixes.
-	if strings.HasSuffix(m, "-reasoning") || strings.HasSuffix(m, "-thinking") {
-		return true
-	}
-	return false
-}
-
-// effectiveMaxTokens returns the MaxTokens to use. If an explicit value is
-// provided (> 0), use it. Otherwise:
-//   - Reasoning models -> ReasoningMaxTokens (8192)
-//   - Other known DeepSeek models -> WorkerMaxTokens (8192)
-//   - Everything else -> 0 (runner default of 800)
-func effectiveMaxTokens(explicit int, model string) int {
-	if explicit > 0 {
-		return explicit
+func effectiveMaxTokens(requested int, model string) int {
+	if requested > 0 {
+		return requested
 	}
 	if isReasoningModel(model) {
 		return ReasoningMaxTokens
@@ -67,6 +41,22 @@ func effectiveMaxTokens(explicit int, model string) int {
 	return 0
 }
 
+// isDeepSeekModel returns true for DeepSeek-family models.
+func isDeepSeekModel(model string) bool {
+	lower := strings.ToLower(model)
+	return strings.Contains(lower, "deepseek")
+}
+
+// isReasoningModel returns true for models that use chain-of-thought reasoning.
+func isReasoningModel(model string) bool {
+	lower := strings.ToLower(model)
+	return strings.Contains(lower, "v4-pro") || strings.Contains(lower, "opus")
+}
+
+// ---------------------------------------------------------------------------
+// AgentRunner — stateless subagent execution
+// ---------------------------------------------------------------------------
+
 // RunResult captures the outcome of a single agent run.
 type RunResult struct {
 	ExitCode        int            `json:"exit_code"`
@@ -74,17 +64,19 @@ type RunResult struct {
 	Stderr          string         `json:"stderr"`
 	DurationSeconds float64        `json:"duration_seconds"`
 	Success         bool           `json:"success"`
-	Structured      any    `json:"-"` // structured output (when OutputSchema was set)
+	Structured      any            `json:"-"` // structured output (when OutputSchema was set)
 	UsagePrompt     int            `json:"-"` // prompt tokens (0 if unavailable)
 	UsageCompletion int            `json:"-"` // completion tokens (0 if unavailable)
 	SpawnerType     string         `json:"-"` // "adapter" or "shell" — which spawner was used
 }
 
-// SubagentSpawner is the interface that the Whale integration layer must
-// satisfy.  It replaces the original runner's external CLI calls with
-// Whale's native subagent spawning mechanism.
-//
-// The integration layer (internal/tools/team_engine.go or
+func round(v float64, decimals int) float64 {
+	pow := math.Pow(10, float64(decimals))
+	return math.Round(v*pow) / pow
+}
+
+// SubagentSpawner is the interface for spawning Whale subagents.
+// The concrete implementation (provided by the Whale CLI toolset in
 // internal/app/app.go) provides the concrete implementation that wires
 // into Whale's agent runtime.
 type SubagentSpawner interface {
@@ -118,7 +110,7 @@ type SubagentRequest struct {
 type SubagentResponse struct {
 	SpawnerType     string         // "adapter" or "shell" — which spawner was used
 	Output          string         // Full agent output
-	Structured      any    // Structured output (when OutputSchema was set)
+	Structured      any            // Structured output (when OutputSchema was set)
 	ExitCode        int
 	Success         bool
 	UsagePrompt     int            // prompt tokens consumed
@@ -126,37 +118,27 @@ type SubagentResponse struct {
 	Diagnostic      string         // detailed debug info (tool resolution, status, errors)
 }
 
-// AgentRunner executes prompts through a Whale subagent.
-//
-// Unlike the original team-engine-go which called external agent CLIs
-// (claude --print, opencode run, codex exec), this version calls Whale's
-// internal subagent spawning mechanism, giving full control over tool
-// permissions and execution context.
+// AgentRunner is a stateless wrapper around a SubagentSpawner.
 type AgentRunner struct {
 	spawner SubagentSpawner
 }
 
-// NewRunner creates an AgentRunner backed by the given SubagentSpawner.
+// NewRunner creates an AgentRunner backed by the given spawner.
 func NewRunner(spawner SubagentSpawner) *AgentRunner {
 	return &AgentRunner{spawner: spawner}
 }
 
-// Run executes a prompt through a Whale subagent.
+// RunWithContext spawns a worker subagent with cancellation support.  The
+// `onProgress` callback receives real-time tool execution events.  When
+// `ctx` is cancelled (e.g. by user clicking "stop" in the dashboard or
+// by engine shutdown), the subagent context is cancelled and the spawn
+// returns early.  The callback is invoked from a background goroutine and
+// must be concurrency-safe.  If the caller doesn't need progress tracking,
+// pass nil.
 //
-// Parameters:
-//   - prompt:    The task description/prompt for the agent
-//   - workdir:   Working directory (absolute or relative)
-//   - tools:     Comma-separated list of allowed tools (e.g. "Read,Write,Bash")
-//   - timeout:   Maximum execution duration
-//
-// Returns a RunResult with the agent's output.
-func (ar *AgentRunner) Run(prompt, workdir, tools string, timeout time.Duration, onProgress SubagentProgress) *RunResult {
-	return ar.RunWithContext(context.Background(), prompt, workdir, tools, timeout, onProgress)
-}
-
-// RunWithContext is like Run but accepts an external context for cancellation.
-// The effective timeout is min(timeout, ctx deadline). If ctx is cancelled
-// (e.g. via Close()), the spawn is aborted.
+// IMPORTANT: RunWithContext creates its own derived context with the given
+// timeout.  The `ctx` parameter is used ONLY for cancellation — if the
+// parent context is cancelled (e.g. via Close()), the spawn is aborted.
 func (ar *AgentRunner) RunWithContext(ctx context.Context, prompt, workdir, tools string, timeout time.Duration, onProgress SubagentProgress, model ...string) *RunResult {
 	start := time.Now()
 
@@ -167,8 +149,8 @@ func (ar *AgentRunner) RunWithContext(ctx context.Context, prompt, workdir, tool
 		Tools:      toolNames,
 		Workdir:    workdir,
 		Timeout:    timeout,
-		MaxIters:   30,
-		MaxCalls:   100,
+		MaxIters:   80,
+		MaxCalls:   200,
 		OnProgress: onProgress,
 	}
 	if len(model) > 0 && model[0] != "" {
@@ -176,11 +158,12 @@ func (ar *AgentRunner) RunWithContext(ctx context.Context, prompt, workdir, tool
 	}
 	req.MaxTokens = effectiveMaxTokens(0, req.Model)
 
-	runCtx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
+	// Use a derived context so cancellation of the parent context
+	// propagates to the spawn, but the timeout is independent.
+	spawnCtx, spawnCancel := context.WithTimeout(ctx, timeout)
+	defer spawnCancel()
 
-	resp, err := ar.spawner.SpawnSubagent(runCtx, req)
-
+	resp, err := ar.spawner.SpawnSubagent(spawnCtx, req)
 	elapsed := time.Since(start).Seconds()
 
 	if err != nil {
@@ -196,12 +179,19 @@ func (ar *AgentRunner) RunWithContext(ctx context.Context, prompt, workdir, tool
 	return &RunResult{
 		ExitCode:        resp.ExitCode,
 		Stdout:          resp.Output,
-		Stderr:          "",
+		SpawnerType:     resp.SpawnerType,
+			Stderr:          resp.Diagnostic,
 		DurationSeconds: round(elapsed, 2),
 		Success:         resp.Success,
+		Structured:      resp.Structured,
 		UsagePrompt:     resp.UsagePrompt,
 		UsageCompletion: resp.UsageCompletion,
 	}
+}
+
+// Run is a convenience wrapper for RunWithContext with a background context.
+func (ar *AgentRunner) Run(prompt, workdir, tools string, timeout time.Duration, model ...string) *RunResult {
+	return ar.RunWithContext(context.Background(), prompt, workdir, tools, timeout, nil, model...)
 }
 
 // RunVerifier is a convenience wrapper for running a verifier subagent
@@ -252,8 +242,7 @@ func (ar *AgentRunner) RunVerifier(prompt, workdir string, timeout time.Duration
 	}
 }
 
-// RunDecomposer is a convenience wrapper for running a leader/decomposer
-// subagent that produces a structured JSON plan.
+// RunDecomposer runs a Leader/Planner subagent to decompose a goal into subtasks.
 //
 // For reasoning models (deepseek-v4-pro, etc.) the decomposer gets a larger
 // token budget (ReasoningDecomposerMaxTokens) because the planning prompt
@@ -270,23 +259,29 @@ func (ar *AgentRunner) RunDecomposer(prompt, workdir string, timeout time.Durati
 		MaxIters: 15,
 		MaxCalls: 40,
 		OutputSchema: map[string]any{
-			"type": "array",
-			"items": map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"title":              map[string]any{"type": "string"},
-					"description":        map[string]any{"type": "string"},
-					"role":               map[string]any{"type": "string"},
-					"batch_id":           map[string]any{"type": "string"},
-					"batch_label":        map[string]any{"type": "string"},
-					"depends_on_batch":   map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
-					"depends_on_index":   map[string]any{"type": "integer"},
-					"verifier_focus":     map[string]any{"type": "string"},
-					"use_dw":             map[string]any{"type": "boolean"},
-					"max_cycles":         map[string]any{"type": "integer"},
+			"type": "object",
+			"properties": map[string]any{
+				"tasks": map[string]any{
+					"type": "array",
+					"items": map[string]any{
+						"type": "object",
+						"properties": map[string]any{
+							"title":              map[string]any{"type": "string"},
+							"description":        map[string]any{"type": "string"},
+							"role":               map[string]any{"type": "string"},
+							"batch_id":           map[string]any{"type": "string"},
+							"batch_label":        map[string]any{"type": "string"},
+							"depends_on_batch":   map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+							"depends_on_index":   map[string]any{"type": "integer"},
+							"verifier_focus":     map[string]any{"type": "string"},
+							"use_dw":             map[string]any{"type": "boolean"},
+							"max_cycles":         map[string]any{"type": "integer"},
+						},
+						"required": []string{"title", "description", "role"},
+					},
 				},
-				"required": []string{"title", "description", "role"},
 			},
+			"required": []string{"tasks"},
 		},
 	}
 	if len(model) > 0 && model[0] != "" {
@@ -331,100 +326,20 @@ func (ar *AgentRunner) RunDecomposer(prompt, workdir string, timeout time.Durati
 }
 
 // ---------------------------------------------------------------------------
-// Helpers
+// Tool list helpers
 // ---------------------------------------------------------------------------
 
-// parseToolList parses a comma-separated tool string, mapping logical names
-// to actual Whale tool names via ProfileToToolNames.
 func parseToolList(tools string) []string {
 	if tools == "" {
-		return ProfileToToolNames(ProfileDefault)
-	}
-
-	// Check if it's a known profile name.
-	switch tools {
-	case "default":
-		return ProfileToToolNames(ProfileDefault)
-	case "read_only":
-		return ProfileToToolNames(ProfileReadOnly)
-	case "research":
-		return ProfileToToolNames(ProfileResearch)
-	case "content":
-		return ProfileToToolNames(ProfileContent)
-	case "test":
-		return ProfileToToolNames(ProfileTest)
-	case "verify":
-		return ProfileToToolNames(ProfileVerify)
-	}
-
-	// Otherwise, treat as comma-separated list of Whale tool names.
-	var result []string
-	for _, t := range splitAndTrim(tools, ",") {
-		if t != "" {
-			result = append(result, t)
-		}
-	}
-	return result
-}
-
-func splitAndTrim(s, sep string) []string {
-	if s == "" {
 		return nil
 	}
-	var result []string
-	for _, part := range split(s, sep) {
-		trimmed := stringsTrimSpace(part)
-		if trimmed != "" {
-			result = append(result, trimmed)
+	parts := strings.Split(tools, ",")
+	var out []string
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			out = append(out, p)
 		}
 	}
-	return result
-}
-
-// split is a simple strings.Split that doesn't require importing strings
-// (available via built-in in Go 1.21+, but we keep it simple).
-func split(s, sep string) []string {
-	if s == "" {
-		return nil
-	}
-	var result []string
-	// Simple n-1 split
-	for {
-		i := indexOf(s, sep)
-		if i < 0 {
-			result = append(result, s)
-			break
-		}
-		result = append(result, s[:i])
-		s = s[i+len(sep):]
-	}
-	return result
-}
-
-func indexOf(s, substr string) int {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return i
-		}
-	}
-	return -1
-}
-
-func stringsTrimSpace(s string) string {
-	start, end := 0, len(s)
-	for start < end && (s[start] == ' ' || s[start] == '\t' || s[start] == '\n' || s[start] == '\r') {
-		start++
-	}
-	for end > start && (s[end-1] == ' ' || s[end-1] == '\t' || s[end-1] == '\n' || s[end-1] == '\r') {
-		end--
-	}
-	return s[start:end]
-}
-
-func round(val float64, precision int) float64 {
-	format := fmt.Sprintf("%%.%df", precision)
-	result := fmt.Sprintf(format, val)
-	var rounded float64
-	fmt.Sscanf(result, "%f", &rounded)
-	return rounded
+	return out
 }
