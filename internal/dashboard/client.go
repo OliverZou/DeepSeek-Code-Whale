@@ -280,6 +280,8 @@ func (c *Client) IsRegistered() bool {
 }
 
 // SendTaskEvent sends a team-engine task event to the dashboard over WebSocket.
+// Non-blocking: if the write would block, the event is dropped to avoid
+// stalling the team engine's event loop.
 func (c *Client) SendTaskEvent(event team_engine.TaskEvent) {
 	c.wsConnMu.Lock()
 	conn := c.wsConn
@@ -288,7 +290,11 @@ func (c *Client) SendTaskEvent(event team_engine.TaskEvent) {
 		return
 	}
 	data, _ := json.Marshal(event)
-	conn.WriteMessage(websocket.TextMessage, data)
+	// Set a short write deadline to avoid blocking the publisher.
+	conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+	if err := conn.WriteMessage(websocket.TextMessage, data); err != nil {
+		// Best-effort; drop on error rather than blocking.
+	}
 }
 
 
