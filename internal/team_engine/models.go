@@ -234,6 +234,9 @@ func ResetForResume(state TaskState) TaskState {
 	if state == TaskStateDone {
 		return TaskStateDone // keep done — task already completed successfully
 	}
+	if state == TaskStateVerified {
+		return TaskStateDone // verifier passed, just needs done confirmation
+	}
 	if state.IsTerminal() {
 		return TaskStatePending
 	}

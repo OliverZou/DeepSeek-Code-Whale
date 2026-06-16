@@ -171,7 +171,7 @@ func TestResetForResume(t *testing.T) {
 		TaskStateProducing: TaskStateAssigned,  // transient → assigned
 		TaskStateProduced:  TaskStateAssigned,  // transient → assigned
 		TaskStateVerifying: TaskStateAssigned,  // transient → assigned
-		TaskStateVerified:  TaskStateAssigned,  // verified → assigned for retry
+		TaskStateVerified:  TaskStateDone,      // verifier passed, just need done confirm
 	}
 	for from, want := range tests {
 		got := ResetForResume(from)
