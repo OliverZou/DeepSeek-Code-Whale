@@ -1605,6 +1605,12 @@ func (m *MultiEngineManager) CancelMasterTask(wsID, masterTaskID string) (int, e
 	ws.Engine.CancelMasterTaskExecution(masterTaskID)
 	// Notify the whale CLI to stop execution immediately.
 	m.sendWSCommand(wsID, "cancel_master", masterTaskID)
+	// Clear pending resume + master task status so it doesn't auto-restart.
+	m.mu.Lock()
+	delete(m.pendingResume, wsID)
+	m.mu.Unlock()
+	_ = ws.Engine.DB.UpdateMasterTaskStatus(masterTaskID, "")
+	ws.Engine.DB.Checkpoint()
 	return cancelled, nil
 }
 
