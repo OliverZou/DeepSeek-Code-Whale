@@ -302,28 +302,6 @@ func (m *MultiEngineManager) HandleWebSocket(w http.ResponseWriter, r *http.Requ
 	// Notify eventLoop so the frontend sees WorkspaceOnline=true immediately.
 	eventbus.Global().Publish(eventbus.TopicWorkspace, eventbus.Event{Type: "ws_connected", Payload: map[string]string{"id": wsID}})
 
-	// Auto-resume: if the workspace has incomplete master tasks with
-	// suspended subtasks, queue a resume command so the whale CLI picks
-	// it up and continues execution without manual intervention.
-	m.mu.Lock()
-	ws := m.states[wsID]
-	m.mu.Unlock()
-	if ws != nil && ws.Engine != nil {
-		mts, _ := ws.Engine.ListMasterTasks()
-		for _, mt := range mts {
-			tasks, _ := ws.Engine.ListTasksByMasterTask(mt.ID)
-			for _, t := range tasks {
-				if t.State == team_engine.TaskStateSuspended || t.State == team_engine.TaskStatePending {
-					m.QueueResume(wsID, mt.ID)
-					if team_engine.DefaultTeamLog != nil {
-						team_engine.DefaultTeamLog.Log("dashboard", "auto-resume %s for workspace %s", mt.ID[:8], wsID)
-					}
-					break
-				}
-			}
-		}
-	}
-
 	// Enable cross-process EventBus bridge.
 	_, bridgeIn := eventbus.EnableGlobalBridge()
 
