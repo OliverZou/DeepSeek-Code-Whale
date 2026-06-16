@@ -885,7 +885,9 @@ func (m *MultiEngineManager) GetSubtasks(wsID, masterTaskID string) []SubtaskJSO
 		for _, pid := range sj.ParentIDs {
 			if parent, ok := nodeMap[pid]; ok {
 				parent.Children = append(parent.Children, *sj)
+				if team_engine.DefaultTeamLog != nil { team_engine.DefaultTeamLog.Log("dashboard", "GetSubtasks: attached child") }
 				hasParent = true
+				if team_engine.DefaultTeamLog != nil { team_engine.DefaultTeamLog.Log("dashboard", "GetSubtasks: parent NOT FOUND for child %s", sj.ID[:8]) }
 			}
 		}
 		if !hasParent {
