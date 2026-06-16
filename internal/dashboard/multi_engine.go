@@ -313,8 +313,9 @@ func (m *MultiEngineManager) HandleWebSocket(w http.ResponseWriter, r *http.Requ
 	// Writer goroutine: forward bridge events to this whale CLI.
 	go func() {
 		for data := range bridgeCh {
+			conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
 			if werr := conn.WriteMessage(websocket.TextMessage, data); werr != nil {
-				return
+				// Single failed write doesn't kill the goroutine.
 			}
 		}
 	}()
@@ -345,20 +346,6 @@ func (m *MultiEngineManager) HandleWebSocket(w http.ResponseWriter, r *http.Requ
 				case bridgeIn <- be:
 				default:
 					log.Printf("dashboard: bridgeIn full, dropped topic=%s type=%s from ws=%s", be.Topic, be.Event.Type, wsID)
-				}
-				// Also forward team_engine events to the frontend via
-				// fireEngineEvent so task-event listeners can react.
-				if be.Topic == eventbus.TopicTeamEngine {
-					if evt, ok := be.Event.Payload.(team_engine.TaskEvent); ok {
-						m.fireEngineEvent(evt)
-					} else if payloadMap, ok := be.Event.Payload.(map[string]interface{}); ok {
-						// Payload arrives as map after JSON round-trip.
-						data, _ := json.Marshal(payloadMap)
-						var evt team_engine.TaskEvent
-						if json.Unmarshal(data, &evt) == nil && evt.Type > 0 {
-							m.fireEngineEvent(evt)
-						}
-					}
 				}
 				continue
 			}

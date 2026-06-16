@@ -170,9 +170,11 @@ func (c *Client) wsLoop() {
 					if err != nil {
 						continue
 					}
+					conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
 					if werr := conn.WriteMessage(websocket.TextMessage, data); werr != nil {
 						log.Printf("dashboard: bridge write failed: %v", werr)
-						return
+						// Don't return — a single failed write doesn't mean
+						// the connection is dead.  Continue processing events.
 					}
 				}
 			}
