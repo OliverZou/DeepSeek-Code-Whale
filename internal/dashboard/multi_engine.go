@@ -313,7 +313,6 @@ func (m *MultiEngineManager) HandleWebSocket(w http.ResponseWriter, r *http.Requ
 	// Writer goroutine: forward bridge events to this whale CLI.
 	go func() {
 		for data := range bridgeCh {
-			conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
 			if werr := conn.WriteMessage(websocket.TextMessage, data); werr != nil {
 				// Single failed write doesn't kill the goroutine.
 			}

@@ -212,16 +212,15 @@ function renderSidebar() {
     const goalShort = esc(mt.goal).length > 50 ? esc(mt.goal).slice(0, 50) + '…' : esc(mt.goal);
     const pct = mt.task_count > 0 ? Math.round(mt.done_count / mt.task_count * 100) : 0;
     const allDone = mt.task_count > 0 && mt.done_count >= mt.task_count;
-    const isRunning = (mt.workspace_online && mt.active_count > 0) || (mt.status === 'running' && mt.active_count > 0);
-    const isPlanning = !isRunning && !allDone && (mt.task_count || 0) === 0;
-    const hasRunning = isRunning;
+    const isRunning = mt.workspace_online && mt.status === 'running';
+    const isPlanning = (mt.task_count || 0) === 0;
     html += `<div class="mt${active}" data-id="${mt.id}" data-goal="${esc(mt.goal)}" data-wsid="${esc(mt.workspace_id)}">
       <div class="goal" title="${esc(mt.goal)}">${goalShort}</div>
       <div class="meta">
         <span class="ws-label">📁 ${esc(mt.workspace_label)}</span>
         <span>${mt.done_count}/${mt.task_count}</span>
         <span>${fmtTime(mt.created_at)}</span>
-        ${allDone ? `<span class="done-indicator">✅ 已完成</span>` : isPlanning ? `<span class="planning-indicator">⏳ 规划中...</span>` : hasRunning ? `<button class="stop-btn" data-wsid="${esc(mt.workspace_id)}" data-mtid="${mt.id}">⏹ 停止</button>` : `<button class="resume-btn" data-wsid="${esc(mt.workspace_id)}" data-mtid="${mt.id}" ${!mt.workspace_online ? 'disabled title="需要 Whale CLI 在该工作区运行"' : ''}>▶ 运行</button>`}
+        ${allDone ? `<span class="done-indicator">✅ 已完成</span>` : isPlanning ? `<span class="planning-indicator">⏳ 规划中...</span>` : isRunning ? `<button class="stop-btn" data-wsid="${esc(mt.workspace_id)}" data-mtid="${mt.id}">⏹ 停止</button>` : `<button class="resume-btn" data-wsid="${esc(mt.workspace_id)}" data-mtid="${mt.id}" ${!mt.workspace_online ? 'disabled title="需要 Whale CLI 在该工作区运行"' : ''}>▶ 运行</button>`}
       </div>
       <div class="progress-bar-wrap"><div class="progress-bar-fill" style="width:${pct}%"></div></div>
     </div>`;
