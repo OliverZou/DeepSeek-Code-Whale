@@ -517,8 +517,14 @@ function showMasterTaskContextMenu(x, y, mtId, wsId, goal) {
 	    state.masterTasks = (state.masterTasks || []).filter(mt => mt.id !== mtId);
 	    updateUI();
 	    clearAgentPanel();
-	    // Reload in background to resolve push-update races.
-	    setTimeout(() => loadMasterTasks(), 200);
+	    // Reload in background, then auto-select if tasks remain.
+	    setTimeout(async () => {
+	      await loadMasterTasks();
+	      if (!state.selMtId && state.masterTasks.length > 0) {
+	        const planned = state.masterTasks.find(mt => (mt.task_count || 0) > 0);
+	        if (planned) selectMasterTask(planned.id);
+	      }
+	    }, 200);
   };
   document.body.appendChild(menu);
 
