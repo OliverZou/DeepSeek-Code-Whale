@@ -2591,8 +2591,10 @@ func (e *TeamEngine) writePlanMarkdown(goal string, batches []*Batch, workdir st
 	}
 	defer f.Close()
 
-	f.WriteString(fmt.Sprintf("# Plan\n\n**Goal:** %s\n\n", goal))
-	f.WriteString(fmt.Sprintf("**Batches:** %d | **Tasks:** %d\n\n", len(batches), countTasks(batches)))
+	f.WriteString("# 项目计划\n\n")
+	f.WriteString(fmt.Sprintf("## 目标\n\n%s\n\n", goal))
+	f.WriteString(fmt.Sprintf("## 概览\n\n**批次:** %d | **任务:** %d\n\n", len(batches), countTasks(batches)))
+	f.WriteString("---\n\n")
 
 	for i, batch := range batches {
 		label := batch.LabelOrID()
@@ -2634,12 +2636,14 @@ func (e *TeamEngine) writeLeaderSummary(goal string, batches []*Batch, workdir s
 		}
 	}
 
-	prompt := fmt.Sprintf(`You are the Team Leader. The following goal has been fully executed by your team.
-Produce a concise summary for the user covering:
+	prompt := fmt.Sprintf(`You are the Team Leader. Your team has completed all tasks for the following objective.
 
-1. What was accomplished (key deliverables)
-2. Which tasks passed and which failed
-3. Where to find the outputs
+First, restate the GOAL in your own structured words — what the user asked for and what was actually delivered. Do NOT copy the user's raw input.
+
+Then, for each batch, list:
+- The deliverable produced
+- Which file(s) to look at
+- Pass/fail status
 
 GOAL:
 %s
@@ -2647,7 +2651,7 @@ GOAL:
 TEAM OUTPUTS:
 %s
 
-Write the summary to summary.md in clear, user-friendly language.`, goal, outputs.String())
+Write to summary.md. Use clear, professional language. The user should understand at a glance what was done and where to find everything.`, goal, outputs.String())
 
 	result := e.Runner.RunDecomposer(prompt, workdir, timeout, model)
 	if result.Success && result.Stdout != "" {
