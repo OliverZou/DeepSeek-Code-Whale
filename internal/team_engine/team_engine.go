@@ -1252,6 +1252,7 @@ func (e *TeamEngine) PlanAndRun(ctx context.Context, goal, workdir, masterTaskID
 	if DefaultTeamLog != nil {
 		DefaultTeamLog.Log("plan", "plan: decompose OK: %d tasks in %d batches", len(planTasks), countBatches(planTasks))
 	}
+	fmt.Fprintf(os.Stderr, "PLAN: decompose OK — %d tasks, entering batch creation\n", len(planTasks))
 
 	// Step 1: Group PlanTasks into batches by batch_id.
 	type batchGroup struct {
