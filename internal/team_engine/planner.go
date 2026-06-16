@@ -50,15 +50,14 @@ GOAL:
 %s
 
 RULES:
--1. GOAL FIRST — If the GOAL already contains explicit phases or steps,
-    use them as your TOP-LEVEL BATCHES.  You CAN and SHOULD decompose
-    within each phase using the 3 axes (Rule 4) — but do NOT add extra
-    phases before them.  If the goal says "Phase 1: Project Init", do
-    not insert a "Requirements Analysis" batch before it.  Decompose
-    Phase 1 into concrete coding tasks, not design documents.
+-1. GOAL FIRST — If the GOAL already specifies technical details
+    (language, framework, features, directory structure, or explicit
+    phases), the goal IS the requirements document.  Do NOT create a
+    separate requirements/analysis/design task.  Start from Phase 1
+    immediately — decompose each phase into concrete coding tasks.
 
-    Only apply the standard process (Rule 0) when the goal has NO
-    structure of its own.
+    Only introduce document tasks (Rule 0) when the goal is VAGUE:
+    e.g. "build a game" with no tech stack, no features, no phases.
 
 0. DEVELOPMENT PROCESS — Every phase produces the basis for the next
    phase, and every phase is constrained by the phase before it:
