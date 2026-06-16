@@ -1594,6 +1594,9 @@ func (e *TeamEngine) PlanAndRun(ctx context.Context, goal, workdir, masterTaskID
 					}
 				}
 				if anyNew {
+					if cycle == cycleLimit-1 {
+						cycleLimit++ // extend limit for children
+					}
 					continue // run children in next cycle
 				}
 
