@@ -872,14 +872,25 @@ func (m *MultiEngineManager) GetSubtasks(wsID, masterTaskID string) []SubtaskJSO
 		nodeMap[t.ID] = sj
 		taskList = append(taskList, sj)
 	}
-	// Attach children to their parents.
+	// Attach children to parents — first pass: link all children.
+	for _, child := range taskList {
+		for _, pid := range child.ParentIDs {
+			if pid == "" {
+				continue
+			}
+			if parent, ok := nodeMap[pid]; ok {
+				parent.Children = append(parent.Children, *child)
+			}
+		}
+	}
+	// Second pass: collect roots (tasks without parents).
 	roots := make([]SubtaskJSON, 0, 1+len(tasks))
 	for _, sj := range taskList {
 		hasParent := false
 		for _, pid := range sj.ParentIDs {
-			if parent, ok := nodeMap[pid]; ok {
-				parent.Children = append(parent.Children, *sj)
+			if _, ok := nodeMap[pid]; ok {
 				hasParent = true
+				break
 			}
 		}
 		if !hasParent {
