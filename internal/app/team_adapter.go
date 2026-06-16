@@ -23,6 +23,7 @@ func teamEngineSpawnAdapter(runner *tasks.Runner) team_engine.SpawnFunc {
 			MaxToolIters: req.MaxIters,
 			MaxToolCalls: req.MaxCalls,
 			MaxTokens:    req.MaxTokens,
+			OutputSchema: req.OutputSchema,
 			// Disable thinking for non-reasoning models (flash, etc.).
 			// Thinking tokens consume the completion budget, leaving
 			// almost nothing for actual output on flash models.
@@ -93,6 +94,7 @@ func teamEngineSpawnAdapter(runner *tasks.Runner) team_engine.SpawnFunc {
 		return team_engine.SubagentResponse{
 			SpawnerType:     "adapter",
 			Output:          resp.Summary,
+			Structured:      resp.StructuredResult,
 			ExitCode:        exitCode,
 			Success:         success,
 			UsagePrompt:     resp.Usage.PromptTokens,

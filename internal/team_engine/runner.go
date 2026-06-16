@@ -69,14 +69,15 @@ func effectiveMaxTokens(explicit int, model string) int {
 
 // RunResult captures the outcome of a single agent run.
 type RunResult struct {
-	ExitCode        int     `json:"exit_code"`
-	Stdout          string  `json:"stdout"`
-	Stderr          string  `json:"stderr"`
-	DurationSeconds float64 `json:"duration_seconds"`
-	Success         bool    `json:"success"`
-	UsagePrompt     int    `json:"-"` // prompt tokens (0 if unavailable)
-	UsageCompletion int    `json:"-"` // completion tokens (0 if unavailable)
-	SpawnerType     string `json:"-"` // "adapter" or "shell" — which spawner was used
+	ExitCode        int            `json:"exit_code"`
+	Stdout          string         `json:"stdout"`
+	Stderr          string         `json:"stderr"`
+	DurationSeconds float64        `json:"duration_seconds"`
+	Success         bool           `json:"success"`
+	Structured      any    `json:"-"` // structured output (when OutputSchema was set)
+	UsagePrompt     int            `json:"-"` // prompt tokens (0 if unavailable)
+	UsageCompletion int            `json:"-"` // completion tokens (0 if unavailable)
+	SpawnerType     string         `json:"-"` // "adapter" or "shell" — which spawner was used
 }
 
 // SubagentSpawner is the interface that the Whale integration layer must
@@ -100,27 +101,29 @@ type SubagentProgress func(status, summary, toolName string)
 // SubagentRequest is the minimum set of parameters needed to spawn
 // a Whale subagent for a Team Engine task.
 type SubagentRequest struct {
-	Task       string            // The prompt/description for the agent
-	Role       string            // Role name (e.g. "developer", "verifier")
-	Model      string            // LLM model name; "" = Whale default
-	Tools      []string          // Allowed tool names
-	Workdir    string            // Working directory
-	Timeout    time.Duration
-	MaxIters   int
-	MaxCalls   int
-	MaxTokens  int               // Completion token budget (0 = runner default)
-	OnProgress SubagentProgress  // Real-time progress callback (nil = no streaming)
+	Task         string            // The prompt/description for the agent
+	Role         string            // Role name (e.g. "developer", "verifier")
+	Model        string            // LLM model name; "" = Whale default
+	Tools        []string          // Allowed tool names
+	Workdir      string            // Working directory
+	Timeout      time.Duration
+	MaxIters     int
+	MaxCalls     int
+	MaxTokens    int               // Completion token budget (0 = runner default)
+	OutputSchema map[string]any    // Force structured JSON output (nil = free text)
+	OnProgress   SubagentProgress  // Real-time progress callback (nil = no streaming)
 }
 
 // SubagentResponse contains the result of a subagent execution.
 type SubagentResponse struct {
-	SpawnerType     string // "adapter" or "shell" — which spawner was used
-	Output          string // Full agent output
+	SpawnerType     string         // "adapter" or "shell" — which spawner was used
+	Output          string         // Full agent output
+	Structured      any    // Structured output (when OutputSchema was set)
 	ExitCode        int
 	Success         bool
-	UsagePrompt     int    // prompt tokens consumed
-	UsageCompletion int    // completion tokens consumed
-	Diagnostic      string // detailed debug info (tool resolution, status, errors)
+	UsagePrompt     int            // prompt tokens consumed
+	UsageCompletion int            // completion tokens consumed
+	Diagnostic      string         // detailed debug info (tool resolution, status, errors)
 }
 
 // AgentRunner executes prompts through a Whale subagent.
@@ -243,6 +246,7 @@ func (ar *AgentRunner) RunVerifier(prompt, workdir string, timeout time.Duration
 			Stderr:          resp.Diagnostic,
 		DurationSeconds: round(elapsed, 2),
 		Success:         resp.Success,
+		Structured:      resp.Structured,
 		UsagePrompt:     resp.UsagePrompt,
 		UsageCompletion: resp.UsageCompletion,
 	}
@@ -265,6 +269,25 @@ func (ar *AgentRunner) RunDecomposer(prompt, workdir string, timeout time.Durati
 		Timeout:  timeout,
 		MaxIters: 15,
 		MaxCalls: 40,
+		OutputSchema: map[string]any{
+			"type": "array",
+			"items": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"title":              map[string]any{"type": "string"},
+					"description":        map[string]any{"type": "string"},
+					"role":               map[string]any{"type": "string"},
+					"batch_id":           map[string]any{"type": "string"},
+					"batch_label":        map[string]any{"type": "string"},
+					"depends_on_batch":   map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+					"depends_on_index":   map[string]any{"type": "integer"},
+					"verifier_focus":     map[string]any{"type": "string"},
+					"use_dw":             map[string]any{"type": "boolean"},
+					"max_cycles":         map[string]any{"type": "integer"},
+				},
+				"required": []string{"title", "description", "role"},
+			},
+		},
 	}
 	if len(model) > 0 && model[0] != "" {
 		req.Model = model[0]
@@ -301,6 +324,7 @@ func (ar *AgentRunner) RunDecomposer(prompt, workdir string, timeout time.Durati
 			Stderr:          resp.Diagnostic,
 		DurationSeconds: round(elapsed, 2),
 		Success:         resp.Success,
+		Structured:      resp.Structured,
 		UsagePrompt:     resp.UsagePrompt,
 		UsageCompletion: resp.UsageCompletion,
 	}

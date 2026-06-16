@@ -271,6 +271,18 @@ func (p *Planner) decomposeInternal(goal string, workdir string, timeout time.Du
 			return nil, "", fmt.Errorf("leader returned empty output after %d attempts", maxRetries+1)
 		}
 
+
+		// If structured output was forced via OutputSchema, use it directly.
+		if result.Structured != nil {
+			tasks, err := structuredToPlanTasks(result.Structured)
+			if err == nil && len(tasks) > 0 {
+				if p.loggers != nil {
+					p.loggers.Engine("leader.decompose: success — %d tasks in plan (structured output)", len(tasks))
+				}
+				return tasks, result.Stdout, nil
+			}
+		}
+
 		tasks, err := ParsePlanTasks(output)
 		if err != nil {
 			if attempt < maxRetries {
@@ -584,6 +596,11 @@ func findJSONArray(s string, requireClose bool) (int, int) {
 func repairJSON(s string) string {
 	s = strings.TrimSpace(s)
 
+	// 0. Fix invalid JSON escape sequences.  Models sometimes emit \\(, \\),
+	//    or other backslash-letter combos that aren't valid JSON escapes.
+	//    Replace them with the literal character (just drop the backslash).
+	s = regexp.MustCompile(`\\([^\"\\/bfnrtu])`).ReplaceAllString(s, "$1")
+
 	// 1. Remove trailing incomplete elements (e.g. trailing comma with no value).
 	s = regexp.MustCompile(`,(\s*)$`).ReplaceAllString(s, "$1")
 
@@ -662,4 +679,19 @@ func countBraces(s string, brace byte) int {
 		}
 	}
 	return count
+}
+
+// structuredToPlanTasks converts the structured output (from OutputSchema)
+// into PlanTask objects.  The runtime already validated the schema, so this
+// is a direct JSON round-trip.
+func structuredToPlanTasks(v any) ([]PlanTask, error) {
+	data, err := json.Marshal(v)
+	if err != nil {
+		return nil, fmt.Errorf("marshal structured: %w", err)
+	}
+	var tasks []PlanTask
+	if err := json.Unmarshal(data, &tasks); err != nil {
+		return nil, fmt.Errorf("unmarshal structured: %w", err)
+	}
+	return tasks, nil
 }
