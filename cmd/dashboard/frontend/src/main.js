@@ -137,7 +137,9 @@ async function loadSubtasks(wsID, mtID) {
     if (newSubtasks.length > 0 && !state.selStId) {
       selectSubtask(newSubtasks[0].id);
     }
-  } catch (_) {}
+  } catch (e) {
+    window.go.main.App.LogFrontend('loadSubtasks: ' + (e.message || e));
+  }
 }
 
 async function loadDialogue(wsID, taskID) {
@@ -149,14 +151,18 @@ async function loadDialogue(wsID, taskID) {
       const dialogue = await window.go.main.App.GetAgentDialogue(wsID, taskID);
       renderDialogue(dialogue);
     }
-  } catch (_) {}
+  } catch (e) {
+    window.go.main.App.LogFrontend('loadDialogue: ' + (e.message || e));
+  }
 }
 
 async function loadFlowchart(wsID, mtID) {
   try {
     const svg = await window.go.main.App.GetLeaderFlowchart(wsID, mtID);
     renderFlowchart(svg);
-  } catch (_) {}
+  } catch (e) {
+    window.go.main.App.LogFrontend('loadFlowchart: ' + (e.message || e));
+  }
 }
 
 function updateUI() {
@@ -279,6 +285,7 @@ function renderSubtasks() {
     list.innerHTML = '<div class="empty"><div class="icon">📋</div>No subtasks</div>';
     return;
   }
+  try {
   let html = '';
   // Determine workspace ID for stop button calls.
   const wsid = state.selMtId ? (getSelMt() ? getSelMt().workspace_id : '') : '';
@@ -329,6 +336,9 @@ function renderSubtasks() {
   list.querySelectorAll('.st').forEach(el => {
     el.onclick = (e) => selectSubtask(el.dataset.id);
   });
+n  } catch (e) {
+    window.go.main.App.LogFrontend('renderSubtasks: ' + (e.message || e));
+    list.innerHTML = '<div class="empty">Render error: ' + (e.message || e) + '</div>';
 }
 
 

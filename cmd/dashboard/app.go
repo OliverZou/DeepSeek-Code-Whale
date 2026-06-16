@@ -339,3 +339,8 @@ func (a *App) GetLeaderPlan(wsID string) []dashboard.AgentDialogueJSON {
 func (a *App) GetLeaderFlowchart(wsID, masterTaskID string) string {
 	return a.mgr.GetLeaderFlowchart(wsID, masterTaskID)
 }
+
+// LogFrontend writes a message from the frontend to the team engine log.
+func (a *App) LogFrontend(msg string) {
+	a.mgr.LogFrontend(msg)
+}

@@ -1769,3 +1769,10 @@ func (m *MultiEngineManager) logResumeDiag(ws *WorkspaceState, format string, ar
 	line := fmt.Sprintf("[%s] dashboard-resume: %s", time.Now().UTC().Format(time.RFC3339), msg)
 	f.WriteString(line + "\n")
 }
+
+// LogFrontend writes a message from the frontend JavaScript to the team engine log.
+func (m *MultiEngineManager) LogFrontend(msg string) {
+	if team_engine.DefaultTeamLog != nil {
+		team_engine.DefaultTeamLog.Log("frontend", msg)
+	}
+}
