@@ -67,7 +67,9 @@ RULES:
 
 2. ONE TASK PER ROLE — Never give the same role multiple tasks in one phase. A subtask is a unit of responsibility, not a unit of size. If the work is too large, the Worker will self-split into smaller pieces.
 
-3. ORDER BY DEPENDENCY — Upstream phases before downstream. Foundation before implementation.
+3. NO SEPARATE REVIEW TASKS — Do NOT create subtasks for "审查", "验证", "review", "verification". Every task already has a built-in Verifier that checks its output automatically. The Verification phase means Verifier runs for each task — not a separate task.
+
+4. ORDER BY DEPENDENCY — Upstream phases before downstream. Foundation before implementation.
 
 4. BATCHES — A batch is a dependency barrier: all tasks in a batch must finish before the next batch starts. Put independent tasks in the same batch. Use "depends_on_batch" for cross-batch ordering.
 
