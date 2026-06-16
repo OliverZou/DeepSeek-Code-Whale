@@ -1464,9 +1464,13 @@ func (e *TeamEngine) PlanAndRun(ctx context.Context, goal, workdir, masterTaskID
 				// Add new child tasks to the batch so RunBatch picks them up.
 				batch.Tasks = append(batch.Tasks, newTasks...)
 				// If new child tasks were created by the escalator, extend the
-				// cycle limit so they get a chance to execute in this run.
-				if recount > 0 && cycle == cycleLimit-1 {
-					cycleLimit++
+				// cycle limit and skip Leader review — child tasks must run
+				// first before the Leader can judge the batch.
+				if recount > 0 {
+					if cycle == cycleLimit-1 {
+						cycleLimit++
+					}
+					continue // skip Leader review, run child tasks next cycle
 				}
 
 				// Write board.md after each batch cycle.
@@ -1775,8 +1779,11 @@ func (e *TeamEngine) runDWCycle(
 			},
 		)
 		batch.Tasks = append(batch.Tasks, newTasks...)
-		if recount > 0 && cycle == cycleLimit-1 {
-			cycleLimit++
+		if recount > 0 {
+			if cycle == cycleLimit-1 {
+				cycleLimit++
+			}
+			continue // skip further processing, run child tasks next cycle
 		}
 
 		// Write board after each cycle.
