@@ -264,7 +264,13 @@ func (b *Toolset) runTeamPlan(ctx context.Context, call core.ToolCall, progress 
 		}
 
 		// Synchronous mode: PlanAndRun handles decompose + execution in one step.
-		batches, err := eng.PlanAndRun(ctx, args.Goal, b.root, masterTask.ID)
+			var batches []*team_engine.Batch
+			existingTasks, _ := eng.DB.ListTasksByMasterTask(masterTask.ID)
+			if len(existingTasks) > 0 {
+				batches, err = eng.ResumeMasterTask(ctx, masterTask.ID, args.Goal, b.root)
+			} else {
+				batches, err = eng.PlanAndRun(ctx, args.Goal, b.root, masterTask.ID)
+			}
 			if err != nil {
 				var s string
 				for _, batch := range batches {
