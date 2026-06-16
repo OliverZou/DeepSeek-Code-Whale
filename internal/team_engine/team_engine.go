@@ -1707,6 +1707,10 @@ func (e *TeamEngine) PlanAndRun(ctx context.Context, goal, workdir, masterTaskID
 		_ = e.Whiteboard.WriteDeliverable(delContent)
 	}
 
+	// Step 5: Leader final summary — collect all outputs and produce
+	// a user-facing summary of what was accomplished.
+	e.writeLeaderSummary(goal, batches, workdir, leader, decomposerTimeout, leaderModel)
+
 	return batches, nil
 }
 
@@ -2609,4 +2613,45 @@ func countTasks(batches []*Batch) int {
 		n += len(b.Tasks)
 	}
 	return n
+}
+
+// writeLeaderSummary asks the Leader to produce a final summary for the user.
+func (e *TeamEngine) writeLeaderSummary(goal string, batches []*Batch, workdir string, leader *Leader, timeout time.Duration, model string) {
+	// Collect all task outputs.
+	var outputs strings.Builder
+	for _, batch := range batches {
+		outputs.WriteString(fmt.Sprintf("\n## Batch: %s\n", batch.LabelOrID()))
+		for _, t := range batch.Tasks {
+			out, err := e.Whiteboard.ReadOutput(t.ID)
+			if err != nil || out == "" {
+				continue
+			}
+			// Truncate long outputs to avoid blowing up the prompt.
+			if len(out) > 2000 {
+				out = out[:2000] + "\n...(truncated)"
+			}
+			outputs.WriteString(fmt.Sprintf("\n### %s (%s)\n%s\n", t.Title, t.Role, out))
+		}
+	}
+
+	prompt := fmt.Sprintf(`You are the Team Leader. The following goal has been fully executed by your team.
+Produce a concise summary for the user covering:
+
+1. What was accomplished (key deliverables)
+2. Which tasks passed and which failed
+3. Where to find the outputs
+
+GOAL:
+%s
+
+TEAM OUTPUTS:
+%s
+
+Write the summary to summary.md in clear, user-friendly language.`, goal, outputs.String())
+
+	result := e.Runner.RunDecomposer(prompt, workdir, timeout, model)
+	if result.Success && result.Stdout != "" {
+		path := filepath.Join(workdir, "summary.md")
+		os.WriteFile(path, []byte(result.Stdout), 0644)
+	}
 }
