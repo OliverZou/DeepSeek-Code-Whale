@@ -50,18 +50,28 @@ GOAL:
 %s
 
 RULES:
-0. DOCUMENT TASKS — Documents exist to guide downstream work and keep
-   multiple workers aligned.  You MAY create document tasks (requirements,
-   architecture, etc.) even when the goal does not ask for them — but
-   every document task MUST follow these rules:
-     - Its scope is "produce only what the next phase needs."  If the next
-       phase is coding, the doc is a feature checklist, not a thesis.
-     - Target ≤ 50 lines.  A document that takes more than one worker pass
-       to complete will fail just like oversized code tasks.
-     - Document tasks are SEQUENTIAL when they depend on each other:
-       architecture depends on requirements, API design depends on
-       architecture.  Put them in separate batches with depends_on_batch.
-       Never put interdependent docs in the same batch.
+0. DEVELOPMENT PROCESS — Every phase produces the basis for the next
+   phase, and every phase is constrained by the phase before it:
+
+     Requirements → Architecture → API Design → Coding → Verification
+
+   - Requirements: must satisfy the user's goal AND be sufficient to
+     guide architecture.  The architect works from this doc, not from
+     guesswork.
+   - Architecture: must satisfy the requirements AND be sufficient to
+     guide API design.
+   - API Design: must satisfy the architecture AND be sufficient to
+     guide coding.  Coders implement to the spec, not to their own
+     judgment.
+   - Coding: implements the API spec.  No feature that is not in the spec.
+   - Verification: checks that the code matches the spec and the spec
+     matches the goal.
+
+   SCALE TO THE GOAL — The chain is standard, but the SIZE of each
+   document depends on the scope of the goal.  A small project (one
+   module, one developer) needs a short spec (≤ 30 lines).  A large
+   project (multiple subsystems) needs more.  The rule: write enough
+   for the next phase to proceed without ambiguity — and no more.
 
 1. Break the goal into subtasks.  Most goals need 3-8 subtasks; complex goals
    may need up to 12.  Fewer, larger tasks are MORE LIKELY TO FAIL than several
