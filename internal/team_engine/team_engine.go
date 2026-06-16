@@ -1231,23 +1231,23 @@ func (e *TeamEngine) PlanAndRun(ctx context.Context, goal, workdir, masterTaskID
 	decomposerTimeout := time.Duration(e.Router.ResolveDecomposerTimeout()) * time.Second
 	leaderModel := e.Router.ResolveModel("planner")
 	if DefaultTeamLog != nil {
-		DefaultTeamLog.Log("plan", "plan: decompose starting model=%s", leaderModel)
+		DefaultTeamLog.Log("plan", "plan: decompose START model=%s", leaderModel)
 	}
 	planTasks, err := leader.Decompose(goal, workdir, decomposerTimeout, leaderModel)
 	if err != nil {
 		if DefaultTeamLog != nil {
-			DefaultTeamLog.Log("plan", "plan: decompose FAILED: %v", err)
+			DefaultTeamLog.Log("plan", "plan: decompose FAIL: %v", err)
 		}
 		return nil, fmt.Errorf("decompose goal: %w", err)
 	}
 	if len(planTasks) == 0 {
 		if DefaultTeamLog != nil {
-			DefaultTeamLog.Log("plan", "plan: decompose returned empty plan")
+			DefaultTeamLog.Log("plan", "plan: decompose EMPTY")
 		}
 		return nil, fmt.Errorf("plan is empty")
 	}
 	if DefaultTeamLog != nil {
-		DefaultTeamLog.Log("plan", "plan: decompose done — %d tasks in %d batches", len(planTasks), countBatches(planTasks))
+		DefaultTeamLog.Log("plan", "plan: decompose OK: %d tasks in %d batches", len(planTasks), countBatches(planTasks))
 	}
 
 	// Step 1: Group PlanTasks into batches by batch_id.
@@ -1901,23 +1901,23 @@ func (e *TeamEngine) PlanAndRunLegacy(goal, workdir string) ([]*Task, error) {
 	decomposerTimeout := time.Duration(e.Router.ResolveDecomposerTimeout()) * time.Second
 	leaderModel := e.Router.ResolveModel("planner")
 	if DefaultTeamLog != nil {
-		DefaultTeamLog.Log("plan", "plan: decompose starting model=%s", leaderModel)
+		DefaultTeamLog.Log("plan", "plan: decompose START model=%s", leaderModel)
 	}
 	planTasks, err := leader.Decompose(goal, workdir, decomposerTimeout, leaderModel)
 	if err != nil {
 		if DefaultTeamLog != nil {
-			DefaultTeamLog.Log("plan", "plan: decompose FAILED: %v", err)
+			DefaultTeamLog.Log("plan", "plan: decompose FAIL: %v", err)
 		}
 		return nil, fmt.Errorf("decompose goal: %w", err)
 	}
 	if len(planTasks) == 0 {
 		if DefaultTeamLog != nil {
-			DefaultTeamLog.Log("plan", "plan: decompose returned empty plan")
+			DefaultTeamLog.Log("plan", "plan: decompose EMPTY")
 		}
 		return nil, fmt.Errorf("plan is empty")
 	}
 	if DefaultTeamLog != nil {
-		DefaultTeamLog.Log("plan", "plan: decompose done — %d tasks in %d batches", len(planTasks), countBatches(planTasks))
+		DefaultTeamLog.Log("plan", "plan: decompose OK: %d tasks in %d batches", len(planTasks), countBatches(planTasks))
 	}
 
 	var tasks []*Task
