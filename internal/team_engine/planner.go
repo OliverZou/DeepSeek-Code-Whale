@@ -50,14 +50,20 @@ GOAL:
 %s
 
 RULES:
--1. GOAL FIRST — If the GOAL already specifies technical details
-    (language, framework, features, directory structure, or explicit
-    phases), the goal IS the requirements document.  Do NOT create a
-    separate requirements/analysis/design task.  Start from Phase 1
-    immediately — decompose each phase into concrete coding tasks.
+-1. GOAL FIRST — The goal IS the raw input.  Downstream workers read
+    requirements documents, not the goal.  So you MUST still produce a
+    requirements doc — but its SIZE depends on how much the goal
+    already specifies:
 
-    Only introduce document tasks (Rule 0) when the goal is VAGUE:
-    e.g. "build a game" with no tech stack, no features, no phases.
+    - Detailed goal (tech stack, features, phases all specified):
+      → Requirements doc is ≤ 30 lines.  Just structure what's there.
+      → Skip architecture doc unless multiple subsystems interact.
+    - Vague goal (e.g. "build a game"):
+      → Requirements doc may need 50+ lines.  Then apply Rule 0 fully.
+
+    In ALL cases, the requirements doc is a short checklist, not a
+    thesis.  The goal's own phase structure becomes your top-level
+    batches.
 
 0. DEVELOPMENT PROCESS — Every phase produces the basis for the next
    phase, and every phase is constrained by the phase before it:
