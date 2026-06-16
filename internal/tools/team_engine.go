@@ -208,9 +208,7 @@ func (b *Toolset) runTeamPlan(ctx context.Context, call core.ToolCall, progress 
 			// Throttled full sync (max 1 per 2s) after state changes.
 			if event.Type == team_engine.EventStateChanged && time.Since(lastSync) > 2*time.Second {
 				lastSync = time.Now()
-				if dc, ok := b.dashboardClient.(*dashboard.Client); ok {
-					pushSyncState(eng, dc, b.root)
-				}
+				pushSyncState(eng, b.dashboardClient, b.root)
 			}
 		})
 	}
@@ -921,7 +919,9 @@ func tick(ok bool) string {
 
 // pushSyncState builds full master-task + subtask state from the engine
 // and pushes it to the dashboard via WebSocket for cache update.
-func pushSyncState(eng *team_engine.TeamEngine, client *dashboard.Client, workspacePath string) {
+func pushSyncState(eng *team_engine.TeamEngine, client interface {
+	SyncState(mts []dashboard.MasterTaskJSON, sts map[string][]dashboard.SubtaskJSON, wsLabel string)
+}, workspacePath string) {
 	mts, err := eng.DB.ListMasterTasks()
 	if err != nil || len(mts) == 0 {
 		return

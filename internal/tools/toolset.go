@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/usewhale/whale/internal/core"
+	"github.com/usewhale/whale/internal/dashboard"
 	"github.com/usewhale/whale/internal/policy"
 	"github.com/usewhale/whale/internal/skills"
 	"github.com/usewhale/whale/internal/team_engine"
@@ -51,6 +52,7 @@ type Toolset struct {
 	dashboardClient interface {
 		PendingResume() string
 		SendTaskEvent(team_engine.TaskEvent)
+		SyncState(mts []dashboard.MasterTaskJSON, sts map[string][]dashboard.SubtaskJSON, wsLabel string)
 	}
 
 	// auto-exec cancellation
@@ -62,6 +64,7 @@ type Toolset struct {
 func (b *Toolset) SetDashboardClient(c interface {
 	PendingResume() string
 	SendTaskEvent(team_engine.TaskEvent)
+	SyncState(mts []dashboard.MasterTaskJSON, sts map[string][]dashboard.SubtaskJSON, wsLabel string)
 }) {
 	b.dashboardClient = c
 }
