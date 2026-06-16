@@ -846,12 +846,6 @@ func (m *MultiEngineManager) GetSubtasks(wsID, masterTaskID string) []SubtaskJSO
 		log.Printf("dashboard: list subtasks for %s/%s: %v", wsID, masterTaskID, err)
 		return []SubtaskJSON{}
 	}
-	if team_engine.DefaultTeamLog != nil {
-		team_engine.DefaultTeamLog.Log("dashboard", "GetSubtasks: %d tasks from DB for master %s", len(tasks), masterTaskID[:8])
-		for _, t := range tasks {
-			team_engine.DefaultTeamLog.Log("dashboard", "  task %s parent_ids=%v batch=%s state=%s", t.ID[:8], t.ParentIDs, t.BatchID, t.State)
-		}
-	}
 	// If the master task itself is gone, return empty.
 	if mt, _ := ws.Engine.GetMasterTask(masterTaskID); mt == nil {
 		return []SubtaskJSON{}
@@ -885,9 +879,7 @@ func (m *MultiEngineManager) GetSubtasks(wsID, masterTaskID string) []SubtaskJSO
 		for _, pid := range sj.ParentIDs {
 			if parent, ok := nodeMap[pid]; ok {
 				parent.Children = append(parent.Children, *sj)
-				if team_engine.DefaultTeamLog != nil { team_engine.DefaultTeamLog.Log("dashboard", "GetSubtasks: attached child") }
 				hasParent = true
-				if team_engine.DefaultTeamLog != nil { team_engine.DefaultTeamLog.Log("dashboard", "GetSubtasks: parent NOT FOUND for child %s", sj.ID[:8]) }
 			}
 		}
 		if !hasParent {
@@ -903,19 +895,16 @@ func (m *MultiEngineManager) GetSubtasks(wsID, masterTaskID string) []SubtaskJSO
 			Role:        "teamleader",
 			State:       "done",
 			Progress:    100,
-			// leader is a header sibling, not a parent wrapper
 		}
-			for _, r := range roots {
-		if len(r.Children) > 0 {
-			if team_engine.DefaultTeamLog != nil {
-				team_engine.DefaultTeamLog.Log("dashboard", "GetSubtasks: root %q has %d children", r.Title, len(r.Children))
-			}
+		// Diagnostic: verify children are attached to roots.
+		childrenFound := 0
+		for _, r := range roots {
+			childrenFound += len(r.Children)
 		}
-	}
-	if team_engine.DefaultTeamLog != nil {
-		team_engine.DefaultTeamLog.Log("dashboard", "GetSubtasks: %d roots + leader, %d total tasks from DB", len(roots), len(tasks))
-	}
-	return append([]SubtaskJSON{leader}, roots...)
+		if team_engine.DefaultTeamLog != nil {
+			team_engine.DefaultTeamLog.Log("dashboard", "GetSubtasks: %d roots, %d children attached", len(roots), childrenFound)
+		}
+		return append([]SubtaskJSON{leader}, roots...)
 	}
 	return roots
 }
