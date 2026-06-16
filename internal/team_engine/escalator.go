@@ -6,7 +6,9 @@ import (
 	"github.com/usewhale/whale/internal/team_engine/log"
 )
 
-// Escalator handles automatic re-decomposition of tasks that exhausted retries.
+// Escalator is the fallback re-decomposition mechanism.  Workers self-split
+// proactively when a task is too large; Escalator handles the remaining cases:
+// estimation errors, persistent quality failures, and re-split deadlocks.
 // It orchestrates: detect stuck tasks → call Planner.DecomposeTask → re-dispatch.
 type Escalator struct {
 	planner *Planner

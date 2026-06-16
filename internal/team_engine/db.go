@@ -317,6 +317,32 @@ func (tdb *TaskDB) ListTasksByMasterTask(masterTaskID string) ([]*Task, error) {
 	return tasks, rows.Err()
 }
 
+// ListTasksByParent returns tasks whose parent_ids JSON array contains the
+// given parentID.  Used to find self-split children.
+func (tdb *TaskDB) ListTasksByParent(parentID string) ([]*Task, error) {
+	rows, err := tdb.db.Query(
+		`SELECT id, title, description, role, profile, state, max_retries,
+		 retry_count, workdir, parent_ids, artifact_path, verifier_feedback,
+		 verifier_focus, batch_id, master_task_id, created_at, updated_at
+		FROM tasks WHERE parent_ids LIKE ? ORDER BY created_at ASC`,
+		"%\""+parentID+"\"%",
+	)
+	if err != nil {
+		return nil, fmt.Errorf("list tasks by parent: %w", err)
+	}
+	defer rows.Close()
+
+	var tasks []*Task
+	for rows.Next() {
+		task, err := tdb.scanTaskFromRows(rows)
+		if err != nil {
+			return nil, err
+		}
+		tasks = append(tasks, task)
+	}
+	return tasks, rows.Err()
+}
+
 // GetMasterTask retrieves a master task by ID.
 func (tdb *TaskDB) GetMasterTask(id string) (*MasterTask, error) {
 	row := tdb.db.QueryRow(

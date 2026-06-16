@@ -956,6 +956,24 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 		if memCtx, err := e.BuildMemoryContext(task.Role, task.Title); err == nil && memCtx != "" {
 			prompt += memCtx
 		}
+		// Self-split instruction: Worker assesses whether the task fits in
+		// one pass.  If too large, output a split plan instead.
+		prompt += fmt.Sprintf(`
+
+## Self-Split Capability
+Before producing the deliverable, assess whether you can complete this task in a single pass.
+If the task is too large to finish in one output:
+1. Do NOT produce a partial deliverable
+2. Instead, output a split plan starting with the exact line [SPLIT_PLAN]
+3. Follow with a JSON array of 2-3 smaller subtasks, each with:
+   - "title": short title
+   - "description": what this child task should produce
+   - "role": "%s" (same role)
+   - "depends_on_index": -1 or the index of a sibling task (0-based)
+4. The engine will run these child tasks, then call you back to assemble the final deliverable
+5. Do NOT nest further — you can only split into ONE level of children
+
+If the task fits in one pass, produce the deliverable normally (no [SPLIT_PLAN] marker).`, task.Role)
 		if err := e.Whiteboard.InitTask(task.ID, prompt); err != nil {
 			return false, fmt.Errorf("init whiteboard: %w", err)
 		}
@@ -1034,6 +1052,35 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 			}
 		}
 		if DefaultTeamLog != nil { DefaultTeamLog.WorkerDone(task.ID, result.DurationSeconds, result.ExitCode, len(result.Stdout), result.Success) }
+
+		// Self-split: if Worker output starts with [SPLIT_PLAN], create
+		// child tasks instead of proceeding to verification.
+		if result.Success && strings.HasPrefix(strings.TrimSpace(result.Stdout), "[SPLIT_PLAN]") {
+			splitJSON := strings.TrimPrefix(strings.TrimSpace(result.Stdout), "[SPLIT_PLAN]")
+			childPlan, err := ParsePlanTasks(splitJSON)
+			if err == nil && len(childPlan) > 0 {
+				if DefaultTeamLog != nil {
+					DefaultTeamLog.Log("task", "task: %s self-split into %d children", task.ID[:8], len(childPlan))
+				}
+				for _, pt := range childPlan {
+					child, err := e.CreateTask(pt.Title, pt.Description, task.Role, task.Profile, []string{task.ID}, 0, workdir, pt.VerifierFocus, task.BatchID, task.MasterTaskID)
+					if err != nil {
+						if DefaultTeamLog != nil {
+							DefaultTeamLog.Log("task", "task: %s child create failed: %v", task.ID[:8], err)
+						}
+						continue
+					}
+					child.BatchID = task.BatchID
+					child.MasterTaskID = task.MasterTaskID
+					_ = e.DB.UpdateTask(child.ID, map[string]interface{}{"batch_id": task.BatchID, "master_task_id": task.MasterTaskID})
+					if DefaultTeamLog != nil { DefaultTeamLog.Log("task", "task: %s child %s created", task.ID[:8], child.ID[:8]) }
+				}
+				// Mark parent as done (children carry the work forward).
+				_ = e.DB.TransitionState(taskID, TaskStateDone, "", "self-split into children")
+				e.fireEvent(TaskEvent{Type: EventStateChanged})
+				return true, nil
+			}
+		}
 
 		// Coding Harness: collect git diff after worker completes.
 		if hasWorktree {
@@ -1449,6 +1496,19 @@ func (e *TeamEngine) PlanAndRun(ctx context.Context, goal, workdir, masterTaskID
 				if err := e.RunBatch(execCtx, batch); err != nil {
 					e.saveCheckpoint(masterTaskID, completedBatches, passedBatches, completedBatchOutputs, batches)
 					return batches, fmt.Errorf("run batch %s cycle %d: %w", batch.ID, cycle, err)
+				}
+
+				// Pick up self-split children for the next cycle.
+				for _, t := range batch.Tasks {
+					children, err := e.DB.ListTasksByParent(t.ID)
+					if err == nil && len(children) > 0 {
+						for _, child := range children {
+							if child.State == TaskStatePending || child.State == TaskStateAssigned {
+								_ = e.DB.UpdateTask(child.ID, map[string]interface{}{"batch_id": batch.ID, "master_task_id": t.MasterTaskID})
+								batch.Tasks = append(batch.Tasks, child)
+							}
+						}
+					}
 				}
 
 				// Loop-until-dry: collect findings, exit when no new ones for 2 cycles.
