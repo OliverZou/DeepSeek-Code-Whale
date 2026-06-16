@@ -851,6 +851,10 @@ func (m *MultiEngineManager) GetMasterTasks() []MasterTaskJSON {
 					activeCount++
 				}
 			}
+			// Master task is "running" but between batches: still active.
+			if activeCount == 0 && mt.Status == "running" && online {
+				activeCount = 1
+			}
 			out = append(out, MasterTaskJSON{
 				ID:             mt.ID,
 				Goal:           mt.Goal,

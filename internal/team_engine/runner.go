@@ -12,12 +12,16 @@ import (
 // Token budget helpers
 // ---------------------------------------------------------------------------
 
+// defaultMaxTokens is the minimum completion budget when no explicit
+// limit is set.  DeepSeek models need this floor — otherwise they
+// default to a very small output window, causing truncated plans.
+const defaultMaxTokens = 32000
+
 func effectiveMaxTokens(requested int, model string) int {
 	if requested > 0 {
 		return requested
 	}
-	return 0 // let the model/provider decide
-	return 0
+	return defaultMaxTokens
 }
 
 // isDeepSeekModel returns true for DeepSeek-family models.

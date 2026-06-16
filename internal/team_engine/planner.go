@@ -53,11 +53,19 @@ GOAL:
 
 RULES:
 
-1. DEVELOPMENT CHAIN — Each phase feeds the next. Workers see ONLY the output of the previous phase, never the original goal:
+1. DEVELOPMENT CHAIN — Every standard project MUST go through these phases in order. Each phase feeds the next. Workers see ONLY the output of the previous phase, never the original goal:
 
      Requirements → Architecture → API Design → Coding → Verification
 
-2. SPLIT BY ROLE — Assign each subtask to ONE role. A subtask is a unit of responsibility, not a unit of size. Worker agents handle their own size management — they can self-split if a task is too large. Your job is to assign the right person to the right job.
+   - Requirements: structured spec the architect works from (not guesswork)
+   - Architecture: system design, module layout, tech decisions
+   - API Design: interface contracts the coders implement
+   - Coding: implements the spec, no extra features
+   - Verification: checks code ↔ spec ↔ requirements
+
+   Produce AT LEAST one subtask per phase. Skip only if the goal is trivially small.
+
+2. SPLIT BY ROLE — Assign each subtask to ONE role from your team. A subtask is a unit of responsibility, not a unit of size. Worker agents handle their own size management — they can self-split if a task is too large.
 
 3. ORDER BY DEPENDENCY — Upstream phases before downstream. Foundation before implementation.
 
