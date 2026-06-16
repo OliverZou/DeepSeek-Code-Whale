@@ -97,6 +97,18 @@ func (b *Toolset) AutoExecuteMasterTask(masterTaskID string) {
 			b.autoExecCancelMu.Unlock()
 		}()
 
+			// Forward events and sync state to dashboard during auto-resume.
+			if b.dashboardClient != nil {
+				var lastSync time.Time
+				eng.OnEvent(func(event team_engine.TaskEvent) {
+					b.dashboardClient.SendTaskEvent(event)
+					if (event.Type == team_engine.EventStateChanged || event.Type == team_engine.EventAgentLog) && time.Since(lastSync) > 2*time.Second {
+						lastSync = time.Now()
+						pushSyncState(eng, b.dashboardClient, b.root)
+					}
+				})
+			}
+
 		batches, err := eng.ResumeMasterTask(ctx, masterTaskID, mt.Goal, workdir)
 		if eng.Loggers != nil {
 			eng.Loggers.Engine("dashboard-resume: masterTask=%s goal=%q batches=%d err=%v",
