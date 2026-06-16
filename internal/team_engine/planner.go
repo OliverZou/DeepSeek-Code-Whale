@@ -63,9 +63,9 @@ RULES:
    - Coding: implements the spec, no extra features
    - Verification: checks code ↔ spec ↔ requirements
 
-   Produce AT LEAST one subtask per phase. Skip only if the goal is trivially small.
+   Produce EXACTLY ONE subtask per role per phase. If a phase needs multiple documents, assign ONE role and let the Worker self-split.
 
-2. SPLIT BY ROLE — Assign each subtask to ONE role from your team. A subtask is a unit of responsibility, not a unit of size. Worker agents handle their own size management — they can self-split if a task is too large.
+2. ONE TASK PER ROLE — Never give the same role multiple tasks in one phase. A subtask is a unit of responsibility, not a unit of size. If the work is too large, the Worker will self-split into smaller pieces.
 
 3. ORDER BY DEPENDENCY — Upstream phases before downstream. Foundation before implementation.
 

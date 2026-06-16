@@ -1057,10 +1057,11 @@ If the task fits in one pass (~200 lines or fewer), produce the deliverable norm
 		}
 		if DefaultTeamLog != nil { DefaultTeamLog.WorkerDone(task.ID, result.DurationSeconds, result.ExitCode, len(result.Stdout), result.Success) }
 
-		// Self-split: if Worker output starts with [SPLIT_PLAN], create
-		// child tasks instead of proceeding to verification.
-		if result.Success && strings.HasPrefix(strings.TrimSpace(result.Stdout), "[SPLIT_PLAN]") {
-			splitJSON := strings.TrimPrefix(strings.TrimSpace(result.Stdout), "[SPLIT_PLAN]")
+		// Self-split: search for [SPLIT_PLAN] anywhere in Worker output.
+		const splitMarker = "[SPLIT_PLAN]"
+		if result.Success && strings.Contains(result.Stdout, splitMarker) {
+			idx := strings.Index(result.Stdout, splitMarker)
+			splitJSON := result.Stdout[idx+len(splitMarker):]
 			childPlan, err := ParsePlanTasks(splitJSON)
 			if err == nil && len(childPlan) > 0 {
 				if DefaultTeamLog != nil {
