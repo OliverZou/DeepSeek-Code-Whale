@@ -53,6 +53,14 @@ func isReasoningModel(model string) bool {
 	return strings.Contains(lower, "v4-pro") || strings.Contains(lower, "opus")
 }
 
+// supportsStructuredOutput returns true for models that support the
+// structured_output tool.  DeepSeek models don't; Claude models do.
+func supportsStructuredOutput(model string) bool {
+	lower := strings.ToLower(model)
+	// Claude models support structured output; DeepSeek doesn't.
+	return strings.Contains(lower, "claude") || strings.Contains(lower, "sonnet") || strings.Contains(lower, "opus") || strings.Contains(lower, "haiku") || strings.Contains(lower, "fable")
+}
+
 // ---------------------------------------------------------------------------
 // AgentRunner — stateless subagent execution
 // ---------------------------------------------------------------------------
@@ -286,6 +294,11 @@ func (ar *AgentRunner) RunDecomposer(prompt, workdir string, timeout time.Durati
 	}
 	if len(model) > 0 && model[0] != "" {
 		req.Model = model[0]
+	}
+	if !supportsStructuredOutput(req.Model) {
+		// Fall back to text JSON parsing for models that don't support
+		// the structured_output tool (e.g. DeepSeek).
+		req.OutputSchema = nil
 	}
 	// Decomposer needs a larger budget than the generic ReasoningMaxTokens.
 	// Use ReasoningDecomposerMaxTokens for reasoning models so the
