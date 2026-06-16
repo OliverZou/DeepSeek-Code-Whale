@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/usewhale/whale/internal/core"
+	"github.com/usewhale/whale/internal/dashboard"
 	"github.com/usewhale/whale/internal/team_engine"
 )
 
@@ -201,8 +202,16 @@ func (b *Toolset) runTeamPlan(ctx context.Context, call core.ToolCall, progress 
 
 	// Forward engine events to dashboard for real-time UI updates.
 	if b.dashboardClient != nil {
+		var lastSync time.Time
 		eng.OnEvent(func(event team_engine.TaskEvent) {
 			b.dashboardClient.SendTaskEvent(event)
+			// Throttled full sync (max 1 per 2s) after state changes.
+			if event.Type == team_engine.EventStateChanged && time.Since(lastSync) > 2*time.Second {
+				lastSync = time.Now()
+				if dc, ok := b.dashboardClient.(*dashboard.Client); ok {
+					pushSyncState(eng, dc, b.root)
+				}
+			}
 		})
 	}
 
@@ -908,4 +917,23 @@ func tick(ok bool) string {
 		return "+"
 	}
 	return "-"
+}
+
+// pushSyncState builds full master-task + subtask state from the engine
+// and pushes it to the dashboard via WebSocket for cache update.
+func pushSyncState(eng *team_engine.TeamEngine, client *dashboard.Client, workspacePath string) {
+	mts, err := eng.DB.ListMasterTasks()
+	if err != nil || len(mts) == 0 {
+		return
+	}
+	var masterTasks []dashboard.MasterTaskJSON
+	subtaskMap := make(map[string][]dashboard.SubtaskJSON)
+	for _, mt := range mts {
+		tasks, _ := eng.DB.ListTasksByMasterTask(mt.ID)
+		mj := dashboard.BuildMasterTaskJSON(mt, tasks, true)
+		mj.WorkspacePath = workspacePath
+		masterTasks = append(masterTasks, mj)
+		subtaskMap[mt.ID] = dashboard.BuildSubtaskJSON(tasks)
+	}
+	client.SyncState(masterTasks, subtaskMap, filepath.Base(workspacePath))
 }
