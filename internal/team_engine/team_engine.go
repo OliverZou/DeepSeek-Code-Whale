@@ -898,6 +898,9 @@ func (e *TeamEngine) AssignTask(taskID string) error {
 // Returns true if the task reached done, false otherwise.
 func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 	// Phase 0: Initial state check and assignment (under lock).
+	if DefaultTeamLog != nil {
+		DefaultTeamLog.Log("task", "task: %s start", taskID[:8])
+	}
 	e.mu.Lock()
 	task, err := e.DB.GetTask(taskID)
 	if err != nil {
@@ -1227,12 +1230,24 @@ func (e *TeamEngine) PlanAndRun(ctx context.Context, goal, workdir, masterTaskID
 	})
 	decomposerTimeout := time.Duration(e.Router.ResolveDecomposerTimeout()) * time.Second
 	leaderModel := e.Router.ResolveModel("planner")
+	if DefaultTeamLog != nil {
+		DefaultTeamLog.Log("plan", "plan: decompose starting model=%s", leaderModel)
+	}
 	planTasks, err := leader.Decompose(goal, workdir, decomposerTimeout, leaderModel)
 	if err != nil {
+		if DefaultTeamLog != nil {
+			DefaultTeamLog.Log("plan", "plan: decompose FAILED: %v", err)
+		}
 		return nil, fmt.Errorf("decompose goal: %w", err)
 	}
 	if len(planTasks) == 0 {
+		if DefaultTeamLog != nil {
+			DefaultTeamLog.Log("plan", "plan: decompose returned empty plan")
+		}
 		return nil, fmt.Errorf("plan is empty")
+	}
+	if DefaultTeamLog != nil {
+		DefaultTeamLog.Log("plan", "plan: decompose done — %d tasks in %d batches", len(planTasks), countBatches(planTasks))
 	}
 
 	// Step 1: Group PlanTasks into batches by batch_id.
@@ -1320,6 +1335,12 @@ func (e *TeamEngine) PlanAndRun(ctx context.Context, goal, workdir, masterTaskID
 		batches = append(batches, batch)
 	}
 
+	if DefaultTeamLog != nil {
+		for _, batch := range batches {
+			DefaultTeamLog.Log("plan", "plan: batch %s created — %d tasks", batch.LabelOrID(), len(batch.Tasks))
+		}
+		DefaultTeamLog.Log("plan", "plan: %d batches ready, starting execution", len(batches))
+	}
 	// Notify dashboard that tasks have been created.
 	e.fireEvent(TaskEvent{Type: EventStateChanged})
 
@@ -1879,12 +1900,24 @@ func (e *TeamEngine) PlanAndRunLegacy(goal, workdir string) ([]*Task, error) {
 	})
 	decomposerTimeout := time.Duration(e.Router.ResolveDecomposerTimeout()) * time.Second
 	leaderModel := e.Router.ResolveModel("planner")
+	if DefaultTeamLog != nil {
+		DefaultTeamLog.Log("plan", "plan: decompose starting model=%s", leaderModel)
+	}
 	planTasks, err := leader.Decompose(goal, workdir, decomposerTimeout, leaderModel)
 	if err != nil {
+		if DefaultTeamLog != nil {
+			DefaultTeamLog.Log("plan", "plan: decompose FAILED: %v", err)
+		}
 		return nil, fmt.Errorf("decompose goal: %w", err)
 	}
 	if len(planTasks) == 0 {
+		if DefaultTeamLog != nil {
+			DefaultTeamLog.Log("plan", "plan: decompose returned empty plan")
+		}
 		return nil, fmt.Errorf("plan is empty")
+	}
+	if DefaultTeamLog != nil {
+		DefaultTeamLog.Log("plan", "plan: decompose done — %d tasks in %d batches", len(planTasks), countBatches(planTasks))
 	}
 
 	var tasks []*Task
@@ -2390,4 +2423,16 @@ func findingsAreSame(prev, curr []Finding) bool {
 		}
 	}
 	return false
+}
+
+func countBatches(tasks []PlanTask) int {
+	seen := make(map[string]bool)
+	for _, t := range tasks {
+		bid := t.BatchID
+		if bid == "" {
+			bid = "default"
+		}
+		seen[bid] = true
+	}
+	return len(seen)
 }
