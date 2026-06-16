@@ -229,7 +229,8 @@ func (m *MultiEngineManager) startBridgeFanOut() {
 					continue
 				}
 				if team_engine.DefaultTeamLog != nil {
-					team_engine.DefaultTeamLog.Log("bridge", "dashboard → ws: topic=%s type=%s writers=%d", be.Topic, be.Event.Type, len(m.bridgeWriters))
+					payloadStr := formatPayload(be.Event.Payload)
+			team_engine.DefaultTeamLog.Log("bridge", "dashboard → ws: topic=%s type=%s writers=%d payload=%s", be.Topic, be.Event.Type, len(m.bridgeWriters), payloadStr)
 				}
 				m.bridgeWritersMu.Lock()
 				for wsID, ch := range m.bridgeWriters {
@@ -320,7 +321,8 @@ func (m *MultiEngineManager) HandleWebSocket(w http.ResponseWriter, r *http.Requ
 			var be eventbus.BridgedEvent
 			if err := json.Unmarshal(msg, &be); err == nil && be.Topic != "" {
 				if team_engine.DefaultTeamLog != nil {
-					team_engine.DefaultTeamLog.Log("bridge", "dashboard ← ws(%s): topic=%s type=%s", wsID, be.Topic, be.Event.Type)
+					payloadStr := formatPayload(be.Event.Payload)
+			team_engine.DefaultTeamLog.Log("bridge", "dashboard ← ws(%s): topic=%s type=%s payload=%s", wsID, be.Topic, be.Event.Type, payloadStr)
 				}
 				select {
 				case bridgeIn <- be:

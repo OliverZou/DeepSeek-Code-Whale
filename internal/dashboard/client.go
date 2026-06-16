@@ -3,6 +3,7 @@
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -162,7 +163,8 @@ func (c *Client) wsLoop() {
 						return
 					}
 					if team_engine.DefaultTeamLog != nil {
-						team_engine.DefaultTeamLog.Log("bridge", "cli → dashboard: topic=%s type=%s", be.Topic, be.Event.Type)
+						payloadStr := formatPayload(be.Event.Payload)
+						team_engine.DefaultTeamLog.Log("bridge", "cli → dashboard: topic=%s type=%s payload=%s", be.Topic, be.Event.Type, payloadStr)
 					}
 					data, err := json.Marshal(be)
 					if err != nil {
@@ -207,7 +209,8 @@ func (c *Client) wsLoop() {
 			var be eventbus.BridgedEvent
 			if err := json.Unmarshal(msg, &be); err == nil && be.Topic != "" {
 				if team_engine.DefaultTeamLog != nil {
-					team_engine.DefaultTeamLog.Log("bridge", "cli ← dashboard: topic=%s type=%s", be.Topic, be.Event.Type)
+					payloadStr := formatPayload(be.Event.Payload)
+					team_engine.DefaultTeamLog.Log("bridge", "cli ← dashboard: topic=%s type=%s payload=%s", be.Topic, be.Event.Type, payloadStr)
 				}
 				select {
 				case bridgeIn <- be:
@@ -288,3 +291,20 @@ func (c *Client) SendTaskEvent(event team_engine.TaskEvent) {
 	conn.WriteMessage(websocket.TextMessage, data)
 }
 
+
+// formatPayload returns a compact string representation of an event payload
+// for bridge logging.  Truncates to 120 chars to avoid log bloat.
+func formatPayload(payload interface{}) string {
+	if payload == nil {
+		return "{}"
+	}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Sprintf("<marshal err: %v>", err)
+	}
+	s := string(data)
+	if len(s) > 120 {
+		s = s[:117] + "..."
+	}
+	return s
+}

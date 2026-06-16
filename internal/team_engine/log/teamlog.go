@@ -75,7 +75,7 @@ func (t *TeamLog) write(cat, format string, args ...interface{}) {
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	ts := time.Now().UTC().Format(time.RFC3339)
+	ts := time.Now().Format(time.RFC3339)
 	msg := fmt.Sprintf(format, args...)
 	line := fmt.Sprintf("[%s] [%s] %s\n", ts, cat, msg)
 	if t.f != nil {

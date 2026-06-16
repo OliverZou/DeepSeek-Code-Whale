@@ -75,7 +75,7 @@ func (l *Loggers) Engine(format string, args ...interface{}) {
 	if l.engineLog == nil {
 		return
 	}
-	ts := time.Now().UTC().Format(time.RFC3339)
+	ts := time.Now().Format(time.RFC3339)
 	msg := fmt.Sprintf(format, args...)
 	fmt.Fprintf(l.engineLog, "[%s] %s\n", ts, msg)
 }
@@ -121,7 +121,7 @@ func (l *Loggers) LogAgent(role, taskID string, round int, prompt, response stri
 	var sb strings.Builder
 
 	sb.WriteString(fmt.Sprintf("# %s Log — %s round %d\n\n", strings.Title(role), taskID, round))
-	sb.WriteString(fmt.Sprintf("**Time**: %s\n", time.Now().UTC().Format(time.RFC3339)))
+	sb.WriteString(fmt.Sprintf("**Time**: %s\n", time.Now().Format(time.RFC3339)))
 	sb.WriteString(fmt.Sprintf("**Duration**: %.1fs\n", dur.Seconds()))
 	if exitCode != 0 || err != nil {
 		sb.WriteString(fmt.Sprintf("**Exit**: %d\n", exitCode))
@@ -160,7 +160,7 @@ func (l *Loggers) LogTaskFeedback(taskID, kind string, round int, content string
 
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("# %s Feedback — round %d\n\n", strings.Title(kind), round))
-	sb.WriteString(fmt.Sprintf("**Time**: %s\n\n", time.Now().UTC().Format(time.RFC3339)))
+	sb.WriteString(fmt.Sprintf("**Time**: %s\n\n", time.Now().Format(time.RFC3339)))
 	sb.WriteString(content)
 	sb.WriteString("\n")
 
@@ -186,7 +186,7 @@ func (l *Loggers) LogTaskEvent(taskID, event string, args ...interface{}) {
 	}
 	defer f.Close()
 
-	ts := time.Now().UTC().Format("15:04:05.000")
+	ts := time.Now().Format("15:04:05.000")
 	msg := fmt.Sprintf(event, args...)
 	fmt.Fprintf(f, "| %s | %s |\n", ts, msg)
 }
