@@ -244,6 +244,8 @@ const (
 	EventTaskDone       = "task_done"
 	EventLeaderLog      = "leader_log"
 	EventAgentLog       = "agent_log"
+	EventSyncMasterTasks = "sync_master_tasks"
+	EventSyncSubtasks    = "sync_subtasks"
 
 	// --- Workspace event types ---
 	EventWSRegistered  = "registered"

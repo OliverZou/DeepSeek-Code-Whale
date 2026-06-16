@@ -133,6 +133,10 @@ type MultiEngineManager struct {
 	// dashboardDir is the directory containing the dashboard executable,
 	// used for persisting workspace discovery data (workspaces.json).
 	dashboardDir string
+
+	// workspaceCaches holds in-memory task state synced from whale CLI.
+	// No SQLite reads needed — data arrives via WebSocket sync messages.
+	workspaceCaches map[string]*WorkspaceCache
 }
 
 // OnEngineEvent 注册一个事件回调，当 engine 有任务状态变化时触发。
@@ -334,6 +338,32 @@ func (m *MultiEngineManager) HandleWebSocket(w http.ResponseWriter, r *http.Requ
 			if err != nil {
 				return
 			}
+			// Try sync message first (full state push from CLI).
+			var syncMsg struct {
+				Type         string                   `json:"type"`
+				MasterTasks  []MasterTaskJSON         `json:"master_tasks"`
+				Subtasks     map[string][]SubtaskJSON `json:"subtasks"`
+				WorkspaceID  string                   `json:"workspace_id"`
+			}
+			if json.Unmarshal(msg, &syncMsg) == nil && syncMsg.Type == "sync_full" {
+				m.mu.Lock()
+				if m.workspaceCaches == nil {
+					m.workspaceCaches = make(map[string]*WorkspaceCache)
+				}
+				wc, ok := m.workspaceCaches[wsID]
+				if !ok {
+					wc = NewWorkspaceCache()
+					m.workspaceCaches[wsID] = wc
+				}
+				m.mu.Unlock()
+				wc.ApplySyncMasterTasks(syncMsg.MasterTasks)
+				for mtID, sts := range syncMsg.Subtasks {
+					wc.ApplySyncSubtasks(mtID, sts)
+				}
+				m.BumpUpdateSeq()
+				continue
+			}
+
 			// Try BridgedEvent format first (cross-process EventBus).
 			var be eventbus.BridgedEvent
 			if err := json.Unmarshal(msg, &be); err == nil && be.Topic != "" {
@@ -382,9 +412,10 @@ func (m *MultiEngineManager) fireEngineEvent(event team_engine.TaskEvent) {
 // NewMultiEngineManager creates an empty manager.
 func NewMultiEngineManager(dashboardDir string) *MultiEngineManager {
 	return &MultiEngineManager{
-		states:        make(map[string]*WorkspaceState),
-		dashboardDir:  dashboardDir,
-		bridgeWriters: make(map[string]chan<- []byte),
+		states:          make(map[string]*WorkspaceState),
+		dashboardDir:    dashboardDir,
+		bridgeWriters:   make(map[string]chan<- []byte),
+		workspaceCaches: make(map[string]*WorkspaceCache),
 	}
 }
 
@@ -799,8 +830,44 @@ func (m *MultiEngineManager) GetMasterTasks() []MasterTaskJSON {
 	}
 
 	if team_engine.DefaultTeamLog != nil { team_engine.DefaultTeamLog.Log("dashboard", "GetMasterTasks ENTRY: %d workspaces", len(m.states)) }
+
+	// Read from in-memory cache first (synced via WebSocket from whale CLI).
+	m.mu.RLock()
+	caches := m.workspaceCaches
+	m.mu.RUnlock()
+	if caches != nil {
+		var cached []MasterTaskJSON
+		seen := make(map[string]bool)
+		for _, ws := range m.states {
+			wc := caches[ws.ID]
+			if wc == nil {
+				continue
+			}
+			for id, mt := range wc.MasterTasks {
+				if seen[id] {
+					continue
+				}
+				seen[id] = true
+				mt.WorkspaceOnline = m.isOnline(ws)
+				mt.WorkspaceID = ws.ID
+				mt.WorkspacePath = ws.Path
+				if mt.WorkspaceLabel == "" {
+					mt.WorkspaceLabel = ws.Label
+				}
+				cached = append(cached, *mt)
+			}
+		}
+		if len(cached) > 0 {
+			if team_engine.DefaultTeamLog != nil {
+				team_engine.DefaultTeamLog.Log("dashboard", "GetMasterTasks: %d from cache", len(cached))
+			}
+			return cached
+		}
+	}
+
+	// Fallback: read from DB (legacy path for workspaces without sync).
 	var out []MasterTaskJSON
-	seen := make(map[string]bool) // "path:mtID" dedup key
+	seen := make(map[string]bool)
 	for _, ws := range m.states {
 		log.Printf("dashboard:   ws=%s path=%s engine=%v", ws.ID, ws.Path, ws.Engine != nil)
 		if ws.Engine == nil {
@@ -863,6 +930,17 @@ func (m *MultiEngineManager) GetMasterTasks() []MasterTaskJSON {
 
 // GetSubtasks returns first-level subtasks for a master task.
 func (m *MultiEngineManager) GetSubtasks(wsID, masterTaskID string) []SubtaskJSON {
+	// Read from cache first.
+	m.mu.RLock()
+	wc := m.workspaceCaches[wsID]
+	m.mu.RUnlock()
+	if wc != nil {
+		if sts, ok := wc.Subtasks[masterTaskID]; ok {
+			return sts
+		}
+	}
+
+	// Fallback: read from DB.
 	m.mu.RLock()
 	ws, ok := m.states[wsID]
 	m.mu.RUnlock()

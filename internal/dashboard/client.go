@@ -281,6 +281,30 @@ func (c *Client) IsRegistered() bool {
 	return c.wsID != ""
 }
 
+// SyncState pushes the full master-task and subtask state to the dashboard.
+// Called on connect and after major state changes.
+func (c *Client) SyncState(mts []MasterTaskJSON, sts map[string][]SubtaskJSON, wsLabel string) {
+	c.wsConnMu.Lock()
+	conn := c.wsConn
+	c.wsConnMu.Unlock()
+	if conn == nil {
+		return
+	}
+	// Inject workspace label into master tasks.
+	for i := range mts {
+		mts[i].WorkspaceLabel = wsLabel
+		mts[i].WorkspaceOnline = true
+	}
+	msg, _ := json.Marshal(map[string]interface{}{
+		"type":          "sync_full",
+		"master_tasks":  mts,
+		"subtasks":      sts,
+		"workspace_id":  c.wsID,
+	})
+	conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+	conn.WriteMessage(websocket.TextMessage, msg)
+}
+
 // SendTaskEvent sends a team-engine task event to the dashboard over WebSocket.
 // Non-blocking: if the write would block, the event is dropped to avoid
 // stalling the team engine's event loop.
