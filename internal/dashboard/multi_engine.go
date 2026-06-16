@@ -846,6 +846,12 @@ func (m *MultiEngineManager) GetSubtasks(wsID, masterTaskID string) []SubtaskJSO
 		log.Printf("dashboard: list subtasks for %s/%s: %v", wsID, masterTaskID, err)
 		return []SubtaskJSON{}
 	}
+	if team_engine.DefaultTeamLog != nil {
+		team_engine.DefaultTeamLog.Log("dashboard", "GetSubtasks: %d tasks from DB for master %s", len(tasks), masterTaskID[:8])
+		for _, t := range tasks {
+			team_engine.DefaultTeamLog.Log("dashboard", "  task %s parent_ids=%v batch=%s state=%s", t.ID[:8], t.ParentIDs, t.BatchID, t.State)
+		}
+	}
 	// If the master task itself is gone, return empty.
 	if mt, _ := ws.Engine.GetMasterTask(masterTaskID); mt == nil {
 		return []SubtaskJSON{}
@@ -899,10 +905,14 @@ func (m *MultiEngineManager) GetSubtasks(wsID, masterTaskID string) []SubtaskJSO
 		}
 			for _, r := range roots {
 		if len(r.Children) > 0 {
-			log.Printf("dashboard: GetSubtasks — root %q has %d children", r.Title, len(r.Children))
+			if team_engine.DefaultTeamLog != nil {
+				team_engine.DefaultTeamLog.Log("dashboard", "GetSubtasks: root %q has %d children", r.Title, len(r.Children))
+			}
 		}
 	}
-	log.Printf("dashboard: GetSubtasks — %d roots + leader", len(roots))
+	if team_engine.DefaultTeamLog != nil {
+		team_engine.DefaultTeamLog.Log("dashboard", "GetSubtasks: %d roots + leader, %d total tasks from DB", len(roots), len(tasks))
+	}
 	return append([]SubtaskJSON{leader}, roots...)
 	}
 	return roots
