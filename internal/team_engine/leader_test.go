@@ -60,14 +60,31 @@ func TestExtractJSON(t *testing.T) {
 			want:   "",
 		},
 		{
-			name:   "multiple JSON arrays — greedy matches first-to-last",
+			name:   "multiple JSON arrays — returns first balanced array (not greedy)",
 			input:  `[{"title":"First"}] and then [{"title":"Second"}]`,
-			want:   `[{"title":"First"}] and then [{"title":"Second"}]`,
+			want:   `[{"title":"First"}]`,
 		},
 		{
 			name:   "malformed JSON array — no closing bracket",
 			input:  `[{"title": "Broken"`,
 			want:   "", // no closing ] means no valid JSON array detected
+		},
+		{
+			name: "Go code with array types in description — not confused as JSON",
+			input: `Here is the plan:
+[
+  {"title": "Task 1", "description": "Define Board [15][15]int and Stone type"},
+  {"title": "Task 2", "description": "Use dirs = [4][2]int for directions"}
+]`,
+			want: `[
+  {"title": "Task 1", "description": "Define Board [15][15]int and Stone type"},
+  {"title": "Task 2", "description": "Use dirs = [4][2]int for directions"}
+]`,
+		},
+		{
+			name: "truncated JSON — ParsePlanTasks uses repairJSON path",
+			input: `[{"title": "Incomplete task", "description": "This was cut off`,
+			want: "", // extractJSON requires closing bracket; repairJSON handles it
 		},
 	}
 
@@ -231,6 +248,21 @@ func TestParsePlanTasks(t *testing.T) {
 			name:    "multiple dependencies via depends_on_indices",
 			input:   `[{"title": "Final", "description": "Final step", "role": "dev", "depends_on_indices": [0, 1]}]`,
 			wantLen: 1,
+		},
+		{
+			name:    "truncated JSON — repairJSON closes unclosed strings and brackets",
+			input:   `[{"title": "Incomplete", "role": "dev", "description": "Cut off mid-string`,
+			wantLen: 1,
+		},
+		{
+			name:    "truncated JSON with unclosed object",
+			input:   `[{"title": "First", "role": "dev"}, {"title": "Second", "role": "tester"`,
+			wantLen: 2,
+		},
+		{
+			name:    "Go code in descriptions — not confused by [15][15]int",
+			input:   `[{"title": "Board", "description": "Use Board [15][15]int", "role": "dev"}, {"title": "Dirs", "description": "Use [4][2]int{{0,1}}", "role": "dev"}]`,
+			wantLen: 2,
 		},
 	}
 

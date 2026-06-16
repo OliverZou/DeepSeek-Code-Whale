@@ -472,6 +472,13 @@ OUTPUT FORMAT (pure JSON, no markdown):
 // ParsePlanTasks parses the AI agent's output into a slice of PlanTask.
 func ParsePlanTasks(output string) ([]PlanTask, error) {
 	jsonStr := extractJSON(output)
+	// If no properly-closed JSON array was found, try to extract a
+	// truncated (unclosed) one so repairJSON can attempt recovery.
+	if jsonStr == "" {
+		if start, _ := findJSONArray(output, false); start >= 0 {
+			jsonStr = output[start:]
+		}
+	}
 	if jsonStr == "" {
 		return nil, fmt.Errorf("no JSON found in leader output")
 	}
@@ -506,6 +513,7 @@ func ParsePlanTasks(output string) ([]PlanTask, error) {
 
 // extractJSON finds a JSON array in the AI's output.
 func extractJSON(output string) string {
+	// Prefer code-fenced blocks — the model is instructed to wrap JSON in ```json.
 	re := regexp.MustCompile("(?s)```(?:json)?\\s*\\n?(.*?)\\n?```")
 	allMatches := re.FindAllStringSubmatch(output, -1)
 	for i := len(allMatches) - 1; i >= 0; i-- {
@@ -515,29 +523,143 @@ func extractJSON(output string) string {
 		}
 	}
 
-	re = regexp.MustCompile(`(?s)\[.*\]`)
-	allRaw := re.FindAllString(output, -1)
-	for i := len(allRaw) - 1; i >= 0; i-- {
-		if strings.HasPrefix(allRaw[i], "[") {
-			return allRaw[i]
-		}
+	// Fallback: find the outermost JSON array using balanced bracket counting.
+	// Only return properly closed arrays — truncated arrays are handled by
+	// ParsePlanTasks which calls repairJSON on the raw output.
+	if start, end := findJSONArray(output, true); start >= 0 {
+		return output[start : end+1]
 	}
-
 	return ""
 }
 
-// repairJSON fixes common LLM JSON mistakes.
+// findJSONArray finds the outermost balanced JSON array in s.
+// Returns (start, end) byte offsets of the opening '[' and closing ']',
+// or (-1, -1) if not found.
+// requireClose: if true, only returns when a matching ']' is found.
+func findJSONArray(s string, requireClose bool) (int, int) {
+	depth := 0
+	arrayStart := -1
+	inString := false
+	escaped := false
+
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if escaped {
+			escaped = false
+			continue
+		}
+		if c == '\\' && inString {
+			escaped = true
+			continue
+		}
+		if c == '"' {
+			inString = !inString
+			continue
+		}
+		if inString {
+			continue
+		}
+		if c == '[' {
+			if depth == 0 {
+				arrayStart = i
+			}
+			depth++
+		} else if c == ']' {
+			depth--
+			if depth == 0 && arrayStart >= 0 {
+				return arrayStart, i
+			}
+		}
+	}
+	if requireClose {
+		return -1, -1
+	}
+	if arrayStart >= 0 {
+		return arrayStart, len(s) - 1 // truncated: return to end of string
+	}
+	return -1, -1
+}
+
+// repairJSON fixes common LLM JSON mistakes, including truncated output.
 func repairJSON(s string) string {
-	if idx := strings.LastIndex(s, "]"); idx > 0 {
-		s = s[:idx+1]
+	s = strings.TrimSpace(s)
+
+	// 1. Remove trailing incomplete elements (e.g. trailing comma with no value).
+	s = regexp.MustCompile(`,(\s*)$`).ReplaceAllString(s, "$1")
+
+	// 2. Close unclosed strings — use a state machine to detect whether
+	//    we're inside a string at the end of the truncated output.
+	inString := false
+	escaped := false
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if escaped {
+			escaped = false
+			continue
+		}
+		if c == '\\' && inString {
+			escaped = true
+			continue
+		}
+		if c == '"' {
+			inString = !inString
+		}
 	}
-	s = regexp.MustCompile(`,(\s*[}\]])`).ReplaceAllString(s, "$1")
-	s = regexp.MustCompile(`"\s+"`).ReplaceAllString(s, `", "`)
-	open := strings.Count(s, "[")
-	close := strings.Count(s, "]")
-	for close < open {
+	if inString {
+		s += `"`
+	}
+
+	// 3. Close unclosed objects: count { vs } (ignoring strings).
+	openObj := countBraces(s, '{')
+	closeObj := countBraces(s, '}')
+	for closeObj < openObj {
+		s += "}"
+		closeObj++
+	}
+
+	// 4. Close unclosed arrays: count [ vs ] (ignoring strings).
+	openArr := countBraces(s, '[')
+	closeArr := countBraces(s, ']')
+	for closeArr < openArr {
 		s += "]"
-		close++
+		closeArr++
 	}
+
+	// 5. Remove trailing commas before closing brackets/braces.
+	s = regexp.MustCompile(`,(\s*[}\]])`).ReplaceAllString(s, "$1")
+
+	// 6. Fix consecutive quoted strings (missing comma): "key""key2" → "key", "key2".
+	s = regexp.MustCompile(`"\s+"`).ReplaceAllString(s, `", "`)
+
 	return s
+}
+
+// countBraces counts occurrences of the given brace character in s,
+// ignoring characters inside JSON strings.
+func countBraces(s string, brace byte) int {
+	count := 0
+	inString := false
+	escaped := false
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if escaped {
+			escaped = false
+			continue
+		}
+		if c == '\\' && inString {
+			escaped = true
+			continue
+		}
+		if c == '"' {
+			inString = !inString
+			continue
+		}
+		if inString {
+			continue
+		}
+		if c == brace {
+			count++
+		}
+	}
+	return count
 }
