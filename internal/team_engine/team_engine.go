@@ -2659,3 +2659,34 @@ Write to summary.md. Use clear, professional language. The user should understan
 		os.WriteFile(path, []byte(result.Stdout), 0644)
 	}
 }
+
+// readTeamMemory reads role-specific memory from the team's memory directory.
+func (e *TeamEngine) readTeamMemory(role AgentRole) string {
+	if e.team == nil || e.team.MemoryDir == "" {
+		return ""
+	}
+	path := filepath.Join(e.team.MemoryDir, string(role)+".md")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	if len(data) == 0 {
+		return ""
+	}
+	return fmt.Sprintf("\n\n## 🧠 Team Memory (%s)\n%s\n", role, string(data))
+}
+
+// appendTeamMemory appends new lessons to the role's memory file.
+func (e *TeamEngine) appendTeamMemory(role AgentRole, lesson string) {
+	if e.team == nil || e.team.MemoryDir == "" || lesson == "" {
+		return
+	}
+	os.MkdirAll(e.team.MemoryDir, 0755)
+	path := filepath.Join(e.team.MemoryDir, string(role)+".md")
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	f.WriteString(fmt.Sprintf("\n## %s\n%s\n", time.Now().Format("2006-01-02 15:04"), lesson))
+}

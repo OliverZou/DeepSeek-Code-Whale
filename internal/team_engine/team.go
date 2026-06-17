@@ -15,7 +15,8 @@ type TeamConfig struct {
 	Label  string                 `yaml:"label"`
 	Leader TeamLeaderConfig       `yaml:"leader"`
 	Roles  map[string]TeamRoleConfig `yaml:"roles"`
-	Config *TeamRuntimeConfig     `yaml:"-"` // loaded from config.yaml
+	Config    *TeamRuntimeConfig `yaml:"-"` // loaded from config.yaml
+	MemoryDir string             `yaml:"-"` // memory directory path
 }
 
 // TeamRuntimeConfig is loaded from the team directory's config.yaml.
@@ -117,6 +118,7 @@ func FindTeam(teamsDir, name string) (*TeamConfig, error) {
 		tc, err := LoadTeamConfig(dirPath)
 		if err == nil {
 			tc.Config = loadRuntimeConfig(filepath.Join(teamsDir, name, "config.yaml"))
+			tc.MemoryDir = filepath.Join(teamsDir, name, "memory")
 			return tc, nil
 		}
 	}
