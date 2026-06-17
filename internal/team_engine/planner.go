@@ -53,6 +53,8 @@ GOAL:
 
 RULES:
 
+0. ASSESS BEFORE DECOMPOSING — Simple goals that one worker can complete in a single pass do NOT need the full chain. If the goal is narrow in scope (e.g. "add a login button", "fix a typo", "write a README"), output just ONE task with ONE batch. Do NOT over-decompose. Reserve the full chain for goals that genuinely span multiple roles and phases.
+
 1. DEVELOPMENT CHAIN — Every standard project MUST go through these phases in order. Each phase feeds the next. Workers see ONLY the output of the previous phase, never the original goal:
 
      Requirements → Architecture → API Design → Coding → Verification
