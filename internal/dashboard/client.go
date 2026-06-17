@@ -13,7 +13,7 @@ import (
 	"github.com/gorilla/websocket"
 
 	"github.com/usewhale/whale/internal/eventbus"
-	"github.com/usewhale/whale/internal/team_engine"
+	
 )
 
 const (
@@ -64,25 +64,25 @@ func (c *Client) tryRegister() {
 		bytes.NewReader(payload),
 	)
 	if err != nil {
-team_engine.CLIHeartbeat("", false)
+CLIHeartbeat("", false)
 		return
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-		team_engine.Log("dashboard", "register returned %d: %s", resp.StatusCode, string(body))
+		Log("dashboard", "register returned %d: %s", resp.StatusCode, string(body))
 		return
 	}
 
 	var result map[string]string
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		team_engine.Log("dashboard", "register decode: %v", err)
+		Log("dashboard", "register decode: %v", err)
 		return
 	}
 	c.wsID = result["id"]
-	team_engine.Log("dashboard", "registered as %s (path=%s)", c.wsID, c.workspacePath)
-team_engine.CLIHeartbeat(c.wsID, true)
+	Log("dashboard", "registered as %s (path=%s)", c.wsID, c.workspacePath)
+CLIHeartbeat(c.wsID, true)
 }
 
 
@@ -141,8 +141,8 @@ func (c *Client) wsLoop() {
 		c.wsConnMu.Lock()
 		c.wsConn = conn
 		c.wsConnMu.Unlock()
-		team_engine.Log("dashboard", "ws connected as %s", c.wsID)
-team_engine.CLIWSConnect(c.wsID, nil)
+		Log("dashboard", "ws connected as %s", c.wsID)
+CLIWSConnect(c.wsID, nil)
 
 		// Enable cross-process EventBus bridge.  bridgeOut carries events
 		// published in THIS process (send to dashboard over WebSocket);
@@ -166,7 +166,7 @@ team_engine.CLIWSConnect(c.wsID, nil)
 						continue
 					}
 					if werr := conn.WriteMessage(websocket.TextMessage, data); werr != nil {
-						team_engine.Log("dashboard", "bridge write failed: %v", werr)
+						Log("dashboard", "bridge write failed: %v", werr)
 						// Don't return — a single failed write doesn't mean
 						// the connection is dead.  Continue processing events.
 					}
@@ -207,7 +207,7 @@ team_engine.CLIWSConnect(c.wsID, nil)
 				select {
 				case bridgeIn <- be:
 				default:
-					team_engine.Log("dashboard", "cli bridgeIn full, dropped topic=%s type=%s", be.Topic, be.Event.Type)
+					Log("dashboard", "cli bridgeIn full, dropped topic=%s type=%s", be.Topic, be.Event.Type)
 				}
 				continue
 			}
@@ -221,17 +221,17 @@ team_engine.CLIWSConnect(c.wsID, nil)
 				continue
 			}
 			if body.Command == "resume" && body.MasterTaskID != "" {
-				team_engine.Log("dashboard", "received resume command for master task %s", body.MasterTaskID)
+				Log("dashboard", "received resume command for master task %s", body.MasterTaskID)
 				c.pendingResumeMu.Lock()
 				c.pendingResume = body.MasterTaskID
 				c.pendingResumeMu.Unlock()
 				if c.OnResume != nil {
-team_engine.CLIReceiveResume(body.MasterTaskID)
+CLIReceiveResume(body.MasterTaskID)
 					c.OnResume(body.MasterTaskID)
 				}
 			}
 			if body.Command == "cancel_master" && body.MasterTaskID != "" {
-				team_engine.Log("dashboard", "received cancel command for master task %s", body.MasterTaskID)
+				Log("dashboard", "received cancel command for master task %s", body.MasterTaskID)
 				if c.OnCancel != nil {
 					c.OnCancel(body.MasterTaskID)
 				}
@@ -254,7 +254,7 @@ func (c *Client) Deregister() {
 	if err == nil {
 		resp.Body.Close()
 	}
-	team_engine.Log("dashboard", "deregistered %s", c.wsID)
+	Log("dashboard", "deregistered %s", c.wsID)
 }
 
 // PendingResume returns the master task ID of a pending resume command.
@@ -297,7 +297,7 @@ func (c *Client) SyncState(mts []MasterTaskJSON, sts map[string][]SubtaskJSON, w
 // SendTaskEvent sends a team-engine task event to the dashboard over WebSocket.
 // Non-blocking: if the write would block, the event is dropped to avoid
 // stalling the team engine's event loop.
-func (c *Client) SendTaskEvent(event team_engine.TaskEvent) {
+func (c *Client) SendTaskEvent(event TaskEvent) {
 	c.wsConnMu.Lock()
 	conn := c.wsConn
 	c.wsConnMu.Unlock()
