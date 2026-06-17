@@ -18,6 +18,13 @@ var DefaultTeamLog *teampglog.TeamLog
 
 func SetDefaultTeamLog(tl *teampglog.TeamLog) { DefaultTeamLog = tl }
 
+// Log writes a diagnostic entry.  Safe when DefaultTeamLog is nil.
+func Log(cat, format string, args ...interface{}) {
+	if DefaultTeamLog != nil {
+		DefaultTeamLog.Log(cat, format, args...)
+	}
+}
+
 // defaultSpawnFunc is a package-level fallback spawner, set by the toolset
 // when the app wires in the native subagent adapter.  When non-nil, team
 // engine instances prefer it over ShellSubagentSpawner.

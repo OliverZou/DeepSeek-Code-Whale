@@ -100,7 +100,7 @@ func (b *Toolset) AutoExecuteMasterTask(masterTaskID string) {
 			// Forward events and sync state to dashboard during auto-resume.
 			if b.dashboardClient != nil {
 				var lastSync time.Time
-				eng.OnEvent(func(event team_engine.TaskEvent) { defer func() { if r := recover(); r != nil && team_engine.DefaultTeamLog != nil { team_engine.DefaultTeamLog.Log("sync", "event callback panic: %v", r) } }()
+				eng.OnEvent(func(event team_engine.TaskEvent) { defer func() { if r := recover(); r != nil && team_engine.DefaultTeamLog != nil { team_engine.Log("sync", "event callback panic: %v", r) } }()
 					b.dashboardClient.SendTaskEvent(event)
 					if (event.Type == team_engine.EventStateChanged || event.Type == team_engine.EventAgentLog) && time.Since(lastSync) > 2*time.Second {
 						lastSync = time.Now()
@@ -215,13 +215,13 @@ func (b *Toolset) runTeamPlan(ctx context.Context, call core.ToolCall, progress 
 	// Forward engine events to dashboard for real-time UI updates.
 	if b.dashboardClient != nil {
 		var lastSync time.Time
-		eng.OnEvent(func(event team_engine.TaskEvent) { defer func() { if r := recover(); r != nil && team_engine.DefaultTeamLog != nil { team_engine.DefaultTeamLog.Log("sync", "event callback panic: %v", r) } }()
+		eng.OnEvent(func(event team_engine.TaskEvent) { defer func() { if r := recover(); r != nil && team_engine.DefaultTeamLog != nil { team_engine.Log("sync", "event callback panic: %v", r) } }()
 			b.dashboardClient.SendTaskEvent(event)
 			// Throttled full sync (max 1 per 2s) after state changes.
 			if (event.Type == team_engine.EventStateChanged || event.Type == team_engine.EventAgentLog) && time.Since(lastSync) > 2*time.Second {
 				lastSync = time.Now()
 				if team_engine.DefaultTeamLog != nil {
-					team_engine.DefaultTeamLog.Log("sync", "triggering sync push")
+					team_engine.Log("sync", "triggering sync push")
 				}
 				pushSyncState(eng, b.dashboardClient, b.root)
 			}
@@ -232,7 +232,7 @@ func (b *Toolset) runTeamPlan(ctx context.Context, call core.ToolCall, progress 
 	// Throttled to at most 1 update per 500ms to avoid TUI flickering.
 	if progress != nil {
 		var lastProgress time.Time
-		eng.OnEvent(func(event team_engine.TaskEvent) { defer func() { if r := recover(); r != nil && team_engine.DefaultTeamLog != nil { team_engine.DefaultTeamLog.Log("sync", "event callback panic: %v", r) } }()
+		eng.OnEvent(func(event team_engine.TaskEvent) { defer func() { if r := recover(); r != nil && team_engine.DefaultTeamLog != nil { team_engine.Log("sync", "event callback panic: %v", r) } }()
 			summary := ""
 			switch event.Type {
 			case team_engine.EventStateChanged:
@@ -940,13 +940,13 @@ func pushSyncState(eng *team_engine.TeamEngine, client interface {
 	defer func() {
 		if r := recover(); r != nil {
 			if team_engine.DefaultTeamLog != nil {
-				team_engine.DefaultTeamLog.Log("sync", "pushSyncState panic: %v", r)
+				team_engine.Log("sync", "pushSyncState panic: %v", r)
 			}
 		}
 	}()
 	mts, err := eng.DB.ListMasterTasks()
 	if team_engine.DefaultTeamLog != nil {
-		team_engine.DefaultTeamLog.Log("sync", "pushSyncState: mts=%d err=%v", len(mts), err)
+		team_engine.Log("sync", "pushSyncState: mts=%d err=%v", len(mts), err)
 	}
 	if err != nil || len(mts) == 0 {
 		return

@@ -30,7 +30,7 @@ func NewApp() *App {
 	if exe, err := os.Executable(); err == nil {
 		dashboardDir = filepath.Dir(exe)
 	}
-	team_engine.SetDefaultTeamLog(teampglog.NewTeamLogAt(filepath.Join(dashboardDir, "whale-dashboard.teamlog")))
+	team_engine.SetLogger(teampglog.NewTeamLogAt(filepath.Join(dashboardDir, "whale-dashboard.teamlog")))
 	return &App{
 		mgr:  dashboard.NewMultiEngineManager(dashboardDir),
 		done: make(chan struct{}),
@@ -39,7 +39,7 @@ func NewApp() *App {
 
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
-	team_engine.DefaultTeamLog.Log("startup", "started, DefaultTeamLog=%v", team_engine.DefaultTeamLog != nil)
+	team_engine.Log("startup", "started, DefaultTeamLog=%v", true)
 
 	evtCtx := a.ctx
 	a.mgr.OnEngineEvent(func(event team_engine.TaskEvent) {
@@ -143,7 +143,7 @@ func (a *App) emitUpdate() {
 	}
 	lastUpdateSeq = seq
 	tasks := a.mgr.GetMasterTasks()
-	team_engine.DefaultTeamLog.Log("frontend", "emitUpdate: %d tasks", len(tasks))
+	team_engine.Log("frontend", "emitUpdate: %d tasks", len(tasks))
 	runtime.EventsEmit(a.ctx, "update", tasks)
 }
 
@@ -255,13 +255,13 @@ func (a *App) handleDeregister(w http.ResponseWriter, r *http.Request) {
 
 func (a *App) GetWorkspaces() []dashboard.WorkspaceJSON {
 	result := a.mgr.ListWorkspaces()
-	team_engine.DefaultTeamLog.Log("frontend", "GetWorkspaces called, returned %d", len(result))
+	team_engine.Log("frontend", "GetWorkspaces called, returned %d", len(result))
 	return result
 }
 
 func (a *App) GetTasks(wsID string) []dashboard.TaskJSON {
 	tasks, _ := a.mgr.ListTasks(wsID)
-	team_engine.DefaultTeamLog.Log("frontend", "GetTasks called for %s, returned %d", wsID, len(tasks))
+	team_engine.Log("frontend", "GetTasks called for %s, returned %d", wsID, len(tasks))
 	if tasks == nil {
 		return []dashboard.TaskJSON{}
 	}
@@ -322,7 +322,7 @@ func (a *App) ResumeMasterTask(wsID, masterTaskID string) string {
 
 func (a *App) GetMasterTasks() []dashboard.MasterTaskJSON {
 	result := a.mgr.GetMasterTasks()
-	team_engine.DefaultTeamLog.Log("frontend", "GetMasterTasks called, returned %d tasks", len(result))
+	team_engine.Log("frontend", "GetMasterTasks called, returned %d tasks", len(result))
 	return result
 }
 

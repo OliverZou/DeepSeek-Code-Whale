@@ -6,7 +6,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"net/http"
 	"os"
 	"os/exec"
@@ -188,7 +187,7 @@ func (m *MultiEngineManager) QueueResume(wsID, masterTaskID string) {
 	} else {
 		m.logResumeDiag(ws, "no ws conn for %s (have %d conns)", wsID, len(m.wsConns))
 		for k := range m.wsConns {
-			log.Printf("dashboard:   conn: %s", k)
+			team_engine.Log("dashboard", "  conn: %s", k)
 		}
 	}
 
@@ -242,7 +241,7 @@ func (m *MultiEngineManager) UnregisterWSConn(wsID string) {
 func (m *MultiEngineManager) startBridgeFanOut() {
 	m.bridgeFanOut.Do(func() {
 		bridgeOut, _ := eventbus.EnableGlobalBridge()
-		log.Printf("dashboard: bridge fan-out started")
+		team_engine.Log("dashboard", "bridge fan-out started")
 		go func() {
 			for be := range bridgeOut {
 				data, err := json.Marshal(be)
@@ -251,14 +250,14 @@ func (m *MultiEngineManager) startBridgeFanOut() {
 				}
 				if team_engine.DefaultTeamLog != nil {
 					payloadStr := formatPayload(be.Event.Payload)
-			team_engine.DefaultTeamLog.Log("bridge", "dashboard → ws: topic=%s type=%s writers=%d payload=%s", be.Topic, be.Event.Type, len(m.bridgeWriters), payloadStr)
+			team_engine.Log("bridge", "dashboard → ws: topic=%s type=%s writers=%d payload=%s", be.Topic, be.Event.Type, len(m.bridgeWriters), payloadStr)
 				}
 				m.bridgeWritersMu.Lock()
 				for wsID, ch := range m.bridgeWriters {
 					select {
 					case ch <- data:
 					default:
-						log.Printf("dashboard: bridge fan-out drop for %s (slow consumer)", wsID)
+						team_engine.Log("dashboard", "bridge fan-out drop for %s (slow consumer)", wsID)
 					}
 				}
 				m.bridgeWritersMu.Unlock()
@@ -295,13 +294,13 @@ func (m *MultiEngineManager) HandleWebSocket(w http.ResponseWriter, r *http.Requ
 
 	conn, err := wsUpgrader.Upgrade(w, r, nil)
 	if err != nil {
-		log.Printf("dashboard: ws upgrade for %s: %v", wsID, err)
+		team_engine.Log("dashboard", "ws upgrade for %s: %v", wsID, err)
 		return
 	}
 
 	m.RegisterWSConn(wsID, conn)
 	if team_engine.DefaultTeamLog != nil { team_engine.DefaultTeamLog.DashboardWSConnect(wsID, true, nil) }
-	log.Printf("dashboard: ws connected for workspace %s", wsID)
+	team_engine.Log("dashboard", "ws connected for workspace %s", wsID)
 
 	// Notify eventLoop so the frontend sees WorkspaceOnline=true immediately.
 	eventbus.Global().Publish(eventbus.TopicWorkspace, eventbus.Event{Type: "ws_connected", Payload: map[string]string{"id": wsID}})
@@ -330,7 +329,7 @@ func (m *MultiEngineManager) HandleWebSocket(w http.ResponseWriter, r *http.Requ
 			conn.Close()
 			m.UnregisterWSConn(wsID)
 			if team_engine.DefaultTeamLog != nil { team_engine.DefaultTeamLog.DashboardWSDisconnect(wsID) }
-			log.Printf("dashboard: ws disconnected for workspace %s", wsID)
+			team_engine.Log("dashboard", "ws disconnected for workspace %s", wsID)
 			eventbus.Global().Publish(eventbus.TopicWorkspace, eventbus.Event{Type: "ws_disconnected", Payload: map[string]string{"id": wsID}})
 		}()
 		for {
@@ -369,12 +368,12 @@ func (m *MultiEngineManager) HandleWebSocket(w http.ResponseWriter, r *http.Requ
 			if err := json.Unmarshal(msg, &be); err == nil && be.Topic != "" {
 				if team_engine.DefaultTeamLog != nil {
 					payloadStr := formatPayload(be.Event.Payload)
-			team_engine.DefaultTeamLog.Log("bridge", "dashboard ← ws(%s): topic=%s type=%s payload=%s", wsID, be.Topic, be.Event.Type, payloadStr)
+			team_engine.Log("bridge", "dashboard ← ws(%s): topic=%s type=%s payload=%s", wsID, be.Topic, be.Event.Type, payloadStr)
 				}
 				select {
 				case bridgeIn <- be:
 				default:
-					log.Printf("dashboard: bridgeIn full, dropped topic=%s type=%s from ws=%s", be.Topic, be.Event.Type, wsID)
+					team_engine.Log("dashboard", "bridgeIn full, dropped topic=%s type=%s from ws=%s", be.Topic, be.Event.Type, wsID)
 				}
 				continue
 			}
@@ -439,7 +438,7 @@ func (m *MultiEngineManager) Register(workspacePath string) (*WorkspaceState, er
 				if _, err := os.Stat(dbPath); err == nil {
 					eng, err := team_engine.New(dbPath, wbDir, "", nil)
 					if err != nil {
-						log.Printf("dashboard: lazy open engine for %s: %v", workspacePath, err)
+						team_engine.Log("dashboard", "lazy open engine for %s: %v", workspacePath, err)
 					} else {
 						m.wireEngine(eng)
 						ws.Engine = eng
@@ -459,7 +458,7 @@ func (m *MultiEngineManager) Register(workspacePath string) (*WorkspaceState, er
 	if _, err := os.Stat(dbPath); err == nil {
 		eng, err = team_engine.New(dbPath, wbDir, "", nil)
 		if err != nil {
-			log.Printf("dashboard: open engine for %s: %v", workspacePath, err)
+			team_engine.Log("dashboard", "open engine for %s: %v", workspacePath, err)
 		}
 	}
 	m.wireEngine(eng)
@@ -483,7 +482,7 @@ func (m *MultiEngineManager) Register(workspacePath string) (*WorkspaceState, er
 	}
 	m.states[id] = ws
 	m.saveWorkspacePath(workspacePath)
-	log.Printf("dashboard: registered workspace %s → %s", id, workspacePath)
+	team_engine.Log("dashboard", "registered workspace %s → %s", id, workspacePath)
 	return ws, nil
 }
 
@@ -505,7 +504,7 @@ func (m *MultiEngineManager) Heartbeat(wsID string) error {
 		if _, err := os.Stat(dbPath); err == nil {
 			eng, err := team_engine.New(dbPath, wbDir, "", nil)
 			if err != nil {
-				log.Printf("dashboard: lazy open engine for %s: %v", ws.Path, err)
+				team_engine.Log("dashboard", "lazy open engine for %s: %v", ws.Path, err)
 			} else {
 				m.wireEngine(eng)
 				ws.Engine = eng
@@ -528,7 +527,7 @@ func (m *MultiEngineManager) Deregister(wsID string) error {
 		_ = ws.Engine.Close()
 	}
 	delete(m.states, wsID)
-	log.Printf("dashboard: deregistered workspace %s (%s)", wsID, ws.Label)
+	team_engine.Log("dashboard", "deregistered workspace %s (%s)", wsID, ws.Label)
 	return nil
 }
 
@@ -556,7 +555,7 @@ func (m *MultiEngineManager) LoadEngineByPath(workspacePath string) error {
 			}
 			m.wireEngine(eng)
 			ws.Engine = eng
-			log.Printf("dashboard: LoadEngineByPath (re)loaded %s", workspacePath)
+			team_engine.Log("dashboard", "LoadEngineByPath (re)loaded %s", workspacePath)
 			return nil
 		}
 	}
@@ -605,14 +604,14 @@ func (m *MultiEngineManager) saveWorkspacePath(workspacePath string) {
 func (m *MultiEngineManager) LoadWorkspacePaths() []string {
 	paths, err := m.readWorkspacePaths()
 	if err != nil {
-		log.Printf("dashboard: LoadWorkspacePaths read error: %v", err)
+		team_engine.Log("dashboard", "LoadWorkspacePaths read error: %v", err)
 	}
 	if len(paths) == 0 {
-		log.Printf("dashboard: LoadWorkspacePaths: 0 paths in workspaces.json")
+		team_engine.Log("dashboard", "LoadWorkspacePaths: 0 paths in workspaces.json")
 		return nil
 	}
 	if team_engine.DefaultTeamLog != nil {
-		team_engine.DefaultTeamLog.Log("dashboard", "LoadWorkspacePaths: %d paths from workspaces.json", len(paths))
+		team_engine.Log("dashboard", "LoadWorkspacePaths: %d paths from workspaces.json", len(paths))
 	}
 
 	// Normalize and deduplicate (historical file may have stale paths).
@@ -628,7 +627,7 @@ func (m *MultiEngineManager) LoadWorkspacePaths() []string {
 
 		// Register is idempotent and will try to open the engine db.
 		if _, err := m.Register(p); err != nil {
-			log.Printf("dashboard: load historical workspace %s: %v", p, err)
+			team_engine.Log("dashboard", "load historical workspace %s: %v", p, err)
 		}
 	}
 	// Rewrite cleaned list back.
@@ -839,7 +838,7 @@ func (m *MultiEngineManager) GetMasterTasks() []MasterTaskJSON {
 		}
 	}
 
-	if team_engine.DefaultTeamLog != nil { team_engine.DefaultTeamLog.Log("dashboard", "GetMasterTasks ENTRY: %d workspaces", len(m.states)) }
+	if team_engine.DefaultTeamLog != nil { team_engine.Log("dashboard", "GetMasterTasks ENTRY: %d workspaces", len(m.states)) }
 
 	// Read from in-memory cache first (synced via WebSocket from whale CLI).
 	m.mu.RLock()
@@ -869,7 +868,7 @@ func (m *MultiEngineManager) GetMasterTasks() []MasterTaskJSON {
 		}
 		if len(cached) > 0 {
 			if team_engine.DefaultTeamLog != nil {
-				team_engine.DefaultTeamLog.Log("dashboard", "GetMasterTasks: %d from cache", len(cached))
+				team_engine.Log("dashboard", "GetMasterTasks: %d from cache", len(cached))
 			}
 			return cached
 		}
@@ -879,13 +878,13 @@ func (m *MultiEngineManager) GetMasterTasks() []MasterTaskJSON {
 	var out []MasterTaskJSON
 	seen := make(map[string]bool)
 	for _, ws := range m.states {
-		log.Printf("dashboard:   ws=%s path=%s engine=%v", ws.ID, ws.Path, ws.Engine != nil)
+		team_engine.Log("dashboard", "  ws=%s path=%s engine=%v", ws.ID, ws.Path, ws.Engine != nil)
 		if ws.Engine == nil {
 			continue // no DB -> nothing to show
 		}
 		mts, err := ws.Engine.ListMasterTasks()
 		if err != nil {
-			log.Printf("dashboard: list master tasks for %s: %v", ws.ID, err)
+			team_engine.Log("dashboard", "list master tasks for %s: %v", ws.ID, err)
 			continue
 		}
 		if len(mts) == 0 {
@@ -960,7 +959,7 @@ func (m *MultiEngineManager) GetSubtasks(wsID, masterTaskID string) []SubtaskJSO
 
 	tasks, err := ws.Engine.ListTasksByMasterTask(masterTaskID)
 	if err != nil {
-		log.Printf("dashboard: list subtasks for %s/%s: %v", wsID, masterTaskID, err)
+		team_engine.Log("dashboard", "list subtasks for %s/%s: %v", wsID, masterTaskID, err)
 		return []SubtaskJSON{}
 	}
 	// If the master task itself is gone, return empty.
@@ -1041,7 +1040,7 @@ func (m *MultiEngineManager) GetSubtasks(wsID, masterTaskID string) []SubtaskJSO
 			childrenFound += len(r.Children)
 		}
 		if team_engine.DefaultTeamLog != nil {
-			team_engine.DefaultTeamLog.Log("dashboard", "GetSubtasks: %d roots, %d children attached", len(roots), childrenFound)
+			team_engine.Log("dashboard", "GetSubtasks: %d roots, %d children attached", len(roots), childrenFound)
 		}
 		return append([]SubtaskJSON{leader}, roots...)
 	}
@@ -1576,7 +1575,7 @@ func (m *MultiEngineManager) DeleteMasterTask(wsID, masterTaskID string) error {
 		m.wireEngine(eng)
 		ws.Engine = eng
 	} else {
-		log.Printf("dashboard: reopen engine after delete failed: %v", err)
+		team_engine.Log("dashboard", "reopen engine after delete failed: %v", err)
 	}
 	oldEngine.Close()
 	return nil
@@ -1606,7 +1605,7 @@ func (m *MultiEngineManager) CancelMasterTask(wsID, masterTaskID string) (int, e
 			continue
 		}
 		if err := ws.Engine.Kill(context.Background(), t.ID); err != nil {
-			log.Printf("dashboard: cancel subtask %s (%s): %v", t.ID, t.Title, err)
+			team_engine.Log("dashboard", "cancel subtask %s (%s): %v", t.ID, t.Title, err)
 			continue
 		}
 		cancelled++
@@ -1890,7 +1889,7 @@ func (m *MultiEngineManager) sendWSCommand(wsID, command, masterTaskID string) {
 
 func (m *MultiEngineManager) logResumeDiag(ws *WorkspaceState, format string, args ...interface{}) {
 	msg := fmt.Sprintf(format, args...)
-	log.Print("dashboard: " + msg)
+	team_engine.Log("dashboard", "%s", msg)
 	if ws == nil || ws.Path == "" {
 		return
 	}
@@ -1908,6 +1907,6 @@ func (m *MultiEngineManager) logResumeDiag(ws *WorkspaceState, format string, ar
 // LogFrontend writes a message from the frontend JavaScript to the team engine log.
 func (m *MultiEngineManager) LogFrontend(msg string) {
 	if team_engine.DefaultTeamLog != nil {
-		team_engine.DefaultTeamLog.Log("frontend", "%s", msg)
+		team_engine.Log("frontend", "%s", msg)
 	}
 }

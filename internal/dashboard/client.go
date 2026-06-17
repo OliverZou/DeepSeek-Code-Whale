@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"net/url"
 	"sync"
@@ -72,17 +71,17 @@ func (c *Client) tryRegister() {
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-		log.Printf("dashboard: register returned %d: %s", resp.StatusCode, string(body))
+		team_engine.Log("dashboard", "register returned %d: %s", resp.StatusCode, string(body))
 		return
 	}
 
 	var result map[string]string
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		log.Printf("dashboard: register decode: %v", err)
+		team_engine.Log("dashboard", "register decode: %v", err)
 		return
 	}
 	c.wsID = result["id"]
-	log.Printf("dashboard: registered as %s (path=%s)", c.wsID, c.workspacePath)
+	team_engine.Log("dashboard", "registered as %s (path=%s)", c.wsID, c.workspacePath)
 	if team_engine.DefaultTeamLog != nil { team_engine.DefaultTeamLog.CLIHeartbeat(c.wsID, true) }
 }
 
@@ -142,7 +141,7 @@ func (c *Client) wsLoop() {
 		c.wsConnMu.Lock()
 		c.wsConn = conn
 		c.wsConnMu.Unlock()
-		log.Printf("dashboard: ws connected as %s", c.wsID)
+		team_engine.Log("dashboard", "ws connected as %s", c.wsID)
 		if team_engine.DefaultTeamLog != nil { team_engine.DefaultTeamLog.CLIWSConnect(c.wsID, nil) }
 
 		// Enable cross-process EventBus bridge.  bridgeOut carries events
@@ -164,14 +163,14 @@ func (c *Client) wsLoop() {
 					}
 					if team_engine.DefaultTeamLog != nil {
 						payloadStr := formatPayload(be.Event.Payload)
-						team_engine.DefaultTeamLog.Log("bridge", "cli → dashboard: topic=%s type=%s payload=%s", be.Topic, be.Event.Type, payloadStr)
+						team_engine.Log("bridge", "cli → dashboard: topic=%s type=%s payload=%s", be.Topic, be.Event.Type, payloadStr)
 					}
 					data, err := json.Marshal(be)
 					if err != nil {
 						continue
 					}
 					if werr := conn.WriteMessage(websocket.TextMessage, data); werr != nil {
-						log.Printf("dashboard: bridge write failed: %v", werr)
+						team_engine.Log("dashboard", "bridge write failed: %v", werr)
 						// Don't return — a single failed write doesn't mean
 						// the connection is dead.  Continue processing events.
 					}
@@ -211,12 +210,12 @@ func (c *Client) wsLoop() {
 			if err := json.Unmarshal(msg, &be); err == nil && be.Topic != "" {
 				if team_engine.DefaultTeamLog != nil {
 					payloadStr := formatPayload(be.Event.Payload)
-					team_engine.DefaultTeamLog.Log("bridge", "cli ← dashboard: topic=%s type=%s payload=%s", be.Topic, be.Event.Type, payloadStr)
+					team_engine.Log("bridge", "cli ← dashboard: topic=%s type=%s payload=%s", be.Topic, be.Event.Type, payloadStr)
 				}
 				select {
 				case bridgeIn <- be:
 				default:
-					log.Printf("dashboard: cli bridgeIn full, dropped topic=%s type=%s", be.Topic, be.Event.Type)
+					team_engine.Log("dashboard", "cli bridgeIn full, dropped topic=%s type=%s", be.Topic, be.Event.Type)
 				}
 				continue
 			}
@@ -230,7 +229,7 @@ func (c *Client) wsLoop() {
 				continue
 			}
 			if body.Command == "resume" && body.MasterTaskID != "" {
-				log.Printf("dashboard: received resume command for master task %s", body.MasterTaskID)
+				team_engine.Log("dashboard", "received resume command for master task %s", body.MasterTaskID)
 				c.pendingResumeMu.Lock()
 				c.pendingResume = body.MasterTaskID
 				c.pendingResumeMu.Unlock()
@@ -240,7 +239,7 @@ func (c *Client) wsLoop() {
 				}
 			}
 			if body.Command == "cancel_master" && body.MasterTaskID != "" {
-				log.Printf("dashboard: received cancel command for master task %s", body.MasterTaskID)
+				team_engine.Log("dashboard", "received cancel command for master task %s", body.MasterTaskID)
 				if c.OnCancel != nil {
 					c.OnCancel(body.MasterTaskID)
 				}
@@ -263,7 +262,7 @@ func (c *Client) Deregister() {
 	if err == nil {
 		resp.Body.Close()
 	}
-	log.Printf("dashboard: deregistered %s", c.wsID)
+	team_engine.Log("dashboard", "deregistered %s", c.wsID)
 }
 
 // PendingResume returns the master task ID of a pending resume command.
