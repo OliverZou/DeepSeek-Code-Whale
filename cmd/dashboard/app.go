@@ -30,7 +30,7 @@ func NewApp() *App {
 	if exe, err := os.Executable(); err == nil {
 		dashboardDir = filepath.Dir(exe)
 	}
-	team_engine.SetDefaultTeamLog(teampglog.NewTeamLogAt(filepath.Join(dashboardDir, "whale-dashboard.teamlog")))
+	team_engine.SetLogger(teampglog.NewTeamLogAt(filepath.Join(dashboardDir, "whale-dashboard.teamlog")))
 	return &App{
 		mgr:  dashboard.NewMultiEngineManager(dashboardDir),
 		done: make(chan struct{}),

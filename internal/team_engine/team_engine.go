@@ -235,8 +235,8 @@ func CleanupInterruptedTasks(dbPath string) {
 		switch t.State {
 		case TaskStateProducing, TaskStateVerifying, TaskStateAssigned:
 			_ = tdb.ForceTransitionState(t.ID, TaskStateSuspended, "interrupted-restart")
-			if DefaultTeamLog != nil {
-				DefaultTeamLog.EngineResumeTask(t.ID, string(TaskStateSuspended))
+			if defaultTeamLog != nil {
+				defaultTeamLog.EngineResumeTask(t.ID, string(TaskStateSuspended))
 			}
 		}
 	}
@@ -260,8 +260,8 @@ func (e *TeamEngine) cleanupInterruptedTasks() {
 		switch t.State {
 		case TaskStateProducing, TaskStateVerifying, TaskStateAssigned:
 			_ = e.DB.ForceTransitionState(t.ID, TaskStateSuspended, "interrupted-restart")
-			if DefaultTeamLog != nil {
-				DefaultTeamLog.EngineResumeTask(t.ID, string(TaskStateSuspended))
+			if defaultTeamLog != nil {
+				defaultTeamLog.EngineResumeTask(t.ID, string(TaskStateSuspended))
 			}
 		}
 	}
@@ -449,7 +449,7 @@ func (e *TeamEngine) CreateMasterTask(goal, workspacePath string) (*MasterTask, 
 	// newly created master task immediately.  Without this checkpoint,
 	// the dashboard will open the DB right after receiving engine_ready
 	// but see zero master tasks — the data is still in the WAL journal.
-	if err := e.DB.Checkpoint(); err != nil && DefaultTeamLog != nil {
+	if err := e.DB.Checkpoint(); err != nil && defaultTeamLog != nil {
 		Log("plan", "checkpoint after InsertMasterTask failed: %v", err)
 	}
 
@@ -909,7 +909,7 @@ func (e *TeamEngine) AssignTask(taskID string) error {
 // Returns true if the task reached done, false otherwise.
 func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 	// Phase 0: Initial state check and assignment (under lock).
-	if DefaultTeamLog != nil {
+	if defaultTeamLog != nil {
 		Log("task", "task: %s start", taskID[:8])
 	}
 	e.mu.Lock()
@@ -1057,7 +1057,7 @@ If the task fits in one pass (~200 lines or fewer), produce the deliverable norm
 				return false, fmt.Errorf("write worker output: %w", err)
 			}
 		}
-		if DefaultTeamLog != nil { DefaultTeamLog.WorkerDone(task.ID, result.DurationSeconds, result.ExitCode, len(result.Stdout), result.Success) }
+		if defaultTeamLog != nil { defaultTeamLog.WorkerDone(task.ID, result.DurationSeconds, result.ExitCode, len(result.Stdout), result.Success) }
 
 		// Self-split: only top-level tasks (no parents) can split.
 		// Children must complete without further splitting.
@@ -1067,13 +1067,13 @@ If the task fits in one pass (~200 lines or fewer), produce the deliverable norm
 			splitJSON := result.Stdout[idx+len(splitMarker):]
 			childPlan, err := ParsePlanTasks(splitJSON)
 			if err == nil && len(childPlan) > 0 {
-				if DefaultTeamLog != nil {
+				if defaultTeamLog != nil {
 					Log("task", "task: %s self-split into %d children", task.ID[:8], len(childPlan))
 				}
 				for _, pt := range childPlan {
 					child, err := e.CreateTask(pt.Title, pt.Description, task.Role, task.Profile, []string{task.ID}, 0, workdir, pt.VerifierFocus, task.BatchID, task.MasterTaskID)
 					if err != nil {
-						if DefaultTeamLog != nil {
+						if defaultTeamLog != nil {
 							Log("task", "task: %s child create failed: %v", task.ID[:8], err)
 						}
 						continue
@@ -1082,7 +1082,7 @@ If the task fits in one pass (~200 lines or fewer), produce the deliverable norm
 					child.BatchID = task.BatchID
 					child.MasterTaskID = task.MasterTaskID
 					_ = e.DB.UpdateTask(child.ID, map[string]interface{}{"batch_id": task.BatchID, "master_task_id": task.MasterTaskID})
-					if DefaultTeamLog != nil { Log("task", "task: %s child %s created", task.ID[:8], child.ID[:8]) }
+					if defaultTeamLog != nil { Log("task", "task: %s child %s created", task.ID[:8], child.ID[:8]) }
 				}
 				// Mark parent as done (children carry the work forward).
 				_ = e.DB.TransitionState(taskID, TaskStateDone, "", "self-split into children")
@@ -1303,28 +1303,28 @@ func (e *TeamEngine) PlanAndRun(ctx context.Context, goal, workdir, masterTaskID
 	var planTasks []PlanTask
 	if len(preDecomposed) > 0 {
 		planTasks = preDecomposed
-		if DefaultTeamLog != nil {
+		if defaultTeamLog != nil {
 			Log("plan", "plan: using pre-decomposed plan: %d tasks in %d batches", len(planTasks), countBatches(planTasks))
 		}
 	} else {
-		if DefaultTeamLog != nil {
+		if defaultTeamLog != nil {
 			Log("plan", "plan: decompose START model=%s", leaderModel)
 		}
 		var err error
 		planTasks, err = leader.Decompose(goal, workdir, decomposerTimeout, leaderModel)
 		if err != nil {
-			if DefaultTeamLog != nil {
+			if defaultTeamLog != nil {
 				Log("plan", "plan: decompose FAIL: %v", err)
 			}
 			return nil, fmt.Errorf("decompose goal: %w", err)
 		}
 		if len(planTasks) == 0 {
-			if DefaultTeamLog != nil {
+			if defaultTeamLog != nil {
 				Log("plan", "plan: decompose EMPTY")
 			}
 			return nil, fmt.Errorf("plan is empty")
 		}
-		if DefaultTeamLog != nil {
+		if defaultTeamLog != nil {
 			Log("plan", "plan: decompose OK: %d tasks in %d batches", len(planTasks), countBatches(planTasks))
 		}
 	}
@@ -1415,7 +1415,7 @@ func (e *TeamEngine) PlanAndRun(ctx context.Context, goal, workdir, masterTaskID
 		batches = append(batches, batch)
 	}
 
-	if DefaultTeamLog != nil {
+	if defaultTeamLog != nil {
 		for _, batch := range batches {
 			Log("plan", "plan: batch %s created — %d tasks", batch.LabelOrID(), len(batch.Tasks))
 		}
@@ -1968,7 +1968,7 @@ func (e *TeamEngine) runDWCycle(
 // configured concurrency limit.
 func (e *TeamEngine) RunBatch(ctx context.Context, batch *Batch) error {
 	batch.Status = BatchStatusRunning
-	if DefaultTeamLog != nil { DefaultTeamLog.BatchStart(batch.ID, batch.Label, len(batch.Tasks), batch.CycleCount, batch.MaxCycles) }
+	if defaultTeamLog != nil { defaultTeamLog.BatchStart(batch.ID, batch.Label, len(batch.Tasks), batch.CycleCount, batch.MaxCycles) }
 
 	tasks := batch.Tasks
 	if len(tasks) == 0 {
@@ -2031,7 +2031,7 @@ func (e *TeamEngine) RunBatch(ctx context.Context, batch *Batch) error {
 	}
 	// Batch status is determined by Leader review in the cycle loop above;
 	// RunBatch only reports whether all tasks ran without errors.
-	if DefaultTeamLog != nil { DefaultTeamLog.BatchDone(batch.ID, string(batch.Status), 0) }
+	if defaultTeamLog != nil { defaultTeamLog.BatchDone(batch.ID, string(batch.Status), 0) }
 	return nil
 }
 
@@ -2043,23 +2043,23 @@ func (e *TeamEngine) PlanAndRunLegacy(goal, workdir string) ([]*Task, error) {
 	})
 	decomposerTimeout := time.Duration(e.Router.ResolveDecomposerTimeout()) * time.Second
 	leaderModel := e.Router.ResolveModel("planner")
-	if DefaultTeamLog != nil {
+	if defaultTeamLog != nil {
 		Log("plan", "plan: decompose START model=%s", leaderModel)
 	}
 	planTasks, err := leader.Decompose(goal, workdir, decomposerTimeout, leaderModel)
 	if err != nil {
-		if DefaultTeamLog != nil {
+		if defaultTeamLog != nil {
 			Log("plan", "plan: decompose FAIL: %v", err)
 		}
 		return nil, fmt.Errorf("decompose goal: %w", err)
 	}
 	if len(planTasks) == 0 {
-		if DefaultTeamLog != nil {
+		if defaultTeamLog != nil {
 			Log("plan", "plan: decompose EMPTY")
 		}
 		return nil, fmt.Errorf("plan is empty")
 	}
-	if DefaultTeamLog != nil {
+	if defaultTeamLog != nil {
 		Log("plan", "plan: decompose OK: %d tasks in %d batches", len(planTasks), countBatches(planTasks))
 	}
 

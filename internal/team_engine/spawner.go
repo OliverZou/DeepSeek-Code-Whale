@@ -11,18 +11,100 @@ import (
 	teampglog "github.com/usewhale/whale/internal/team_engine/log"
 )
 
-// DefaultTeamLog is the package-level team-log.  Set via SetDefaultTeamLog
-// during process startup.  When nil (default or no build tag), all calls
-// are no-ops.
-var DefaultTeamLog *teampglog.TeamLog
+// defaultTeamLog is the internal logger.  Set via SetLogger.
+// When nil, all Log calls are no-ops.
+var defaultTeamLog *teampglog.TeamLog
 
-func SetDefaultTeamLog(tl *teampglog.TeamLog) { DefaultTeamLog = tl }
+// SetLogger replaces the engine logger.  Pass nil to disable.
+func SetLogger(tl *teampglog.TeamLog) { defaultTeamLog = tl }
 
-// Log writes a diagnostic entry.  Safe when DefaultTeamLog is nil.
+// Log writes a diagnostic entry.  Safe when no logger is set.
 func Log(cat, format string, args ...interface{}) {
-	if DefaultTeamLog != nil {
-		DefaultTeamLog.Log(cat, format, args...)
+	if defaultTeamLog != nil {
+		defaultTeamLog.Log(cat, format, args...)
 	}
+}
+
+// AddLogWriter adds an auxiliary log file (e.g. workspace log).
+func AddLogWriter(path string) {
+	if defaultTeamLog != nil {
+		defaultTeamLog.AddLog(path)
+	}
+}
+
+// --- Typed log wrappers (previously exposed via DefaultTeamLog) ---
+
+func SpawnerType(role, kind, model string, maxTokens int) {
+	if defaultTeamLog != nil { defaultTeamLog.SpawnerType(role, kind, model, maxTokens) }
+}
+func LeaderDecompose(goal, model string, attempt, maxTokens, promptTok, compTok int, dur float64, outputLen int, truncated, success bool) {
+	if defaultTeamLog != nil { defaultTeamLog.LeaderDecompose(goal, model, attempt, maxTokens, promptTok, compTok, dur, outputLen, truncated, success) }
+}
+func LeaderRetry(attempt int, reason string) {
+	if defaultTeamLog != nil { defaultTeamLog.LeaderRetry(attempt, reason) }
+}
+func WorkerStart(taskID, role, model string, attempt, maxRetries int) {
+	if defaultTeamLog != nil { defaultTeamLog.WorkerStart(taskID, role, model, attempt, maxRetries) }
+}
+func WorkerDone(taskID string, dur float64, exitCode int, outputLen int, success bool) {
+	if defaultTeamLog != nil { defaultTeamLog.WorkerDone(taskID, dur, exitCode, outputLen, success) }
+}
+func WorkerRetry(taskID string, attempt int, feedback string) {
+	if defaultTeamLog != nil { defaultTeamLog.WorkerRetry(taskID, attempt, feedback) }
+}
+func VerifierStart(taskID string) {
+	if defaultTeamLog != nil { defaultTeamLog.VerifierStart(taskID) }
+}
+func VerifierDone(taskID string, passed bool, dur float64) {
+	if defaultTeamLog != nil { defaultTeamLog.VerifierDone(taskID, passed, dur) }
+}
+func BatchStart(batchID, label string, taskCount, cycle, maxCycles int) {
+	if defaultTeamLog != nil { defaultTeamLog.BatchStart(batchID, label, taskCount, cycle, maxCycles) }
+}
+func BatchDone(batchID string, status string, dur float64) {
+	if defaultTeamLog != nil { defaultTeamLog.BatchDone(batchID, status, dur) }
+}
+func BatchCycleReport(batchID string, cycle int, decision string) {
+	if defaultTeamLog != nil { defaultTeamLog.BatchCycleReport(batchID, cycle, decision) }
+}
+func EngineResume(masterTaskID, goal string, batchCount int, err error) {
+	if defaultTeamLog != nil { defaultTeamLog.EngineResume(masterTaskID, goal, batchCount, err) }
+}
+func EngineAutoResume(masterTaskID string, err error) {
+	if defaultTeamLog != nil { defaultTeamLog.EngineAutoResume(masterTaskID, err) }
+}
+func EngineResumeTask(taskID, newState string) {
+	if defaultTeamLog != nil { defaultTeamLog.EngineResumeTask(taskID, newState) }
+}
+func CLIHeartbeat(wsID string, registered bool) {
+	if defaultTeamLog != nil { defaultTeamLog.CLIHeartbeat(wsID, registered) }
+}
+func CLIWSConnect(wsID string, err error) {
+	if defaultTeamLog != nil { defaultTeamLog.CLIWSConnect(wsID, err) }
+}
+func CLIWSDisconnect(wsID string) {
+	if defaultTeamLog != nil { defaultTeamLog.CLIWSDisconnect(wsID) }
+}
+func CLIReceiveResume(masterTaskID string) {
+	if defaultTeamLog != nil { defaultTeamLog.CLIReceiveResume(masterTaskID) }
+}
+func DashboardRegister(path, wsID string, err error) {
+	if defaultTeamLog != nil { defaultTeamLog.DashboardRegister(path, wsID, err) }
+}
+func DashboardWSConnect(wsID string, ok bool, err error) {
+	if defaultTeamLog != nil { defaultTeamLog.DashboardWSConnect(wsID, ok, err) }
+}
+func DashboardWSDisconnect(wsID string) {
+	if defaultTeamLog != nil { defaultTeamLog.DashboardWSDisconnect(wsID) }
+}
+func DashboardQueueResume(wsID, taskID, method string) {
+	if defaultTeamLog != nil { defaultTeamLog.DashboardQueueResume(wsID, taskID, method) }
+}
+func DashboardStateTransition(taskID, from, to, reason string) {
+	if defaultTeamLog != nil { defaultTeamLog.DashboardStateTransition(taskID, from, to, reason) }
+}
+func DashboardResumeMaster(wsID, taskID string, err error) {
+	if defaultTeamLog != nil { defaultTeamLog.DashboardResumeMaster(wsID, taskID, err) }
 }
 
 // defaultSpawnFunc is a package-level fallback spawner, set by the toolset

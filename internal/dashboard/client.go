@@ -64,7 +64,7 @@ func (c *Client) tryRegister() {
 		bytes.NewReader(payload),
 	)
 	if err != nil {
-		if team_engine.DefaultTeamLog != nil { team_engine.DefaultTeamLog.CLIHeartbeat("", false) }
+team_engine.CLIHeartbeat("", false)
 		return
 	}
 	defer resp.Body.Close()
@@ -82,7 +82,7 @@ func (c *Client) tryRegister() {
 	}
 	c.wsID = result["id"]
 	team_engine.Log("dashboard", "registered as %s (path=%s)", c.wsID, c.workspacePath)
-	if team_engine.DefaultTeamLog != nil { team_engine.DefaultTeamLog.CLIHeartbeat(c.wsID, true) }
+team_engine.CLIHeartbeat(c.wsID, true)
 }
 
 
@@ -142,7 +142,7 @@ func (c *Client) wsLoop() {
 		c.wsConn = conn
 		c.wsConnMu.Unlock()
 		team_engine.Log("dashboard", "ws connected as %s", c.wsID)
-		if team_engine.DefaultTeamLog != nil { team_engine.DefaultTeamLog.CLIWSConnect(c.wsID, nil) }
+team_engine.CLIWSConnect(c.wsID, nil)
 
 		// Enable cross-process EventBus bridge.  bridgeOut carries events
 		// published in THIS process (send to dashboard over WebSocket);
@@ -160,10 +160,6 @@ func (c *Client) wsLoop() {
 				case be, ok := <-bridgeOut:
 					if !ok {
 						return
-					}
-					if team_engine.DefaultTeamLog != nil {
-						payloadStr := formatPayload(be.Event.Payload)
-						team_engine.Log("bridge", "cli → dashboard: topic=%s type=%s payload=%s", be.Topic, be.Event.Type, payloadStr)
 					}
 					data, err := json.Marshal(be)
 					if err != nil {
@@ -208,10 +204,6 @@ func (c *Client) wsLoop() {
 			// Try BridgedEvent format first (cross-process EventBus).
 			var be eventbus.BridgedEvent
 			if err := json.Unmarshal(msg, &be); err == nil && be.Topic != "" {
-				if team_engine.DefaultTeamLog != nil {
-					payloadStr := formatPayload(be.Event.Payload)
-					team_engine.Log("bridge", "cli ← dashboard: topic=%s type=%s payload=%s", be.Topic, be.Event.Type, payloadStr)
-				}
 				select {
 				case bridgeIn <- be:
 				default:
@@ -234,7 +226,7 @@ func (c *Client) wsLoop() {
 				c.pendingResume = body.MasterTaskID
 				c.pendingResumeMu.Unlock()
 				if c.OnResume != nil {
-					if team_engine.DefaultTeamLog != nil { team_engine.DefaultTeamLog.CLIReceiveResume(body.MasterTaskID) }
+team_engine.CLIReceiveResume(body.MasterTaskID)
 					c.OnResume(body.MasterTaskID)
 				}
 			}

@@ -158,8 +158,8 @@ func (p *Planner) decomposeInternal(goal string, workdir string, timeout time.Du
 
 		if !result.Success {
 			if attempt < maxRetries && result.ExitCode == 1 && result.Stderr == "" {
-				if DefaultTeamLog != nil {
-					DefaultTeamLog.LeaderRetry(attempt+1, "empty output")
+				if defaultTeamLog != nil {
+					defaultTeamLog.LeaderRetry(attempt+1, "empty output")
 				}
 				if p.loggers != nil {
 					p.loggers.Engine("leader.decompose: retrying (attempt %d failed with empty output, exit %d)", attempt+1, result.ExitCode)
@@ -198,8 +198,8 @@ func (p *Planner) decomposeInternal(goal string, workdir string, timeout time.Du
 				if p.loggers != nil {
 					p.loggers.Engine("leader.decompose: retrying (attempt %d parse failed: %v)", attempt+1, err)
 				}
-				if DefaultTeamLog != nil {
-					DefaultTeamLog.LeaderRetry(attempt+1, err.Error())
+				if defaultTeamLog != nil {
+					defaultTeamLog.LeaderRetry(attempt+1, err.Error())
 				}
 				continue
 			}
@@ -215,8 +215,8 @@ func (p *Planner) decomposeInternal(goal string, workdir string, timeout time.Du
 		if p.loggers != nil {
 			p.loggers.Engine("leader.decompose: success — %d tasks in plan", len(tasks))
 		}
-		if DefaultTeamLog != nil {
-			DefaultTeamLog.LeaderDecompose(goal, mdl, attempt+1, 0, result.UsagePrompt, result.UsageCompletion, dur.Seconds(), len(output), false, true)
+		if defaultTeamLog != nil {
+			defaultTeamLog.LeaderDecompose(goal, mdl, attempt+1, 0, result.UsagePrompt, result.UsageCompletion, dur.Seconds(), len(output), false, true)
 		}
 		return tasks, output, nil
 	}

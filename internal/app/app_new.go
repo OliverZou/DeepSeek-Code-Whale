@@ -100,7 +100,7 @@ func New(ctx context.Context, cfg Config, start StartOptions) (*App, error) {
 	appRef = app
 
 	// Initialize team-engine lifecycle logger (no-op without -tags teamlog).
-	team_engine.SetDefaultTeamLog(teampglog.NewTeamLog(workspaceRoot))
+	team_engine.SetLogger(teampglog.NewTeamLog(workspaceRoot))
 
 	// Register with the external whale-dashboard process if it's running.
 	// The heartbeat loop also retries registration if the dashboard starts later.
