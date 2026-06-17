@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 
 	"github.com/usewhale/whale/internal/core"
-	"github.com/usewhale/whale/internal/dashboard"
+	"github.com/usewhale/whale/internal/bridge"
 	"github.com/usewhale/whale/internal/plugins"
 	"github.com/usewhale/whale/internal/policy"
 	"github.com/usewhale/whale/internal/team_engine"
@@ -104,7 +104,7 @@ func New(ctx context.Context, cfg Config, start StartOptions) (*App, error) {
 
 	// Register with the external whale-dashboard process if it's running.
 	// The heartbeat loop also retries registration if the dashboard starts later.
-	app.dashboardClient = dashboard.NewClient(workspaceRoot)
+	app.dashboardClient = bridge.NewClient(workspaceRoot)
 	app.dashboardClient.StartHeartbeat()
 	// Enable auto-resume: dashboard → heartbeat → toolset picks up pending resume.
 	app.toolset.SetDashboardClient(app.dashboardClient)

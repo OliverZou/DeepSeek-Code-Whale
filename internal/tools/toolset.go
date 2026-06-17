@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"github.com/usewhale/whale/internal/core"
-	"github.com/usewhale/whale/internal/dashboard"
+	"github.com/usewhale/whale/internal/bridge"
 	"github.com/usewhale/whale/internal/policy"
 	"github.com/usewhale/whale/internal/skills"
 	"github.com/usewhale/whale/internal/team_engine"
@@ -48,11 +48,11 @@ type Toolset struct {
 	teamEngineSpawnFunc team_engine.SpawnFunc
 
 	// DashboardClient provides access to dashboard-queued resume commands
-	// and real-time event forwarding to the dashboard.
+	// and real-time event forwarding to the bridge.
 	dashboardClient interface {
 		PendingResume() string
-		SendTaskEvent(dashboard.TaskEvent)
-		SyncState(mts []dashboard.MasterTaskJSON, sts map[string][]dashboard.SubtaskJSON, wsLabel string)
+		SendTaskEvent(bridge.TaskEvent)
+		SyncState(mts []bridge.MasterTaskJSON, sts map[string][]bridge.SubtaskJSON, wsLabel string)
 	}
 
 	// auto-exec cancellation
@@ -63,8 +63,8 @@ type Toolset struct {
 // SetDashboardClient sets the dashboard client for auto-resume support.
 func (b *Toolset) SetDashboardClient(c interface {
 	PendingResume() string
-	SendTaskEvent(dashboard.TaskEvent)
-	SyncState(mts []dashboard.MasterTaskJSON, sts map[string][]dashboard.SubtaskJSON, wsLabel string)
+	SendTaskEvent(bridge.TaskEvent)
+	SyncState(mts []bridge.MasterTaskJSON, sts map[string][]bridge.SubtaskJSON, wsLabel string)
 }) {
 	b.dashboardClient = c
 }

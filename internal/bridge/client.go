@@ -1,9 +1,8 @@
-﻿package dashboard
+package bridge
 
 import (
 	"bytes"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -11,9 +10,6 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-
-	"github.com/usewhale/whale/internal/eventbus"
-	
 )
 
 const (
@@ -64,7 +60,7 @@ func (c *Client) tryRegister() {
 		bytes.NewReader(payload),
 	)
 	if err != nil {
-CLIHeartbeat("", false)
+		CLIHeartbeat("", false)
 		return
 	}
 	defer resp.Body.Close()
@@ -82,9 +78,8 @@ CLIHeartbeat("", false)
 	}
 	c.wsID = result["id"]
 	Log("dashboard", "registered as %s (path=%s)", c.wsID, c.workspacePath)
-CLIHeartbeat(c.wsID, true)
+	CLIHeartbeat(c.wsID, true)
 }
-
 
 // StartHeartbeat begins the WebSocket connection and heartbeat loop.
 func (c *Client) StartHeartbeat() {
@@ -108,7 +103,7 @@ func (c *Client) wsLoop() {
 
 		c.connectAndRead()
 
-		// Connection dropped 鈥?clear wsID so we re-register via
+		// Connection dropped — clear wsID so we re-register via
 		// HTTP on the next loop iteration.  This handles dashboard
 		// restarts (the old wsID is unknown to the new dashboard).
 		c.wsID = ""
@@ -122,122 +117,120 @@ func (c *Client) wsLoop() {
 	}
 }
 
-	// connectAndRead opens a WebSocket connection and reads messages.
-	// Bridges the process-local EventBus to the WebSocket so that events
-	// published in the dashboard process reach the whale CLI and vice versa.
-	func (c *Client) connectAndRead() {
-		u := url.URL{Scheme: "ws", Host: "127.0.0.1:8520", Path: "/ws", RawQuery: "wsid=" + c.wsID}
-		conn, _, err := websocket.DefaultDialer.Dial(u.String(), nil)
+// connectAndRead opens a WebSocket connection and reads messages.
+// Bridges the process-local EventBus to the WebSocket so that events
+// published in the dashboard process reach the whale CLI and vice versa.
+func (c *Client) connectAndRead() {
+	u := url.URL{Scheme: "ws", Host: "127.0.0.1:8520", Path: "/ws", RawQuery: "wsid=" + c.wsID}
+	conn, _, err := websocket.DefaultDialer.Dial(u.String(), nil)
+	if err != nil {
+		return
+	}
+	defer func() {
+		c.wsConnMu.Lock()
+		c.wsConn = nil
+		c.wsConnMu.Unlock()
+		conn.Close()
+	}()
+
+	c.wsConnMu.Lock()
+	c.wsConn = conn
+	c.wsConnMu.Unlock()
+	Log("dashboard", "ws connected as %s", c.wsID)
+	CLIWSConnect(c.wsID, nil)
+
+	// Enable cross-process EventBus bridge.  bridgeOut carries events
+	// published in THIS process (send to dashboard over WebSocket);
+	// bridgeIn receives events from the dashboard (inject locally).
+	bridgeOut, bridgeIn := EnableGlobalBridge()
+
+	// Forward whale CLI-side EventBus events to the dashboard.
+	bridgeDone := make(chan struct{})
+	defer close(bridgeDone)
+	go func() {
+		for {
+			select {
+			case <-bridgeDone:
+				return
+			case be, ok := <-bridgeOut:
+				if !ok {
+					return
+				}
+				data, err := json.Marshal(be)
+				if err != nil {
+					continue
+				}
+				if werr := conn.WriteMessage(websocket.TextMessage, data); werr != nil {
+					Log("dashboard", "bridge write failed: %v", werr)
+				}
+			}
+		}
+	}()
+
+	// Write loop: periodic heartbeat pings.
+	heartbeatDone := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(heartbeatInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-c.done:
+				return
+			case <-heartbeatDone:
+				return
+			case <-ticker.C:
+				if err := conn.WriteMessage(websocket.PingMessage, nil); err != nil {
+					return
+				}
+			}
+		}
+	}()
+
+	// Read loop: receive bridged events and commands from dashboard.
+	for {
+		_, msg, err := conn.ReadMessage()
 		if err != nil {
+			close(heartbeatDone)
 			return
 		}
-		defer func() {
-			c.wsConnMu.Lock()
-			c.wsConn = nil
-			c.wsConnMu.Unlock()
-			conn.Close()
-		}()
 
-		c.wsConnMu.Lock()
-		c.wsConn = conn
-		c.wsConnMu.Unlock()
-		Log("dashboard", "ws connected as %s", c.wsID)
-CLIWSConnect(c.wsID, nil)
+		// Try BridgedEvent format first (cross-process EventBus).
+		var be BridgedEvent
+		if err := json.Unmarshal(msg, &be); err == nil && be.Topic != "" {
+			select {
+			case bridgeIn <- be:
+			default:
+				Log("dashboard", "cli bridgeIn full, dropped topic=%s type=%s", be.Topic, be.Event.Type)
+			}
+			continue
+		}
 
-		// Enable cross-process EventBus bridge.  bridgeOut carries events
-		// published in THIS process (send to dashboard over WebSocket);
-		// bridgeIn receives events from the dashboard (inject locally).
-		bridgeOut, bridgeIn := eventbus.EnableGlobalBridge()
-
-		// Forward whale CLI-side EventBus events to the dashboard.
-		bridgeDone := make(chan struct{})
-		defer close(bridgeDone)
-		go func() {
-			for {
-				select {
-				case <-bridgeDone:
-					return
-				case be, ok := <-bridgeOut:
-					if !ok {
-						return
-					}
-					data, err := json.Marshal(be)
-					if err != nil {
-						continue
-					}
-					if werr := conn.WriteMessage(websocket.TextMessage, data); werr != nil {
-						Log("dashboard", "bridge write failed: %v", werr)
-						// Don't return — a single failed write doesn't mean
-						// the connection is dead.  Continue processing events.
-					}
-				}
+		// Legacy: direct command format.
+		var body struct {
+			Command      string `json:"command"`
+			MasterTaskID string `json:"master_task_id"`
+		}
+		if err := json.Unmarshal(msg, &body); err != nil {
+			continue
+		}
+		if body.Command == "resume" && body.MasterTaskID != "" {
+			Log("dashboard", "received resume command for master task %s", body.MasterTaskID)
+			c.pendingResumeMu.Lock()
+			c.pendingResume = body.MasterTaskID
+			c.pendingResumeMu.Unlock()
+			if c.OnResume != nil {
+				CLIReceiveResume(body.MasterTaskID)
+				c.OnResume(body.MasterTaskID)
 			}
-		}()
-
-		// Write loop: periodic heartbeat pings.
-		heartbeatDone := make(chan struct{})
-		go func() {
-			ticker := time.NewTicker(heartbeatInterval)
-			defer ticker.Stop()
-			for {
-				select {
-				case <-c.done:
-					return
-				case <-heartbeatDone:
-					return
-				case <-ticker.C:
-					if err := conn.WriteMessage(websocket.PingMessage, nil); err != nil {
-						return
-					}
-				}
-			}
-		}()
-
-		// Read loop: receive bridged events and commands from dashboard.
-		for {
-			_, msg, err := conn.ReadMessage()
-			if err != nil {
-				close(heartbeatDone)
-				return
-			}
-
-			// Try BridgedEvent format first (cross-process EventBus).
-			var be eventbus.BridgedEvent
-			if err := json.Unmarshal(msg, &be); err == nil && be.Topic != "" {
-				select {
-				case bridgeIn <- be:
-				default:
-					Log("dashboard", "cli bridgeIn full, dropped topic=%s type=%s", be.Topic, be.Event.Type)
-				}
-				continue
-			}
-
-			// Legacy: direct command format.
-			var body struct {
-				Command      string `json:"command"`
-				MasterTaskID string `json:"master_task_id"`
-			}
-			if err := json.Unmarshal(msg, &body); err != nil {
-				continue
-			}
-			if body.Command == "resume" && body.MasterTaskID != "" {
-				Log("dashboard", "received resume command for master task %s", body.MasterTaskID)
-				c.pendingResumeMu.Lock()
-				c.pendingResume = body.MasterTaskID
-				c.pendingResumeMu.Unlock()
-				if c.OnResume != nil {
-CLIReceiveResume(body.MasterTaskID)
-					c.OnResume(body.MasterTaskID)
-				}
-			}
-			if body.Command == "cancel_master" && body.MasterTaskID != "" {
-				Log("dashboard", "received cancel command for master task %s", body.MasterTaskID)
-				if c.OnCancel != nil {
-					c.OnCancel(body.MasterTaskID)
-				}
+		}
+		if body.Command == "cancel_master" && body.MasterTaskID != "" {
+			Log("dashboard", "received cancel command for master task %s", body.MasterTaskID)
+			if c.OnCancel != nil {
+				c.OnCancel(body.MasterTaskID)
 			}
 		}
 	}
+}
 
 // Deregister unregisters from the dashboard.
 func (c *Client) Deregister() {
@@ -305,26 +298,7 @@ func (c *Client) SendTaskEvent(event TaskEvent) {
 		return
 	}
 	data, _ := json.Marshal(event)
-	// Set a short write deadline to avoid blocking the publisher.
 	if err := conn.WriteMessage(websocket.TextMessage, data); err != nil {
 		// Best-effort; drop on error rather than blocking.
 	}
-}
-
-
-// formatPayload returns a compact string representation of an event payload
-// for bridge logging.  Truncates to 120 chars to avoid log bloat.
-func formatPayload(payload interface{}) string {
-	if payload == nil {
-		return "{}"
-	}
-	data, err := json.Marshal(payload)
-	if err != nil {
-		return fmt.Sprintf("<marshal err: %v>", err)
-	}
-	s := string(data)
-	if len(s) > 120 {
-		s = s[:117] + "..."
-	}
-	return s
 }
