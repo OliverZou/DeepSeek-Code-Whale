@@ -101,7 +101,7 @@ func (b *Toolset) AutoExecuteMasterTask(masterTaskID string) {
 			if b.dashboardClient != nil {
 				var lastSync time.Time
 				eng.OnEvent(func(event team_engine.TaskEvent) { defer func() { if r := recover(); r != nil && true { team_engine.Log("sync", "event callback panic: %v", r) } }()
-					b.dashboardClient.SendTaskEvent(event)
+					b.dashboardClient.SendTaskEvent(dashboard.TaskEvent{Type: dashboard.TaskEventType(event.Type), TaskID: event.TaskID, Title: event.Title, Progress: event.Progress, NewState: event.NewState})
 					if (event.Type == team_engine.EventStateChanged || event.Type == team_engine.EventAgentLog) && time.Since(lastSync) > 2*time.Second {
 						lastSync = time.Now()
 						pushSyncState(eng, b.dashboardClient, b.root)
@@ -216,7 +216,7 @@ func (b *Toolset) runTeamPlan(ctx context.Context, call core.ToolCall, progress 
 	if b.dashboardClient != nil {
 		var lastSync time.Time
 		eng.OnEvent(func(event team_engine.TaskEvent) { defer func() { if r := recover(); r != nil && true { team_engine.Log("sync", "event callback panic: %v", r) } }()
-			b.dashboardClient.SendTaskEvent(event)
+			b.dashboardClient.SendTaskEvent(dashboard.TaskEvent{Type: dashboard.TaskEventType(event.Type), TaskID: event.TaskID, Title: event.Title, Progress: event.Progress, NewState: event.NewState})
 			// Throttled full sync (max 1 per 2s) after state changes.
 			if (event.Type == team_engine.EventStateChanged || event.Type == team_engine.EventAgentLog) && time.Since(lastSync) > 2*time.Second {
 				lastSync = time.Now()

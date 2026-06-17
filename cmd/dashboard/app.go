@@ -12,9 +12,6 @@ import (
 	"time"
 
 	"github.com/usewhale/whale/internal/dashboard"
-	"github.com/usewhale/whale/internal/eventbus"
-	"github.com/usewhale/whale/internal/team_engine"
-	teampglog "github.com/usewhale/whale/internal/team_engine/log"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
@@ -30,7 +27,7 @@ func NewApp() *App {
 	if exe, err := os.Executable(); err == nil {
 		dashboardDir = filepath.Dir(exe)
 	}
-	team_engine.SetLogger(teampglog.NewTeamLogAt(filepath.Join(dashboardDir, "whale-dashboard.teamlog")))
+	dashboard.SetLogFile(filepath.Join(dashboardDir, "whale-dashboard.teamlog"))
 	return &App{
 		mgr:  dashboard.NewMultiEngineManager(dashboardDir),
 		done: make(chan struct{}),
@@ -39,10 +36,10 @@ func NewApp() *App {
 
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
-	team_engine.Log("startup", "started, DefaultTeamLog=%v", true)
+	dashboard.Log("startup", "started, DefaultTeamLog=%v", true)
 
 	evtCtx := a.ctx
-	a.mgr.OnEngineEvent(func(event team_engine.TaskEvent) {
+	a.mgr.OnEngineEvent(func(event dashboard.TaskEvent) {
 		runtime.EventsEmit(evtCtx, "task-event", event)
 	})
 
@@ -77,10 +74,10 @@ func (a *App) eventLoop() {
 	time.Sleep(3 * time.Second) // wait for frontend listeners
 	a.emitUpdate()
 
-	teCh := eventbus.Global().Subscribe(eventbus.TopicTeamEngine, 128)
-	defer eventbus.Global().Unsubscribe(eventbus.TopicTeamEngine, teCh)
-	wsCh := eventbus.Global().Subscribe(eventbus.TopicWorkspace, 16)
-	defer eventbus.Global().Unsubscribe(eventbus.TopicWorkspace, wsCh)
+	teCh := dashboard.GlobalBus().Subscribe(dashboard.TopicTeamEngine, 128)
+	defer dashboard.GlobalBus().Unsubscribe(dashboard.TopicTeamEngine, teCh)
+	wsCh := dashboard.GlobalBus().Subscribe(dashboard.TopicWorkspace, 16)
+	defer dashboard.GlobalBus().Unsubscribe(dashboard.TopicWorkspace, wsCh)
 
 	var debounceCh <-chan time.Time
 	emitPending := false
@@ -93,7 +90,7 @@ func (a *App) eventLoop() {
 			a.mgr.BumpUpdateSeq()
 			emitPending = true
 		case ev := <-wsCh:
-			if ev.Type == eventbus.EventWSEngineReady {
+			if ev.Type == dashboard.EventWSEngineReady {
 				a.handleEngineReady(ev)
 			}
 			a.mgr.BumpUpdateSeq()
@@ -113,7 +110,7 @@ func (a *App) eventLoop() {
 
 // handleEngineReady processes an engine_ready event: a team_plan just created
 // the DB for this workspace, so we can load the engine immediately.
-func (a *App) handleEngineReady(ev eventbus.Event) {
+func (a *App) handleEngineReady(ev dashboard.Event) {
 	var path string
 	// Payload arrives as map[string]interface{} after JSON unmarshal across
 	// the EventBus bridge, not map[string]string.
@@ -143,7 +140,7 @@ func (a *App) emitUpdate() {
 	}
 	lastUpdateSeq = seq
 	tasks := a.mgr.GetMasterTasks()
-	team_engine.Log("frontend", "emitUpdate: %d tasks", len(tasks))
+	dashboard.Log("frontend", "emitUpdate: %d tasks", len(tasks))
 	runtime.EventsEmit(a.ctx, "update", tasks)
 }
 
@@ -196,8 +193,8 @@ func (a *App) handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	eventbus.Global().Publish(eventbus.TopicWorkspace, eventbus.Event{
-		Type:    eventbus.EventWSRegistered,
+	dashboard.GlobalBus().Publish(dashboard.TopicWorkspace, dashboard.Event{
+		Type:    "ws_registered",
 		Payload: map[string]string{"id": ws.ID, "path": req.Path},
 	})
 
@@ -220,8 +217,8 @@ func (a *App) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	eventbus.Global().Publish(eventbus.TopicWorkspace, eventbus.Event{
-		Type:    eventbus.EventWSHeartbeat,
+	dashboard.GlobalBus().Publish(dashboard.TopicWorkspace, dashboard.Event{
+		Type:    "ws_heartbeat",
 		Payload: map[string]string{"id": req.ID},
 	})
 
@@ -255,13 +252,13 @@ func (a *App) handleDeregister(w http.ResponseWriter, r *http.Request) {
 
 func (a *App) GetWorkspaces() []dashboard.WorkspaceJSON {
 	result := a.mgr.ListWorkspaces()
-	team_engine.Log("frontend", "GetWorkspaces called, returned %d", len(result))
+	dashboard.Log("frontend", "GetWorkspaces called, returned %d", len(result))
 	return result
 }
 
 func (a *App) GetTasks(wsID string) []dashboard.TaskJSON {
 	tasks, _ := a.mgr.ListTasks(wsID)
-	team_engine.Log("frontend", "GetTasks called for %s, returned %d", wsID, len(tasks))
+	dashboard.Log("frontend", "GetTasks called for %s, returned %d", wsID, len(tasks))
 	if tasks == nil {
 		return []dashboard.TaskJSON{}
 	}
@@ -322,7 +319,7 @@ func (a *App) ResumeMasterTask(wsID, masterTaskID string) string {
 
 func (a *App) GetMasterTasks() []dashboard.MasterTaskJSON {
 	result := a.mgr.GetMasterTasks()
-	team_engine.Log("frontend", "GetMasterTasks called, returned %d tasks", len(result))
+	dashboard.Log("frontend", "GetMasterTasks called, returned %d tasks", len(result))
 	return result
 }
 

@@ -51,7 +51,7 @@ type Toolset struct {
 	// and real-time event forwarding to the dashboard.
 	dashboardClient interface {
 		PendingResume() string
-		SendTaskEvent(team_engine.TaskEvent)
+		SendTaskEvent(dashboard.TaskEvent)
 		SyncState(mts []dashboard.MasterTaskJSON, sts map[string][]dashboard.SubtaskJSON, wsLabel string)
 	}
 
@@ -63,7 +63,7 @@ type Toolset struct {
 // SetDashboardClient sets the dashboard client for auto-resume support.
 func (b *Toolset) SetDashboardClient(c interface {
 	PendingResume() string
-	SendTaskEvent(team_engine.TaskEvent)
+	SendTaskEvent(dashboard.TaskEvent)
 	SyncState(mts []dashboard.MasterTaskJSON, sts map[string][]dashboard.SubtaskJSON, wsLabel string)
 }) {
 	b.dashboardClient = c

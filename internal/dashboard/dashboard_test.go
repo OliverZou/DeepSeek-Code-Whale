@@ -6,8 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/usewhale/whale/internal/eventbus"
-	"github.com/usewhale/whale/internal/team_engine"
+	
 )
 
 // ============================================================================
@@ -52,18 +51,18 @@ func TestUpdateSeq_Concurrent(t *testing.T) {
 
 func TestExtractTaskEvent_FromTypedPayload(t *testing.T) {
 	mgr := NewMultiEngineManager(t.TempDir())
-	received := make(chan team_engine.TaskEvent, 1)
-	mgr.OnEngineEvent(func(evt team_engine.TaskEvent) {
+	received := make(chan TaskEvent, 1)
+	mgr.OnEngineEvent(func(evt TaskEvent) {
 		received <- evt
 	})
 
 	// Direct typed payload (Go-to-Go, within same process).
-	evt := team_engine.TaskEvent{Type: team_engine.EventStateChanged, TaskID: "test-123"}
+	evt := TaskEvent{Type: EventStateChanged, TaskID: "test-123"}
 	mgr.fireEngineEvent(evt)
 
 	select {
 	case got := <-received:
-		if got.Type != team_engine.EventStateChanged {
+		if got.Type != EventStateChanged {
 			t.Errorf("expected EventStateChanged, got %d", got.Type)
 		}
 		if got.TaskID != "test-123" {
@@ -77,8 +76,8 @@ func TestExtractTaskEvent_FromTypedPayload(t *testing.T) {
 func TestExtractTaskEvent_FromJSONMap(t *testing.T) {
 	// Simulates what happens after JSON round-trip through the bridge:
 	// TaskEvent → JSON → map[string]interface{} → JSON → TaskEvent
-	original := team_engine.TaskEvent{
-		Type:   team_engine.EventStateChanged,
+	original := TaskEvent{
+		Type:   EventStateChanged,
 		TaskID: "bridge-test-456",
 		Title:  "test task",
 	}
@@ -97,12 +96,12 @@ func TestExtractTaskEvent_FromJSONMap(t *testing.T) {
 
 	// Re-marshal and unmarshal to TaskEvent.
 	data2, _ := json.Marshal(payloadMap)
-	var restored team_engine.TaskEvent
+	var restored TaskEvent
 	if err := json.Unmarshal(data2, &restored); err != nil {
 		t.Fatalf("unmarshal to TaskEvent: %v", err)
 	}
 
-	if restored.Type != team_engine.EventStateChanged {
+	if restored.Type != EventStateChanged {
 		t.Errorf("expected EventStateChanged, got %d", restored.Type)
 	}
 	if restored.TaskID != "bridge-test-456" {
@@ -114,7 +113,7 @@ func TestExtractTaskEvent_InvalidPayloadIgnored(t *testing.T) {
 	// Invalid payload should not trigger fireEngineEvent.
 	invalidMap := map[string]interface{}{"type": "not_a_number", "task_id": 123}
 	data, _ := json.Marshal(invalidMap)
-	var evt team_engine.TaskEvent
+	var evt TaskEvent
 	err := json.Unmarshal(data, &evt)
 	// TaskEvent uses numeric Type, so "not_a_number" → 0 (default).
 	// Type 0 is EventStateChanged in the constants.  This is a quirk but
@@ -131,19 +130,19 @@ func TestExtractTaskEvent_InvalidPayloadIgnored(t *testing.T) {
 
 func TestEngineEventFiresOnBridgeEvent(t *testing.T) {
 	mgr := NewMultiEngineManager(t.TempDir())
-	received := make(chan team_engine.TaskEvent, 1)
-	mgr.OnEngineEvent(func(evt team_engine.TaskEvent) {
+	received := make(chan TaskEvent, 1)
+	mgr.OnEngineEvent(func(evt TaskEvent) {
 		received <- evt
 	})
 
 	// Publish a team_engine event to the EventBus — this is what the
 	// bridge-in goroutine does when receiving from the whale CLI.
-	evt := team_engine.TaskEvent{
-		Type:   team_engine.EventAgentLog,
+	evt := TaskEvent{
+		Type:   EventAgentLog,
 		TaskID: "bus-test",
 	}
-	eventbus.Global().Publish(eventbus.TopicTeamEngine, eventbus.Event{
-		Type:    eventbus.EventAgentLog,
+	GlobalBus().Publish(TopicTeamEngine, Event{
+		Type:    "agent_log",
 		Payload: evt,
 	})
 

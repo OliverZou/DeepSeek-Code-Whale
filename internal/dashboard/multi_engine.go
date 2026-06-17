@@ -17,21 +17,19 @@ import (
 	"unsafe"
 
 	"github.com/gorilla/websocket"
-	"github.com/usewhale/whale/internal/eventbus"
-	"github.com/usewhale/whale/internal/team_engine"
-	"golang.org/x/sys/windows"
+			"golang.org/x/sys/windows"
 )
     
 var wsUpgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool { return true },
 }
 
-// WorkspaceState tracks one registered workspace and its TeamEngine.
+// WorkspaceState tracks one registered workspace and its EngineShim.
 type WorkspaceState struct {
 	ID         string
 	Path       string
 	Label      string
-	Engine     *team_engine.TeamEngine
+	Engine     *EngineShim
 	Registered time.Time
 	LastSeen   time.Time
 }
@@ -113,7 +111,7 @@ type MultiEngineManager struct {
 	states       map[string]*WorkspaceState
 	seq          int64
 	updateSeq    int64 // 单调递增版本号，emitUpdate 用去重
-	eventHandler func(event team_engine.TaskEvent) // 可选的事件回调
+	eventHandler func(event TaskEvent) // 可选的事件回调
 
 	// pendingResume maps wsID → masterTaskID for commands waiting to be
 	// picked up by the main Whale CLI via heartbeat response.
@@ -139,7 +137,7 @@ type MultiEngineManager struct {
 
 // OnEngineEvent 注册一个事件回调，当 engine 有任务状态变化时触发。
 // 由 Wails App 调用，用于向前端推送实时更新。
-func (m *MultiEngineManager) OnEngineEvent(handler func(event team_engine.TaskEvent)) {
+func (m *MultiEngineManager) OnEngineEvent(handler func(event TaskEvent)) {
 	m.mu.Lock()
 	m.eventHandler = handler
 	m.mu.Unlock()
@@ -186,7 +184,7 @@ func (m *MultiEngineManager) QueueResume(wsID, masterTaskID string) {
 	} else {
 		m.logResumeDiag(ws, "no ws conn for %s (have %d conns)", wsID, len(m.wsConns))
 		for k := range m.wsConns {
-			team_engine.Log("dashboard", "  conn: %s", k)
+			Log("dashboard", "  conn: %s", k)
 		}
 	}
 
@@ -239,8 +237,8 @@ func (m *MultiEngineManager) UnregisterWSConn(wsID string) {
 // clients.  Safe to call multiple times (runs once).
 func (m *MultiEngineManager) startBridgeFanOut() {
 	m.bridgeFanOut.Do(func() {
-		bridgeOut, _ := eventbus.EnableGlobalBridge()
-		team_engine.Log("dashboard", "bridge fan-out started")
+		bridgeOut, _ := EnableGlobalBridge()
+		Log("dashboard", "bridge fan-out started")
 		go func() {
 			for be := range bridgeOut {
 				data, err := json.Marshal(be)
@@ -252,7 +250,7 @@ func (m *MultiEngineManager) startBridgeFanOut() {
 					select {
 					case ch <- data:
 					default:
-						team_engine.Log("dashboard", "bridge fan-out drop for %s (slow consumer)", wsID)
+						Log("dashboard", "bridge fan-out drop for %s (slow consumer)", wsID)
 					}
 				}
 				m.bridgeWritersMu.Unlock()
@@ -289,19 +287,19 @@ func (m *MultiEngineManager) HandleWebSocket(w http.ResponseWriter, r *http.Requ
 
 	conn, err := wsUpgrader.Upgrade(w, r, nil)
 	if err != nil {
-		team_engine.Log("dashboard", "ws upgrade for %s: %v", wsID, err)
+		Log("dashboard", "ws upgrade for %s: %v", wsID, err)
 		return
 	}
 
 	m.RegisterWSConn(wsID, conn)
-team_engine.DashboardWSConnect(wsID, true, nil)
-	team_engine.Log("dashboard", "ws connected for workspace %s", wsID)
+DashboardWSConnect(wsID, true, nil)
+	Log("dashboard", "ws connected for workspace %s", wsID)
 
 	// Notify eventLoop so the frontend sees WorkspaceOnline=true immediately.
-	eventbus.Global().Publish(eventbus.TopicWorkspace, eventbus.Event{Type: "ws_connected", Payload: map[string]string{"id": wsID}})
+	GlobalBus().Publish(TopicWorkspace, Event{Type: "ws_connected", Payload: map[string]string{"id": wsID}})
 
 	// Enable cross-process EventBus bridge.
-	_, bridgeIn := eventbus.EnableGlobalBridge()
+	_, bridgeIn := EnableGlobalBridge()
 
 	// Register for bridge fan-out: dashboard-side EventBus events
 	// are broadcast to all connected whale CLI processes.
@@ -323,9 +321,9 @@ team_engine.DashboardWSConnect(wsID, true, nil)
 		defer func() {
 			conn.Close()
 			m.UnregisterWSConn(wsID)
-team_engine.DashboardWSDisconnect(wsID)
-			team_engine.Log("dashboard", "ws disconnected for workspace %s", wsID)
-			eventbus.Global().Publish(eventbus.TopicWorkspace, eventbus.Event{Type: "ws_disconnected", Payload: map[string]string{"id": wsID}})
+DashboardWSDisconnect(wsID)
+			Log("dashboard", "ws disconnected for workspace %s", wsID)
+			GlobalBus().Publish(TopicWorkspace, Event{Type: "ws_disconnected", Payload: map[string]string{"id": wsID}})
 		}()
 		for {
 			_, msg, err := conn.ReadMessage()
@@ -359,17 +357,17 @@ team_engine.DashboardWSDisconnect(wsID)
 			}
 
 			// Try BridgedEvent format first (cross-process EventBus).
-			var be eventbus.BridgedEvent
+			var be BridgedEvent
 			if err := json.Unmarshal(msg, &be); err == nil && be.Topic != "" {
 				select {
 				case bridgeIn <- be:
 				default:
-					team_engine.Log("dashboard", "bridgeIn full, dropped topic=%s type=%s from ws=%s", be.Topic, be.Event.Type, wsID)
+					Log("dashboard", "bridgeIn full, dropped topic=%s type=%s from ws=%s", be.Topic, be.Event.Type, wsID)
 				}
 				continue
 			}
 			// Fallback: legacy TaskEvent format.
-			var event team_engine.TaskEvent
+			var event TaskEvent
 			if err := json.Unmarshal(msg, &event); err == nil && event.Type > 0 {
 				m.fireEngineEvent(event)
 			}
@@ -378,19 +376,12 @@ team_engine.DashboardWSDisconnect(wsID)
 }
 
 // wireEngine 将 m.eventHandler 注册到 engine 上。
-func (m *MultiEngineManager) wireEngine(eng *team_engine.TeamEngine) {
-	if eng == nil {
-		return
-	}
-	// Make a local copy of the manager pointer for the closure.
-	mgr := m
-	eng.OnEvent(func(event team_engine.TaskEvent) {
-		mgr.fireEngineEvent(event)
-	})
+func (m *MultiEngineManager) wireEngine(eng *EngineShim) {
+	// no-op: dashboard uses WebSocket bridge
 }
 
 // fireEngineEvent 向已注册的事件处理函数发送事件。
-func (m *MultiEngineManager) fireEngineEvent(event team_engine.TaskEvent) {
+func (m *MultiEngineManager) fireEngineEvent(event TaskEvent) {
 	m.mu.RLock()
 	h := m.eventHandler
 	m.mu.RUnlock()
@@ -424,12 +415,12 @@ func (m *MultiEngineManager) Register(workspacePath string) (*WorkspaceState, er
 			ws.LastSeen = time.Now()
 			// Try lazy-load engine if the db was created after first registration.
 			if ws.Engine == nil {
-				dbPath := filepath.Join(workspacePath, ".whale", "team_engine.db")
-				wbDir := filepath.Join(workspacePath, ".whale", "team_tasks")
+				dbPath := filepath.Join(workspacePath, ".whale", "db")
+				_ = filepath.Join(workspacePath, ".whale", "team_tasks")
 				if _, err := os.Stat(dbPath); err == nil {
-					eng, err := team_engine.New(dbPath, wbDir, "", nil)
+					eng := NewEngineShim()
 					if err != nil {
-						team_engine.Log("dashboard", "lazy open engine for %s: %v", workspacePath, err)
+						Log("dashboard", "lazy open engine for %s: %v", workspacePath, err)
 					} else {
 						m.wireEngine(eng)
 						ws.Engine = eng
@@ -442,19 +433,19 @@ func (m *MultiEngineManager) Register(workspacePath string) (*WorkspaceState, er
 
 	m.seq++
 	id := fmt.Sprintf("ws_%04d", m.seq)
-	dbPath := filepath.Join(workspacePath, ".whale", "team_engine.db")
-	wbDir := filepath.Join(workspacePath, ".whale", "team_tasks")
+	dbPath := filepath.Join(workspacePath, ".whale", "db")
+	_ = filepath.Join(workspacePath, ".whale", "team_tasks")
 
-	var eng *team_engine.TeamEngine
+	var eng *EngineShim
 	if _, err := os.Stat(dbPath); err == nil {
-		eng, err = team_engine.New(dbPath, wbDir, "", nil)
+		eng = NewEngineShim()
 		if err != nil {
-			team_engine.Log("dashboard", "open engine for %s: %v", workspacePath, err)
+			Log("dashboard", "open engine for %s: %v", workspacePath, err)
 		}
 	}
 	m.wireEngine(eng)
 
-team_engine.DashboardRegister(workspacePath, id, nil)
+DashboardRegister(workspacePath, id, nil)
 	ws := &WorkspaceState{
 		ID:         id,
 		Path:       workspacePath,
@@ -465,7 +456,7 @@ team_engine.DashboardRegister(workspacePath, id, nil)
 	}
 	m.states[id] = ws
 	m.saveWorkspacePath(workspacePath)
-	team_engine.Log("dashboard", "registered workspace %s → %s", id, workspacePath)
+	Log("dashboard", "registered workspace %s → %s", id, workspacePath)
 	return ws, nil
 }
 
@@ -482,12 +473,12 @@ func (m *MultiEngineManager) Heartbeat(wsID string) error {
 
 	// Lazy-load engine if the db was created after registration.
 	if ws.Engine == nil {
-		dbPath := filepath.Join(ws.Path, ".whale", "team_engine.db")
-		wbDir := filepath.Join(ws.Path, ".whale", "team_tasks")
+		dbPath := filepath.Join(ws.Path, ".whale", "db")
+		_ = filepath.Join(ws.Path, ".whale", "team_tasks")
 		if _, err := os.Stat(dbPath); err == nil {
-			eng, err := team_engine.New(dbPath, wbDir, "", nil)
+			eng := NewEngineShim()
 			if err != nil {
-				team_engine.Log("dashboard", "lazy open engine for %s: %v", ws.Path, err)
+				Log("dashboard", "lazy open engine for %s: %v", ws.Path, err)
 			} else {
 				m.wireEngine(eng)
 				ws.Engine = eng
@@ -510,7 +501,7 @@ func (m *MultiEngineManager) Deregister(wsID string) error {
 		_ = ws.Engine.Close()
 	}
 	delete(m.states, wsID)
-	team_engine.Log("dashboard", "deregistered workspace %s (%s)", wsID, ws.Label)
+	Log("dashboard", "deregistered workspace %s (%s)", wsID, ws.Label)
 	return nil
 }
 
@@ -518,7 +509,7 @@ func (m *MultiEngineManager) Deregister(wsID string) error {
 // engine.  Called in response to engine_ready events from the EventBus.
 func (m *MultiEngineManager) LoadEngineByPath(workspacePath string) error {
 	workspacePath = filepath.Clean(workspacePath)
-	dbPath := filepath.Join(workspacePath, ".whale", "team_engine.db")
+	dbPath := filepath.Join(workspacePath, ".whale", "db")
 	if _, err := os.Stat(dbPath); err != nil {
 		return fmt.Errorf("no db at %s", dbPath)
 	}
@@ -528,17 +519,15 @@ func (m *MultiEngineManager) LoadEngineByPath(workspacePath string) error {
 
 	for _, ws := range m.states {
 		if pathsEqual(ws.Path, workspacePath) {
-			wbDir := filepath.Join(workspacePath, ".whale", "team_tasks")
-			eng, err := team_engine.New(dbPath, wbDir, "", nil)
-			if err != nil {
-				return fmt.Errorf("load engine: %w", err)
-			}
+			_ = filepath.Join(workspacePath, ".whale", "team_tasks")
+			eng := NewEngineShim()
+			
 			if ws.Engine != nil {
 				_ = ws.Engine.Close()
 			}
 			m.wireEngine(eng)
 			ws.Engine = eng
-			team_engine.Log("dashboard", "LoadEngineByPath (re)loaded %s", workspacePath)
+			Log("dashboard", "LoadEngineByPath (re)loaded %s", workspacePath)
 			return nil
 		}
 	}
@@ -549,7 +538,7 @@ func (m *MultiEngineManager) LoadEngineByPath(workspacePath string) error {
 // When a whale process exits and heartbeat stops, the workspace simply becomes
 // offline (Online=false via ListWorkspaces/GetMasterTasks).  The engine stays
 // open so historical master task data remains available for reading from the
-// .whale/team_engine.db bolt store.
+// .whale/db bolt store.
 func (m *MultiEngineManager) PruneStale(timeout time.Duration) {
 	// Workspaces are persisted in workspaces.json and never pruned.
 }
@@ -587,10 +576,10 @@ func (m *MultiEngineManager) saveWorkspacePath(workspacePath string) {
 func (m *MultiEngineManager) LoadWorkspacePaths() []string {
 	paths, err := m.readWorkspacePaths()
 	if err != nil {
-		team_engine.Log("dashboard", "LoadWorkspacePaths read error: %v", err)
+		Log("dashboard", "LoadWorkspacePaths read error: %v", err)
 	}
 	if len(paths) == 0 {
-		team_engine.Log("dashboard", "LoadWorkspacePaths: 0 paths in workspaces.json")
+		Log("dashboard", "LoadWorkspacePaths: 0 paths in workspaces.json")
 		return nil
 	}
 
@@ -607,7 +596,7 @@ func (m *MultiEngineManager) LoadWorkspacePaths() []string {
 
 		// Register is idempotent and will try to open the engine db.
 		if _, err := m.Register(p); err != nil {
-			team_engine.Log("dashboard", "load historical workspace %s: %v", p, err)
+			Log("dashboard", "load historical workspace %s: %v", p, err)
 		}
 	}
 	// Rewrite cleaned list back.
@@ -663,7 +652,7 @@ func (m *MultiEngineManager) ListWorkspaces() []WorkspaceJSON {
 			tasks, _ := ws.Engine.ListTasks()
 			wj.TaskCount = len(tasks)
 			for _, t := range tasks {
-				if !t.State.IsTerminal() {
+				if !IsTerminal(t.State) {
 					wj.ActiveCount++
 				}
 			}
@@ -706,7 +695,7 @@ func (m *MultiEngineManager) ListTasks(wsID string) ([]TaskJSON, error) {
 			ElapsedSec:  elapsed,
 			RetryCount:  t.RetryCount,
 			MaxRetries:  t.MaxRetries,
-			ProgressPct: team_engine.GetProgress(t.State),
+			ProgressPct: GetProgress(t.State),
 		}
 	}
 	return result, nil
@@ -818,7 +807,7 @@ func (m *MultiEngineManager) GetMasterTasks() []MasterTaskJSON {
 		}
 	}
 
-	if true { team_engine.Log("dashboard", "GetMasterTasks ENTRY: %d workspaces", len(m.states)) }
+	if true { Log("dashboard", "GetMasterTasks ENTRY: %d workspaces", len(m.states)) }
 
 	// Read from in-memory cache first (synced via WebSocket from whale CLI).
 	m.mu.RLock()
@@ -855,13 +844,13 @@ func (m *MultiEngineManager) GetMasterTasks() []MasterTaskJSON {
 	var out []MasterTaskJSON
 	seen := make(map[string]bool)
 	for _, ws := range m.states {
-		team_engine.Log("dashboard", "  ws=%s path=%s engine=%v", ws.ID, ws.Path, ws.Engine != nil)
+		Log("dashboard", "  ws=%s path=%s engine=%v", ws.ID, ws.Path, ws.Engine != nil)
 		if ws.Engine == nil {
 			continue // no DB -> nothing to show
 		}
 		mts, err := ws.Engine.ListMasterTasks()
 		if err != nil {
-			team_engine.Log("dashboard", "list master tasks for %s: %v", ws.ID, err)
+			Log("dashboard", "list master tasks for %s: %v", ws.ID, err)
 			continue
 		}
 		if len(mts) == 0 {
@@ -881,13 +870,13 @@ func (m *MultiEngineManager) GetMasterTasks() []MasterTaskJSON {
 			suspendedCount := 0
 			online := m.isOnline(ws)
 			for _, t := range subtasks {
-				if t.State == team_engine.TaskStateDone || t.State == team_engine.TaskStateFailed {
+				if t.State == TaskStateDone || t.State == TaskStateFailed {
 					doneCount++
 				}
-				if t.State == team_engine.TaskStateSuspended {
+				if t.State == TaskStateSuspended {
 					suspendedCount++
 				}
-				if online && (t.State == team_engine.TaskStateProducing || t.State == team_engine.TaskStateVerifying) {
+				if online && (t.State == TaskStateProducing || t.State == TaskStateVerifying) {
 					activeCount++
 				}
 			}
@@ -936,7 +925,7 @@ func (m *MultiEngineManager) GetSubtasks(wsID, masterTaskID string) []SubtaskJSO
 
 	tasks, err := ws.Engine.ListTasksByMasterTask(masterTaskID)
 	if err != nil {
-		team_engine.Log("dashboard", "list subtasks for %s/%s: %v", wsID, masterTaskID, err)
+		Log("dashboard", "list subtasks for %s/%s: %v", wsID, masterTaskID, err)
 		return []SubtaskJSON{}
 	}
 	// If the master task itself is gone, return empty.
@@ -956,7 +945,7 @@ func (m *MultiEngineManager) GetSubtasks(wsID, masterTaskID string) []SubtaskJSO
 			Output:      t.Output,
 			Role:        string(t.Role),
 			State:       string(t.State),
-			Progress:    team_engine.GetProgress(t.State),
+			Progress:    GetProgress(t.State),
 			CreatedAt:   t.CreatedAt,
 			ParentIDs:   t.ParentIDs,
 			RetryCount:  t.RetryCount,
@@ -1197,7 +1186,7 @@ func (m *MultiEngineManager) GetLeaderFlowchart(wsID, masterTaskID string) strin
 	// Group tasks by batch
 	type batchInfo struct {
 		Label string
-		Tasks []*team_engine.Task
+		Tasks []*Task
 	}
 	batches := make(map[string]*batchInfo)
 	batchOrder := []string{}
@@ -1280,7 +1269,7 @@ func (m *MultiEngineManager) GetLeaderFlowchart(wsID, masterTaskID string) strin
 
 		// Reorder tasks: parent first, then its children immediately after.
 		// This ensures connector lines are drawn and the hierarchy is visible.
-		ordered := make([]*team_engine.Task, 0, len(bg.Tasks))
+		ordered := make([]*Task, 0, len(bg.Tasks))
 		appended := make(map[string]bool)
 		for _, pt := range bg.Tasks {
 			if isChild[pt.ID] != "" {
@@ -1330,7 +1319,7 @@ func (m *MultiEngineManager) GetLeaderFlowchart(wsID, masterTaskID string) strin
 				color = "#6e7681"
 			}
 			title := safeTruncate(t.Title, 16)
-			pct := team_engine.GetProgress(t.State)
+			pct := GetProgress(t.State)
 			statusLine := fmt.Sprintf("%s %d%%", string(t.State), pct)
 			role := string(t.Role)
 			tooltip := fmt.Sprintf("【%s】 %s | %s (%d%%)", role, t.Title, t.State, pct)
@@ -1392,25 +1381,25 @@ func (m *MultiEngineManager) ResumeMasterTask(wsID, masterTaskID string) error {
 	ws, ok := m.states[wsID]
 	m.mu.RUnlock()
 	if !ok {
-		if true { team_engine.DashboardResumeMaster(wsID, masterTaskID, fmt.Errorf("workspace not found")) }
+		if true { DashboardResumeMaster(wsID, masterTaskID, fmt.Errorf("workspace not found")) }
 		return fmt.Errorf("workspace %s not found", wsID)
 	}
 	if ws.Engine == nil {
 		// Try lazy-open: the DB may have been created after the
 		// workspace was first registered (e.g. dashboard started
 		// before the first team_plan run).
-		dbPath := filepath.Join(ws.Path, ".whale", "team_engine.db")
-		wbDir := filepath.Join(ws.Path, ".whale", "team_tasks")
+		dbPath := filepath.Join(ws.Path, ".whale", "db")
+		_ = filepath.Join(ws.Path, ".whale", "team_tasks")
 		if _, err := os.Stat(dbPath); err == nil {
-			eng, err := team_engine.New(dbPath, wbDir, "", nil)
+			eng := NewEngineShim()
 			if err != nil {
-				if true { team_engine.DashboardResumeMaster(wsID, masterTaskID, fmt.Errorf("lazy open engine: %w", err)) }
+				if true { DashboardResumeMaster(wsID, masterTaskID, fmt.Errorf("lazy open engine: %w", err)) }
 				return fmt.Errorf("lazy open engine for %s: %w", wsID, err)
 			}
 			m.wireEngine(eng)
 			ws.Engine = eng
 		} else {
-			if true { team_engine.DashboardResumeMaster(wsID, masterTaskID, fmt.Errorf("no db at %s", dbPath)) }
+			if true { DashboardResumeMaster(wsID, masterTaskID, fmt.Errorf("no db at %s", dbPath)) }
 			return fmt.Errorf("engine not open for %s (no db)", wsID)
 		}
 	}
@@ -1418,13 +1407,13 @@ func (m *MultiEngineManager) ResumeMasterTask(wsID, masterTaskID string) error {
 	// Load the master task to get its goal and workdir.
 	mt, err := ws.Engine.GetMasterTask(masterTaskID)
 	if err != nil || mt == nil {
-		if true { team_engine.DashboardResumeMaster(wsID, masterTaskID, fmt.Errorf("master task not found: %v", err)) }
+		if true { DashboardResumeMaster(wsID, masterTaskID, fmt.Errorf("master task not found: %v", err)) }
 		return fmt.Errorf("master task %s not found", masterTaskID)
 	}
 
 	// Set master task status to running.
 	if err := ws.Engine.DB.UpdateMasterTaskStatus(masterTaskID, "running"); err != nil {
-		if true { team_engine.DashboardResumeMaster(wsID, masterTaskID, fmt.Errorf("update status: %w", err)) }
+		if true { DashboardResumeMaster(wsID, masterTaskID, fmt.Errorf("update status: %w", err)) }
 		return fmt.Errorf("update master task status: %w", err)
 	}
 
@@ -1432,16 +1421,16 @@ func (m *MultiEngineManager) ResumeMasterTask(wsID, masterTaskID string) error {
 	// engine can pick them up.
 	subtasks, err := ws.Engine.DB.ListTasksByMasterTask(masterTaskID)
 	if err != nil {
-		if true { team_engine.DashboardResumeMaster(wsID, masterTaskID, fmt.Errorf("list subtasks: %w", err)) }
+		if true { DashboardResumeMaster(wsID, masterTaskID, fmt.Errorf("list subtasks: %w", err)) }
 		return fmt.Errorf("list subtasks: %w", err)
 	}
 	for _, t := range subtasks {
-		// ResetForResume mirrors team_engine.ResetForResume:
+		// ResetForResume mirrors ResetForResume:
 		// failed/suspended -> pending, other runnable -> assigned.
-		newState := team_engine.ResetForResume(t.State)
+		newState := ResetForResume(t.State)
 		if newState != t.State {
 			if err := ws.Engine.DB.ForceTransitionState(t.ID, newState, "dashboard-resume"); err != nil {
-				if true { team_engine.DashboardResumeMaster(wsID, masterTaskID, fmt.Errorf("transition %s from %s: %w", t.ID, t.State, err)) }
+				if true { DashboardResumeMaster(wsID, masterTaskID, fmt.Errorf("transition %s from %s: %w", t.ID, t.State, err)) }
 				return fmt.Errorf("transition task %s: %w", t.ID, err)
 			}
 		}
@@ -1450,7 +1439,7 @@ func (m *MultiEngineManager) ResumeMasterTask(wsID, masterTaskID string) error {
 	// Queue a resume command so the main Whale CLI picks it up and
 	// actually executes the tasks (dashboard itself has no spawner).
 	m.QueueResume(wsID, masterTaskID)
-team_engine.DashboardResumeMaster(wsID, masterTaskID, nil)
+DashboardResumeMaster(wsID, masterTaskID, nil)
 	return nil
 }
 
@@ -1468,7 +1457,7 @@ func (m *MultiEngineManager) ListSuspendedMasterTasks(wsID string) ([]string, er
 	}
 	var ids []string
 	for _, mt := range mts {
-		ids = append(ids, mt.ID)
+		ids = append(ids, mt)
 	}
 	return ids, nil
 }
@@ -1487,10 +1476,10 @@ func (m *MultiEngineManager) CancelSubtask(wsID, taskID string) error {
 		// Try lazy-open: the DB may have been created after the
 		// workspace was first registered (e.g. dashboard started
 		// before the first team_plan run).
-		dbPath := filepath.Join(ws.Path, ".whale", "team_engine.db")
-		wbDir := filepath.Join(ws.Path, ".whale", "team_tasks")
+		dbPath := filepath.Join(ws.Path, ".whale", "db")
+		_ = filepath.Join(ws.Path, ".whale", "team_tasks")
 		if _, err := os.Stat(dbPath); err == nil {
-			eng, err := team_engine.New(dbPath, wbDir, "", nil)
+			eng := NewEngineShim()
 			if err != nil {
 				return fmt.Errorf("lazy open engine for %s: %w", wsID, err)
 			}
@@ -1522,10 +1511,10 @@ func (m *MultiEngineManager) DeleteMasterTask(wsID, masterTaskID string) error {
 		// Try lazy-open: the DB may have been created after the
 		// workspace was first registered (e.g. dashboard started
 		// before the first team_plan run).
-		dbPath := filepath.Join(ws.Path, ".whale", "team_engine.db")
-		wbDir := filepath.Join(ws.Path, ".whale", "team_tasks")
+		dbPath := filepath.Join(ws.Path, ".whale", "db")
+		_ = filepath.Join(ws.Path, ".whale", "team_tasks")
 		if _, err := os.Stat(dbPath); err == nil {
-			eng, err := team_engine.New(dbPath, wbDir, "", nil)
+			eng := NewEngineShim()
 			if err != nil {
 				return fmt.Errorf("lazy open engine for %s: %w", wsID, err)
 			}
@@ -1541,16 +1530,9 @@ func (m *MultiEngineManager) DeleteMasterTask(wsID, masterTaskID string) error {
 	// Flush WAL so a new connection sees the committed delete.
 	ws.Engine.DB.Checkpoint()
 	oldEngine := ws.Engine
-	// Reopen the engine with a fresh DB connection so subsequent
-	// reads (GetMasterTasks) see the committed delete immediately.
-	dbPath := filepath.Join(ws.Path, ".whale", "team_engine.db")
-	wbDir := filepath.Join(ws.Path, ".whale", "team_tasks")
-	if eng, err := team_engine.New(dbPath, wbDir, "", nil); err == nil {
-		m.wireEngine(eng)
-		ws.Engine = eng
-	} else {
-		team_engine.Log("dashboard", "reopen engine after delete failed: %v", err)
-	}
+	eng := NewEngineShim()
+	m.wireEngine(eng)
+	ws.Engine = eng
 	oldEngine.Close()
 	return nil
 }
@@ -1575,11 +1557,11 @@ func (m *MultiEngineManager) CancelMasterTask(wsID, masterTaskID string) (int, e
 
 	cancelled := 0
 	for _, t := range tasks {
-		if t.State.IsTerminal() {
+		if IsTerminal(t.State) {
 			continue
 		}
 		if err := ws.Engine.Kill(context.Background(), t.ID); err != nil {
-			team_engine.Log("dashboard", "cancel subtask %s (%s): %v", t.ID, t.Title, err)
+			Log("dashboard", "cancel subtask %s (%s): %v", t.ID, t.Title, err)
 			continue
 		}
 		cancelled++
@@ -1863,7 +1845,7 @@ func (m *MultiEngineManager) sendWSCommand(wsID, command, masterTaskID string) {
 
 func (m *MultiEngineManager) logResumeDiag(ws *WorkspaceState, format string, args ...interface{}) {
 	msg := fmt.Sprintf(format, args...)
-	team_engine.Log("dashboard", "%s", msg)
+	Log("dashboard", "%s", msg)
 	if ws == nil || ws.Path == "" {
 		return
 	}
