@@ -10,11 +10,24 @@ import (
 )
 
 // TeamConfig defines a named team that can be assigned to execute a goal.
-// Teams are loaded from .whale/teams/{name}.yaml
+// Teams are loaded from .whale/teams/{name}.yaml or {name}/team.yaml
 type TeamConfig struct {
-	Label string     `yaml:"label"`
-	Leader TeamLeaderConfig `yaml:"leader"`
+	Label  string                 `yaml:"label"`
+	Leader TeamLeaderConfig       `yaml:"leader"`
 	Roles  map[string]TeamRoleConfig `yaml:"roles"`
+	Config *TeamRuntimeConfig     `yaml:"-"` // loaded from config.yaml
+}
+
+// TeamRuntimeConfig is loaded from the team directory's config.yaml.
+type TeamRuntimeConfig struct {
+	MaxAgents      int    `yaml:"max_agents"`
+	DefaultTimeout int    `yaml:"default_timeout"`
+	Model          struct {
+		Leader         string `yaml:"leader"`
+		WorkerDefault  string `yaml:"worker_default"`
+		VerifierDefault string `yaml:"verifier_default"`
+	} `yaml:"model"`
+	Workdir string `yaml:"workdir"`
 }
 
 // TeamLeaderConfig configures the team's Leader agent.
@@ -45,6 +58,7 @@ type TeamRoleConfig struct {
 	PermissionMode  string   `yaml:"permissionMode,omitempty"`
 	Memory          string   `yaml:"memory,omitempty"`
 	Verifier        string   `yaml:"verifier,omitempty"`  // team role to use as verifier
+	OutputTemplate  string   `yaml:"output_template,omitempty"` // default output path
 	MaxToolIters    int      `yaml:"maxToolIters,omitempty"`
 	MaxToolCalls    int      `yaml:"maxToolCalls,omitempty"`
 	Timeout         int      `yaml:"timeout,omitempty"` // seconds
@@ -95,18 +109,33 @@ func LoadAllTeams(teamsDir string) ([]*TeamConfig, error) {
 
 // FindTeam loads a single team by name from the teams directory.
 // Supports both flat files (name.yaml) and directory structure (name/team.yaml).
+// When loading from directory, also loads config.yaml if present.
 func FindTeam(teamsDir, name string) (*TeamConfig, error) {
 	// Priority 1: directory-based team (name/team.yaml)
 	dirPath := filepath.Join(teamsDir, name, "team.yaml")
 	if _, err := os.Stat(dirPath); err == nil {
 		tc, err := LoadTeamConfig(dirPath)
 		if err == nil {
+			tc.Config = loadRuntimeConfig(filepath.Join(teamsDir, name, "config.yaml"))
 			return tc, nil
 		}
 	}
 	// Priority 2: flat file (name.yaml)
 	path := filepath.Join(teamsDir, name+".yaml")
 	return LoadTeamConfig(path)
+}
+
+// loadRuntimeConfig reads config.yaml if it exists; returns nil otherwise.
+func loadRuntimeConfig(path string) *TeamRuntimeConfig {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	var cfg TeamRuntimeConfig
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		return nil
+	}
+	return &cfg
 }
 
 // DefaultTeamRoots returns the team discovery roots for a workspace.
@@ -204,6 +233,9 @@ func (tc *TeamConfig) BuildLeaderPrompt(basePrompt string) string {
 				desc = name
 			}
 			sb.WriteString(fmt.Sprintf("- **%s**: %s\n", name, desc))
+			if cfg.OutputTemplate != "" {
+				sb.WriteString(fmt.Sprintf("  ↳ 默认产出: %s\n", cfg.OutputTemplate))
+			}
 		}
 	}
 
