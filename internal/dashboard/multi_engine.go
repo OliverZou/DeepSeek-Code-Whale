@@ -603,7 +603,17 @@ func (m *MultiEngineManager) saveWorkspacePath(workspacePath string) {
 // not already tracked.  Historical paths whose whale process is not running
 // will be loaded without an engine (offline).
 func (m *MultiEngineManager) LoadWorkspacePaths() []string {
-	paths, _ := m.readWorkspacePaths()
+	paths, err := m.readWorkspacePaths()
+	if err != nil {
+		log.Printf("dashboard: LoadWorkspacePaths read error: %v", err)
+	}
+	if len(paths) == 0 {
+		log.Printf("dashboard: LoadWorkspacePaths: 0 paths in workspaces.json")
+		return nil
+	}
+	if team_engine.DefaultTeamLog != nil {
+		team_engine.DefaultTeamLog.Log("dashboard", "LoadWorkspacePaths: %d paths from workspaces.json", len(paths))
+	}
 
 	// Normalize and deduplicate (historical file may have stale paths).
 	seen := make(map[string]bool)
