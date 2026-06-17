@@ -2660,6 +2660,21 @@ Write to summary.md. Use clear, professional language. The user should understan
 	}
 }
 
+// readTeamTemplate reads a template matching the task's output basename.
+// E.g. output "docs/requirements.md" → templates/requirements.md
+func (e *TeamEngine) readTeamTemplate(output string) string {
+	if e.team == nil || e.team.TemplatesDir == "" || output == "" {
+		return ""
+	}
+	name := filepath.Base(output)
+	path := filepath.Join(e.team.TemplatesDir, name)
+	data, err := os.ReadFile(path)
+	if err != nil || len(data) == 0 {
+		return ""
+	}
+	return fmt.Sprintf("\n\n## 📄 产出模板 (%s)\n按以下模板填写产出内容：\n\n%s\n", name, string(data))
+}
+
 // readTeamMemory reads role-specific memory from the team's memory directory.
 func (e *TeamEngine) readTeamMemory(role AgentRole) string {
 	if e.team == nil || e.team.MemoryDir == "" {

@@ -16,7 +16,8 @@ type TeamConfig struct {
 	Leader TeamLeaderConfig       `yaml:"leader"`
 	Roles  map[string]TeamRoleConfig `yaml:"roles"`
 	Config    *TeamRuntimeConfig `yaml:"-"` // loaded from config.yaml
-	MemoryDir string             `yaml:"-"` // memory directory path
+	MemoryDir    string `yaml:"-"` // memory directory path
+	TemplatesDir string `yaml:"-"` // templates directory path
 }
 
 // TeamRuntimeConfig is loaded from the team directory's config.yaml.
@@ -59,7 +60,7 @@ type TeamRoleConfig struct {
 	PermissionMode  string   `yaml:"permissionMode,omitempty"`
 	Memory          string   `yaml:"memory,omitempty"`
 	Verifier        string   `yaml:"verifier,omitempty"`  // team role to use as verifier
-	OutputTemplate  string   `yaml:"output_template,omitempty"` // default output path
+	Output          string   `yaml:"output,omitempty"` // deliverable file path
 	MaxToolIters    int      `yaml:"maxToolIters,omitempty"`
 	MaxToolCalls    int      `yaml:"maxToolCalls,omitempty"`
 	Timeout         int      `yaml:"timeout,omitempty"` // seconds
@@ -119,6 +120,7 @@ func FindTeam(teamsDir, name string) (*TeamConfig, error) {
 		if err == nil {
 			tc.Config = loadRuntimeConfig(filepath.Join(teamsDir, name, "config.yaml"))
 			tc.MemoryDir = filepath.Join(teamsDir, name, "memory")
+			tc.TemplatesDir = filepath.Join(teamsDir, name, "templates")
 			return tc, nil
 		}
 	}
@@ -235,8 +237,8 @@ func (tc *TeamConfig) BuildLeaderPrompt(basePrompt string) string {
 				desc = name
 			}
 			sb.WriteString(fmt.Sprintf("- **%s**: %s\n", name, desc))
-			if cfg.OutputTemplate != "" {
-				sb.WriteString(fmt.Sprintf("  ↳ 默认产出: %s\n", cfg.OutputTemplate))
+			if cfg.Output != "" {
+				sb.WriteString(fmt.Sprintf("  ↳ 产出: %s\n", cfg.Output))
 			}
 		}
 	}
