@@ -94,7 +94,17 @@ func LoadAllTeams(teamsDir string) ([]*TeamConfig, error) {
 }
 
 // FindTeam loads a single team by name from the teams directory.
+// Supports both flat files (name.yaml) and directory structure (name/team.yaml).
 func FindTeam(teamsDir, name string) (*TeamConfig, error) {
+	// Priority 1: directory-based team (name/team.yaml)
+	dirPath := filepath.Join(teamsDir, name, "team.yaml")
+	if _, err := os.Stat(dirPath); err == nil {
+		tc, err := LoadTeamConfig(dirPath)
+		if err == nil {
+			return tc, nil
+		}
+	}
+	// Priority 2: flat file (name.yaml)
 	path := filepath.Join(teamsDir, name+".yaml")
 	return LoadTeamConfig(path)
 }
@@ -143,20 +153,23 @@ func LoadAllTeamsFromRoots(roots []string) ([]*TeamConfig, error) {
 			return nil, fmt.Errorf("read teams dir %s: %w", dir, err)
 		}
 		for _, e := range entries {
-			if e.IsDir() || !strings.HasSuffix(e.Name(), ".yaml") {
-				continue
-			}
-			name := strings.TrimSuffix(e.Name(), ".yaml")
-			if seen[name] {
-				continue
-			}
-			tc, err := LoadTeamConfig(filepath.Join(dir, e.Name()))
-			if err != nil {
-				return nil, fmt.Errorf("load team %s: %w", e.Name(), err)
-			}
-			seen[name] = true
-			teams = append(teams, tc)
+		var tc *TeamConfig
+		var name string
+		if e.IsDir() {
+			// Directory-based team: name/team.yaml
+			tc, _ = LoadTeamConfig(filepath.Join(dir, e.Name(), "team.yaml"))
+			name = e.Name()
+		} else if strings.HasSuffix(e.Name(), ".yaml") {
+			// Flat file: name.yaml
+			tc, _ = LoadTeamConfig(filepath.Join(dir, e.Name()))
+			name = strings.TrimSuffix(e.Name(), ".yaml")
 		}
+		if tc == nil || seen[name] {
+			continue
+		}
+		seen[name] = true
+		teams = append(teams, tc)
+	}
 	}
 	return teams, nil
 }
