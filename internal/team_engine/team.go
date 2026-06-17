@@ -30,6 +30,16 @@ type TeamRuntimeConfig struct {
 		VerifierDefault string `yaml:"verifier_default"`
 	} `yaml:"model"`
 	Workdir string `yaml:"workdir"`
+	Deploy  DeployConfig `yaml:"deploy"`
+}
+
+// DeployConfig defines where agents run.  Team-wide default — individual
+// roles can override with their own Host field.
+type DeployConfig struct {
+	Host   string `yaml:"host"`   // server address (empty = local)
+	Port   int    `yaml:"port"`   // SSH port
+	User   string `yaml:"user"`   // SSH user
+	KeyFile string `yaml:"keyfile,omitempty"` // SSH key path
 }
 
 // TeamLeaderConfig configures the team's Leader agent.
@@ -61,6 +71,7 @@ type TeamRoleConfig struct {
 	Memory          string   `yaml:"memory,omitempty"`
 	Verifier        string   `yaml:"verifier,omitempty"`  // team role to use as verifier
 	Output          string   `yaml:"output,omitempty"` // deliverable file path
+	Host            string   `yaml:"host,omitempty"`   // remote server (empty = local)
 	MaxToolIters    int      `yaml:"maxToolIters,omitempty"`
 	MaxToolCalls    int      `yaml:"maxToolCalls,omitempty"`
 	Timeout         int      `yaml:"timeout,omitempty"` // seconds
