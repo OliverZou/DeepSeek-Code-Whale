@@ -105,19 +105,37 @@ func New(ctx context.Context, cfg Config, start StartOptions) (*App, error) {
 	// Register with the external whale-dashboard process if it's running.
 	// The heartbeat loop also retries registration if the dashboard starts later.
 	app.dashboardClient = bridge.NewClient(workspaceRoot)
-	app.dashboardClient.StartHeartbeat()
-	// Enable auto-resume: dashboard → heartbeat → toolset picks up pending resume.
+	// Set callbacks BEFORE StartHeartbeat to avoid race.
 	app.toolset.SetDashboardClient(app.dashboardClient)
-	// When dashboard sends a resume command, auto-execute directly.
 	app.dashboardClient.OnResume = func(masterTaskID string) {
 		app.toolset.AutoExecuteMasterTask(masterTaskID)
 	}
 	app.dashboardClient.OnCancel = func(masterTaskID string) {
 		app.toolset.CancelAutoExecute()
 	}
+	app.dashboardClient.OnRunTask = func(taskID string) {
+		app.toolset.RunSingleTask(taskID)
+	}
+	// Use a channel to trigger initial sync on every WS connect.
+	// More reliable than a callback closure.
+	syncCh := make(chan struct{}, 1)
+	app.dashboardClient.SyncCh = syncCh
+	app.dashboardClient.StartHeartbeat()
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				team_engine.Log("sync", "sync goroutine panic: %v", r)
+			}
+		}()
+		team_engine.Log("sync", "sync goroutine started, waiting for connect...")
+		for range syncCh {
+			team_engine.Log("sync", "sync goroutine received connect signal")
+			app.toolset.SyncDashboardState(app.dashboardClient, workspaceRoot)
+		}
+	}()
 
 	// Clean up tasks left in transient states from a previous crash/exit.
-	team_engine.CleanupInterruptedTasks(filepath.Join(workspaceRoot, ".whale", "team_engine.db"))
+	team_engine.CleanupInterruptedTasks(filepath.Join(workspaceRoot, ".whale", "team_tasks"))
 
 	return app, nil
 }

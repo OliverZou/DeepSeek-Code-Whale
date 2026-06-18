@@ -225,7 +225,6 @@ func (s *ShellSubagentSpawner) SpawnSubagent(ctx context.Context, req SubagentRe
 	if req.Role != "" {
 		prompt = fmt.Sprintf("[Role: %s]\n\n%s", req.Role, prompt)
 	}
-	args = append(args, prompt)
 
 	cwd := req.Workdir
 	if cwd == "" {
@@ -235,41 +234,52 @@ func (s *ShellSubagentSpawner) SpawnSubagent(ctx context.Context, req SubagentRe
 	cmd := exec.CommandContext(ctx, whaleBin, args...)
 	cmd.Dir = cwd
 
+	stdinPipe, err := cmd.StdinPipe()
+	if err != nil {
+		return SubagentResponse{SpawnerType: "shell", ExitCode: -1, Success: false}, nil
+	}
+
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
+	if err := cmd.Start(); err != nil {
+		return SubagentResponse{SpawnerType: "shell", ExitCode: -1, Success: false}, nil
+	}
+	pid := cmd.Process.Pid
+	if req.OnPID != nil {
+		req.OnPID(pid)
+	}
+
+	// Write initial prompt to stdin.
+	stdinPipe.Write([]byte(prompt))
+
+	// Store the pipe so the engine can write messages mid-execution.
+	if req.OnStdin != nil {
+		req.OnStdin(stdinPipe)
+	}
+
 	done := make(chan error, 1)
-	go func() { done <- cmd.Run() }()
+	go func() { done <- cmd.Wait() }()
 
 	select {
-	case err := <-done:
-		if err != nil {
-			exitCode := -1
-			if exitErr, ok := err.(*exec.ExitError); ok {
+	case waitErr := <-done:
+		stdinPipe.Close()
+		exitCode := 0
+		if waitErr != nil {
+			if exitErr, ok := waitErr.(*exec.ExitError); ok {
 				exitCode = exitErr.ExitCode()
+			} else {
+				exitCode = -1
 			}
-			return SubagentResponse{
-				SpawnerType: "shell",
-				Output:   stdout.String(),
-				ExitCode: exitCode,
-				Success:  false,
-			}, nil
+			return SubagentResponse{SpawnerType: "shell", Output: stdout.String(), ExitCode: exitCode, Success: false, PID: pid}, nil
 		}
-		return SubagentResponse{
-			SpawnerType: "shell",
-			Output:   stdout.String(),
-			ExitCode: 0,
-			Success:  true,
-		}, nil
+		return SubagentResponse{SpawnerType: "shell", Output: stdout.String(), ExitCode: 0, Success: true, PID: pid}, nil
 
 	case <-ctx.Done():
+		stdinPipe.Close()
 		cmd.Process.Kill()
-		return SubagentResponse{
-			Output:   stdout.String(),
-			ExitCode: -2,
-			Success:  false,
-		}, ctx.Err()
+		return SubagentResponse{Output: stdout.String(), ExitCode: -2, Success: false, PID: pid}, ctx.Err()
 	}
 }
 

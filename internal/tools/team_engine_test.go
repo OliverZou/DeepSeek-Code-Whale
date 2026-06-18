@@ -76,20 +76,20 @@ func TestTeamCreateTool_ReturnsFullUUID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("team_create failed: %v", err)
 	}
-	if result.IsError {
-		t.Fatalf("team_create returned error: %s", result.Content)
+	if result.Outcome == core.OutcomeFailure {
+		t.Fatalf("team_create returned error: %s", result.ModelText)
 	}
 
 	// Output format: "Created task {UUID}: {title} [{state}]"
 	// The UUID ends before ": ".
 	const prefix = "Created task "
-	if !strings.HasPrefix(result.Content, prefix) {
-		t.Fatalf("unexpected output format: %s", result.Content)
+	if !strings.HasPrefix(result.ModelText, prefix) {
+		t.Fatalf("unexpected output format: %s", result.ModelText)
 	}
-	rest := strings.TrimPrefix(result.Content, prefix)
+	rest := strings.TrimPrefix(result.ModelText, prefix)
 	colonIdx := strings.Index(rest, ": ")
 	if colonIdx < 0 {
-		t.Fatalf("cannot find colon separator in: %s", result.Content)
+		t.Fatalf("cannot find colon separator in: %s", result.ModelText)
 	}
 	id := rest[:colonIdx]
 
@@ -120,8 +120,8 @@ func TestTeamListTool_ShowsFullUUID(t *testing.T) {
 			"role": "developer"
 		}`,
 	})
-	if err != nil || cr.IsError {
-		t.Fatalf("create failed: %v / %s", err, cr.Content)
+	if err != nil || cr.Outcome == core.OutcomeFailure {
+		t.Fatalf("create failed: %v / %s", err, cr.ModelText)
 	}
 
 	// Now list
@@ -130,12 +130,12 @@ func TestTeamListTool_ShowsFullUUID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("team_list failed: %v", err)
 	}
-	if result.IsError {
-		t.Fatalf("team_list returned error: %s", result.Content)
+	if result.Outcome == core.OutcomeFailure {
+		t.Fatalf("team_list returned error: %s", result.ModelText)
 	}
 
 	// Every line should have a full UUID visible (not truncated).
-	lines := strings.Split(strings.TrimSpace(result.Content), "\n")
+	lines := strings.Split(strings.TrimSpace(result.ModelText), "\n")
 	if len(lines) == 0 {
 		t.Fatal("team_list returned no output")
 	}
@@ -183,10 +183,10 @@ func TestTeamStatusTool_WithFullUUID(t *testing.T) {
 			"role": "developer"
 		}`,
 	})
-	if err != nil || cr.IsError {
-		t.Fatalf("create failed: %v / %s", err, cr.Content)
+	if err != nil || cr.Outcome == core.OutcomeFailure {
+		t.Fatalf("create failed: %v / %s", err, cr.ModelText)
 	}
-	id := extractIDFromCreateOutput(t, cr.Content)
+	id := extractIDFromCreateOutput(t, cr.ModelText)
 
 	// Query status with the full UUID.
 	statusTool := ts.teamStatusTool()
@@ -198,12 +198,12 @@ func TestTeamStatusTool_WithFullUUID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("team_status failed: %v", err)
 	}
-	if result.IsError {
-		t.Fatalf("team_status returned error: %s", result.Content)
+	if result.Outcome == core.OutcomeFailure {
+		t.Fatalf("team_status returned error: %s", result.ModelText)
 	}
 
 	// The status output should start with "Task: {full-uuid}".
-	taskLine := firstLine(result.Content)
+	taskLine := firstLine(result.ModelText)
 	if !strings.Contains(taskLine, id) {
 		t.Errorf("status output missing full UUID %q; first line: %q", id, taskLine)
 	} else {
@@ -228,11 +228,11 @@ func TestTeamStatusTool_WithShortID_ReturnsNotFound(t *testing.T) {
 	if err != nil {
 		t.Fatalf("team_status failed: %v", err)
 	}
-	if !result.IsError {
+	if !result.IsError() {
 		t.Fatal("expected error for short/non-existent ID, but got success")
 	}
-	if !strings.Contains(result.Content, "not found") {
-		t.Errorf("expected 'not found' error, got: %s", result.Content)
+	if !strings.Contains(result.ModelText, "not found") {
+		t.Errorf("expected 'not found' error, got: %s", result.ModelText)
 	}
 }
 
@@ -261,10 +261,10 @@ func TestTeamRunTool_WithFullUUID(t *testing.T) {
 			"role": "developer"
 		}`,
 	})
-	if err != nil || cr.IsError {
-		t.Fatalf("create failed: %v / %s", err, cr.Content)
+	if err != nil || cr.Outcome == core.OutcomeFailure {
+		t.Fatalf("create failed: %v / %s", err, cr.ModelText)
 	}
-	id := extractIDFromCreateOutput(t, cr.Content)
+	id := extractIDFromCreateOutput(t, cr.ModelText)
 
 	// Run with full UUID — should resolve the task (no "not found").
 	runTool := ts.teamRunTool()
@@ -276,10 +276,10 @@ func TestTeamRunTool_WithFullUUID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("team_run call failed: %v", err)
 	}
-	if strings.Contains(result.Content, "not found") {
-		t.Errorf("team_run reported 'not found' for valid UUID; output: %s", result.Content)
+	if strings.Contains(result.ModelText, "not found") {
+		t.Errorf("team_run reported 'not found' for valid UUID; output: %s", result.ModelText)
 	}
-	t.Logf("team_run result: %s", result.Content)
+	t.Logf("team_run result: %s", result.ModelText)
 }
 
 // ---------------------------------------------------------------------------
@@ -299,11 +299,11 @@ func TestTeamRunTool_WithShortID_ReturnsNotFound(t *testing.T) {
 	if err != nil {
 		t.Fatalf("team_run call failed: %v", err)
 	}
-	if !result.IsError {
+	if !result.IsError() {
 		t.Fatal("expected error for short/non-existent ID, but got success")
 	}
-	if !strings.Contains(result.Content, "not found") {
-		t.Errorf("expected 'not found' error, got: %s", result.Content)
+	if !strings.Contains(result.ModelText, "not found") {
+		t.Errorf("expected 'not found' error, got: %s", result.ModelText)
 	}
 }
 

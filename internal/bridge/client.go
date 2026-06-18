@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+
+	"github.com/usewhale/whale/internal/team_engine"
 )
 
 const (
@@ -31,6 +33,12 @@ type Client struct {
 	OnResume func(masterTaskID string)
 	// OnCancel is called when the dashboard sends a cancel command.
 	OnCancel func(masterTaskID string)
+	// OnRunTask is called when the dashboard requests running a single subtask.
+	OnRunTask func(taskID string)
+
+	// SyncCh is sent a value after each successful WebSocket connection.
+	// The receiver (set before StartHeartbeat) triggers a full state push.
+	SyncCh chan struct{}
 
 	pendingResume   string
 	pendingResumeMu sync.Mutex
@@ -124,6 +132,7 @@ func (c *Client) connectAndRead() {
 	u := url.URL{Scheme: "ws", Host: "127.0.0.1:8520", Path: "/ws", RawQuery: "wsid=" + c.wsID}
 	conn, _, err := websocket.DefaultDialer.Dial(u.String(), nil)
 	if err != nil {
+		Log("bridge", "ws dial failed: %v", err)
 		return
 	}
 	defer func() {
@@ -138,6 +147,19 @@ func (c *Client) connectAndRead() {
 	c.wsConnMu.Unlock()
 	Log("dashboard", "ws connected as %s", c.wsID)
 	CLIWSConnect(c.wsID, nil)
+
+	// Push initial full state to dashboard on connect.
+	if c.SyncCh != nil {
+		team_engine.Log("bridge", "connectAndRead: sending on SyncCh")
+		select {
+		case c.SyncCh <- struct{}{}:
+			team_engine.Log("bridge", "connectAndRead: SyncCh sent OK")
+		default:
+			team_engine.Log("bridge", "connectAndRead: SyncCh full, dropped")
+		}
+	} else {
+		team_engine.Log("bridge", "connectAndRead: SyncCh is nil")
+	}
 
 	// Enable cross-process EventBus bridge.  bridgeOut carries events
 	// published in THIS process (send to dashboard over WebSocket);
@@ -209,6 +231,7 @@ func (c *Client) connectAndRead() {
 		var body struct {
 			Command      string `json:"command"`
 			MasterTaskID string `json:"master_task_id"`
+			TaskID       string `json:"task_id"`
 		}
 		if err := json.Unmarshal(msg, &body); err != nil {
 			continue
@@ -221,6 +244,12 @@ func (c *Client) connectAndRead() {
 			if c.OnResume != nil {
 				CLIReceiveResume(body.MasterTaskID)
 				c.OnResume(body.MasterTaskID)
+			}
+		}
+		if body.Command == "run_task" && body.TaskID != "" {
+			Log("dashboard", "received run_task command for task %s", body.TaskID)
+			if c.OnRunTask != nil {
+				c.OnRunTask(body.TaskID)
 			}
 		}
 		if body.Command == "cancel_master" && body.MasterTaskID != "" {

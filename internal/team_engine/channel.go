@@ -108,7 +108,7 @@ var _ AgentChannel = (*TeamEngine)(nil)
 // Prompt implements AgentChannel. It delivers a message to a task's inbox
 // and, when Sync=true, waits for the agent to produce a reply.
 func (e *TeamEngine) Prompt(ctx context.Context, req PromptRequest) (*Message, error) {
-	task, err := e.DB.GetTask(req.ToTaskID)
+	task, err := e.Store.GetTask(req.ToTaskID)
 	if err != nil {
 		return nil, fmt.Errorf("get task %s: %w", req.ToTaskID, err)
 	}
@@ -127,7 +127,7 @@ func (e *TeamEngine) Prompt(ctx context.Context, req PromptRequest) (*Message, e
 
 	// Sync mode: append to task description and re-run to get a reply.
 	newDesc := task.Description + fmt.Sprintf("\n\n[FROM %s]\n%s", req.From, req.Content)
-	if err := e.DB.UpdateTask(req.ToTaskID, map[string]interface{}{
+	if err := e.Store.UpdateTask(req.ToTaskID, map[string]interface{}{
 		"description": newDesc,
 	}); err != nil {
 		return nil, fmt.Errorf("update task description: %w", err)
@@ -172,7 +172,7 @@ func (e *TeamEngine) Abort(_ context.Context, taskID string) error {
 // Kill implements AgentChannel. Forceful termination.
 // Transitions the task to suspended so it can be resumed later.
 func (e *TeamEngine) Kill(_ context.Context, taskID string) error {
-	task, err := e.DB.GetTask(taskID)
+	task, err := e.Store.GetTask(taskID)
 	if err != nil {
 		return fmt.Errorf("get task: %w", err)
 	}
@@ -196,7 +196,7 @@ func (e *TeamEngine) Kill(_ context.Context, taskID string) error {
 	e.mu.Unlock()
 
 	// Transition to suspended (not failed!) so the task can be resumed.
-	if err := e.DB.TransitionState(taskID, TaskStateSuspended, "suspended by user", ""); err != nil {
+	if err := e.Store.TransitionState(taskID, TaskStateSuspended, "suspended by user", ""); err != nil {
 		return fmt.Errorf("suspend task: %w", err)
 	}
 	_ = e.Whiteboard.WriteStatus(taskID, string(TaskStateSuspended))

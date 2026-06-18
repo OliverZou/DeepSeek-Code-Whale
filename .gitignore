@@ -72,3 +72,4 @@ promo/
 
 # --- Tool Artifacts ---
 .omx/
+.qoder

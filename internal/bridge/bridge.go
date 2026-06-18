@@ -4,46 +4,21 @@
 package bridge
 
 import (
-	"fmt"
-	"os"
-	"path/filepath"
-	"sync"
-	"time"
+	"github.com/usewhale/whale/internal/team_engine"
 )
 
 // =========================================================================
 // Logger — local file-based log, independent of team_engine
 // =========================================================================
 
-var (
-	logFile   *os.File
-	logFileMu sync.Mutex
-)
 
-// SetLogFile sets the local log output file.
-func SetLogFile(path string) {
-	os.MkdirAll(filepath.Dir(path), 0755)
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-	if err == nil {
-		logFileMu.Lock()
-		if logFile != nil {
-			logFile.Close()
-		}
-		logFile = f
-		logFileMu.Unlock()
-	}
-}
 
-// Log writes a diagnostic entry.  No-op if no log file is set.
+// SetLogFile is a no-op; all bridge logging goes through team_engine.Log.
+func SetLogFile(path string) {}
+
+// Log writes a diagnostic entry via team_engine.Log.
 func Log(cat, format string, args ...interface{}) {
-	logFileMu.Lock()
-	defer logFileMu.Unlock()
-	if logFile == nil {
-		return
-	}
-	ts := time.Now().Format(time.RFC3339)
-	msg := fmt.Sprintf(format, args...)
-	fmt.Fprintf(logFile, "[%s] [%s] %s\n", ts, cat, msg)
+	team_engine.Log(cat, format, args...)
 }
 
 // =========================================================================

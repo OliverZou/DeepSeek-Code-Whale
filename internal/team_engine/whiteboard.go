@@ -32,6 +32,25 @@ import (
 //   - Agent 之间可以像人类一样进行多轮交互，包括主动推送和按需查询
 //   - 消息存储在 inbox/outbox 中，Agent 启动时自动读取未读消息
 //   - Agent 通过标准工具读写消息，与人类的交互方式完全一致
+// InboxParams carries all inputs needed to write a task's inbox.md.
+type InboxParams struct {
+	Title           string
+	Role            string
+	Description     string
+	Output          string
+	UpstreamOutputs []UpstreamRef
+	Template        string
+	Memory          string
+	AllowSelfSplit  bool
+	RetryFeedback   string
+}
+
+// UpstreamRef is a named file reference to an upstream output.
+type UpstreamRef struct {
+	Name string
+	Path string
+}
+
 type Whiteboard struct {
 	baseDir string
 }
@@ -392,6 +411,70 @@ func safeSenderName(name string) string {
 }
 
 // ---------------------------------------------------------------------------
+
+	// WriteInboxFile writes the structured inbox.md for a task.
+	// Contains: task description, upstream output file references, template,
+	// self-split instructions, and retry feedback — all as file paths,
+	// not inline content.
+	func (wb *Whiteboard) WriteInboxFile(taskID string, params InboxParams) error {
+		taskDir := wb.TaskDir(taskID)
+		if err := os.MkdirAll(taskDir, 0755); err != nil {
+			return fmt.Errorf("create task dir: %w", err)
+		}
+		if err := os.MkdirAll(filepath.Join(taskDir, "artifacts"), 0755); err != nil {
+			return fmt.Errorf("create artifacts dir: %w", err)
+		}
+
+		var b strings.Builder
+		b.WriteString(fmt.Sprintf("# %s\n\n", params.Title))
+		b.WriteString(fmt.Sprintf("**角色**: %s\n\n", params.Role))
+		b.WriteString("---\n\n")
+
+		b.WriteString("## 📋 任务描述\n\n")
+		b.WriteString(params.Description)
+		b.WriteString("\n\n")
+
+		if len(params.UpstreamOutputs) > 0 {
+			b.WriteString("## 📥 上游产出（请先阅读）\n\n")
+			for _, uo := range params.UpstreamOutputs {
+				b.WriteString(fmt.Sprintf("- [%s](%s)\n", uo.Name, uo.Path))
+			}
+			b.WriteString("\n")
+		}
+
+		if params.Output != "" {
+			b.WriteString("## 📤 产出文件\n\n")
+			b.WriteString(fmt.Sprintf("请将最终产出写入: `%s`\n\n", params.Output))
+		}
+
+		if params.Template != "" {
+			b.WriteString("## 📄 产出模板\n\n")
+			b.WriteString(params.Template)
+			b.WriteString("\n\n")
+		}
+
+		if params.Memory != "" {
+			b.WriteString("## 🧠 团队记忆\n\n")
+			b.WriteString(params.Memory)
+			b.WriteString("\n\n")
+		}
+
+		if params.AllowSelfSplit {
+			b.WriteString("## 🔀 自拆分\n\n")
+			b.WriteString("评估: 如果产出预计超过 ~200 行或 ~10 个章节，请拆分。\n\n")
+			b.WriteString("如需拆分: 不要产出部分内容。在产出开头输出 `[SPLIT_PLAN]`，后跟 JSON 数组（2-3 个子任务）。\n")
+			b.WriteString("每个子任务含: title, description, role, output 字段。\n\n")
+		}
+
+		if params.RetryFeedback != "" {
+			b.WriteString("## 🔄 上一轮审查反馈\n\n")
+			b.WriteString(params.RetryFeedback)
+			b.WriteString("\n\n")
+		}
+
+		return wb.writeFile(filepath.Join(taskDir, "input.md"), b.String())
+	}
+
 // Internal helpers
 // ---------------------------------------------------------------------------
 

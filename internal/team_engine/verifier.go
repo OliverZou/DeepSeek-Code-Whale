@@ -3,6 +3,8 @@ package team_engine
 import (
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -14,10 +16,11 @@ import (
 // critically examine a Worker's output against the original task
 // requirements, using a Whale subagent instead of an external CLI.
 type Verifier struct {
-	runner     *AgentRunner
-	whiteboard *Whiteboard
-	timeout    time.Duration // subagent timeout (from config)
-	model      string        // LLM model name; "" = Whale default
+	runner       *AgentRunner
+	whiteboard   *Whiteboard
+	timeout      time.Duration // subagent timeout (from config)
+	model        string        // LLM model name; "" = Whale default
+	customPrompt string        // team-configured verifier prompt (from team.yaml)
 }
 
 // NewVerifier creates a Verifier that uses the given runner and whiteboard.
@@ -34,6 +37,13 @@ func NewVerifier(wb *Whiteboard, runner *AgentRunner, timeout time.Duration, mod
 	if len(model) > 0 {
 		v.model = model[0]
 	}
+	return v
+}
+
+// WithCustomPrompt sets a team-configured verifier prompt that is prepended
+// to the default verification prompt.  Use "" to clear.
+func (v *Verifier) WithCustomPrompt(p string) *Verifier {
+	v.customPrompt = p
 	return v
 }
 
@@ -212,12 +222,16 @@ func (v *Verifier) Verify(task *Task) (passed bool, retry bool, feedback string,
 		return false, false, "", fmt.Errorf("read worker output: %w", err)
 	}
 
-	// Choose the right verification prompt based on task role.
+	// Prepend team-configured verifier prompt if set.
 	var prompt string
+	if v.customPrompt != "" {
+		prompt = v.customPrompt + "\n\n---\n\n"
+	}
+	// Choose the right verification prompt based on task role.
 	if task.Role.IsContentRole() {
-		prompt = BuildContentVerifierPrompt(task, workerOutput)
+		prompt += BuildContentVerifierPrompt(task, workerOutput)
 	} else {
-		prompt = BuildVerifierPrompt(task, workerOutput)
+		prompt += BuildVerifierPrompt(task, workerOutput)
 	}
 	// When the worker output is very short, the actual deliverable is
 	// likely in workspace files written via tool calls.  Tell the
@@ -285,7 +299,42 @@ func (v *Verifier) Verify(task *Task) (passed bool, retry bool, feedback string,
 	}
 	// No clear verdict → treat as FAIL to be safe.
 
+	// File-reference check: verify that all files referenced in output.md
+	// actually exist.  Missing referenced files → FAIL.
+	if passed && !retry {
+		missingFiles := findMissingRefs(workerOutput, workdir)
+		if len(missingFiles) > 0 {
+			passed = false
+			output += fmt.Sprintf("\n\nVERDICT: FAIL — 引用的文件不存在:\n- %s", strings.Join(missingFiles, "\n- "))
+		}
+	}
+
 	return passed, retry, output, nil
+}
+
+// findMissingRefs parses markdown links from output and returns paths of
+// referenced files that don't exist on disk.
+func findMissingRefs(output, workdir string) []string {
+	re := regexp.MustCompile(`\[([^\]]*)\]\(([^)]+)\)`)
+	matches := re.FindAllStringSubmatch(output, -1)
+	var missing []string
+	for _, m := range matches {
+		if len(m) < 3 {
+			continue
+		}
+		ref := strings.TrimSpace(m[2])
+		if ref == "" || strings.HasPrefix(ref, "http://") || strings.HasPrefix(ref, "https://") {
+			continue
+		}
+		path := ref
+		if !filepath.IsAbs(path) {
+			path = filepath.Join(workdir, path)
+		}
+		if _, err := os.Stat(path); os.IsNotExist(err) {
+			missing = append(missing, ref)
+		}
+	}
+	return missing
 }
 
 // isLazyVerdict detects verifier responses that lack independent tool evidence.

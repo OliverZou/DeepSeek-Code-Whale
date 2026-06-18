@@ -347,7 +347,7 @@ Subcommands:
 			}
 			defer eng.Close()
 
-			entries, err := eng.DB.GetTaskHistory(args[0])
+			entries, err := eng.Store.GetTaskHistory(args[0])
 			if err != nil {
 				return fmt.Errorf("get history: %w", err)
 			}

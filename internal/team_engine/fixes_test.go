@@ -125,15 +125,16 @@ func TestBuildLeaderPrompt_InjectRules(t *testing.T) {
 // ============================================================================
 
 func TestCheckpointAfterWrite_NoPanic(t *testing.T) {
-	// Open an in-memory DB.  checkpointAfterWrite should be a no-op.
-	db, err := NewDB(":memory:")
+	// FileTaskStore checkpoint/checkpointAfterWrite are no-ops.
+	store, err := NewFileTaskStore(t.TempDir())
 	if err != nil {
-		t.Fatalf("open memory db: %v", err)
+		t.Fatalf("open file store: %v", err)
 	}
-	defer db.Close()
+	defer store.Close()
 
 	// Should not panic or error.
-	db.checkpointAfterWrite()
+	store.checkpointAfterWrite()
+	store.Checkpoint()
 }
 
 func TestInsertTaskCheckpoints(t *testing.T) {
@@ -149,7 +150,7 @@ func TestInsertTaskCheckpoints(t *testing.T) {
 	}
 
 	// Verify the task exists — insert + checkpoint succeeded.
-	got, err := eng.DB.GetTask(task.ID)
+	got, err := eng.Store.GetTask(task.ID)
 	if err != nil {
 		t.Fatalf("get task: %v", err)
 	}
@@ -225,13 +226,13 @@ func TestUpdateTaskCheckpoints(t *testing.T) {
 	defer eng.Close()
 
 	task, _ := eng.CreateTask("Update test", "desc", RoleDeveloper, "", nil, 0, ".", "", "", "")
-	err := eng.DB.UpdateTask(task.ID, map[string]interface{}{"state": "done"})
+	err := eng.Store.UpdateTask(task.ID, map[string]interface{}{"state": "done"})
 	if err != nil {
 		t.Fatalf("update task: %v", err)
 	}
 
 	// Verify state was updated.
-	got, _ := eng.DB.GetTask(task.ID)
+	got, _ := eng.Store.GetTask(task.ID)
 	if got == nil {
 		t.Fatal("task not found after update")
 	}
@@ -247,7 +248,7 @@ func TestDeleteTaskCheckpoints(t *testing.T) {
 		t.Fatalf("delete task: %v", err)
 	}
 
-	got, _ := eng.DB.GetTask(task.ID)
+	got, _ := eng.Store.GetTask(task.ID)
 	if got != nil {
 		t.Error("task should be gone after delete")
 	}

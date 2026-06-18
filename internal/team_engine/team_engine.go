@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"math"
 	"os"
 	"os/exec"
@@ -53,7 +54,7 @@ func isSubstantive(output string) bool {
 // On verification failure the task loops back to producing (retry).  When
 // the retry budget is exhausted the task transitions to failed.
 type TeamEngine struct {
-	DB         *TaskDB
+	Store      *FileTaskStore
 	Whiteboard *Whiteboard
 	Config     *Config
 	Router     *Router
@@ -69,6 +70,9 @@ type TeamEngine struct {
 
 	// activeCancels tracks cancel functions for running subagent spawns.
 	activeCancels map[string]context.CancelFunc // taskID → cancel
+	// activeAgents tracks the OS process ID for each running agent task.
+	activeAgents  map[string]int // taskID → PID
+	activeStdinWriters map[string]io.WriteCloser // taskID → stdin pipe
 
 	// masterTaskCancels stores cancel functions for active PlanAndRun /
 	// ResumeMasterTask executions.  When the user clicks "stop" in the
@@ -122,33 +126,26 @@ func (e *TeamEngine) Team() *TeamConfig {
 //   - configPath:     Path to team_engine.yaml (empty = use defaults)
 //   - spawner:        Whale SubagentSpawner implementation
 func New(dbPath, whiteboardDir, configPath string, spawner SubagentSpawner) (*TeamEngine, error) {
-	database, err := NewDB(dbPath)
-	if err != nil {
-		return nil, fmt.Errorf("init db: %w", err)
-	}
-
 	wb, err := NewWhiteboard(whiteboardDir)
 	if err != nil {
-		database.Close()
 		return nil, fmt.Errorf("init whiteboard: %w", err)
 	}
 
 	cfg, err := Load(configPath)
 	if err != nil {
-		database.Close()
 		return nil, fmt.Errorf("load config: %w", err)
 	}
 
 	runner := NewRunner(spawner)
+	store, _ := NewFileTaskStore(whiteboardDir)
 	loggers, err := log.New(whiteboardDir)
 	if err != nil {
-		database.Close()
 		return nil, fmt.Errorf("init loggers: %w", err)
 	}
 	shutdownCtx, shutdownCancel := context.WithCancel(context.Background())
 
 	eng := &TeamEngine{
-		DB:         database,
+		Store:      store,
 		Whiteboard: wb,
 		Config:     cfg,
 		Router:     NewRouter(cfg),
@@ -158,17 +155,16 @@ func New(dbPath, whiteboardDir, configPath string, spawner SubagentSpawner) (*Te
 		timeout:    defaultTimeout,
 		activeTrees:    make(map[string]string),
 		activeCancels:  make(map[string]context.CancelFunc),
+		activeAgents:   make(map[string]int),
+		activeStdinWriters: make(map[string]io.WriteCloser),
 	masterTaskCancels: make(map[string]context.CancelFunc),
 		shutdownCtx:    shutdownCtx,
 		shutdownCancel: shutdownCancel,
 	}
 
-	// Clean up tasks interrupted by a previous crash/exit — only when
-	// we have a spawner (i.e. this engine can actually execute tasks).
-	// Read-only engines (dashboard) must not modify task state.
-	if spawner != nil {
-		eng.cleanupInterruptedTasks()
-	}
+	// cleanupInterruptedTasks is called separately by the CLI on startup.
+	// Engine instances created for sync/dashboard must never modify state.
+	_ = spawner
 
 	return eng, nil
 }
@@ -178,9 +174,19 @@ func (e *TeamEngine) Close() error {
 	e.shutdownCancel()
 
 	e.mu.Lock()
+	// Cancel all running agent contexts (graceful shutdown signal).
 	for taskID, cancel := range e.activeCancels {
 		cancel()
 		delete(e.activeCancels, taskID)
+	}
+	// Force-kill any agents that haven't exited yet.
+	for taskID, pid := range e.activeAgents {
+		if pid > 0 {
+			if proc, err := os.FindProcess(pid); err == nil {
+				_ = proc.Kill()
+			}
+		}
+		delete(e.activeAgents, taskID)
 	}
 	activeTrees := make(map[string]string, len(e.activeTrees))
 	for k, v := range e.activeTrees {
@@ -198,7 +204,7 @@ func (e *TeamEngine) Close() error {
 		_ = e.Loggers.Close()
 	}
 
-	return e.DB.Close()
+	return e.Store.Close()
 }
 
 // CancelMasterTaskExecution cancels a running PlanAndRun / ResumeMasterTask
@@ -221,29 +227,16 @@ func (e *TeamEngine) CancelMasterTaskExecution(masterTaskID string) bool {
 // in transient states (producing, verifying, assigned) to suspended,
 // and clears stale "running" status on master tasks.  Safe to call
 // during startup or when a whale process reconnects.
-func CleanupInterruptedTasks(dbPath string) {
-	tdb, err := NewDB(dbPath)
+func CleanupInterruptedTasks(storeDir string) {
+	store, err := NewFileTaskStore(storeDir)
 	if err != nil {
 		return
 	}
-	defer tdb.Close()
-	tasks, err := tdb.ListTasks()
-	if err != nil {
-		return
-	}
+	tasks, _ := store.ListTasks()
 	for _, t := range tasks {
 		switch t.State {
 		case TaskStateProducing, TaskStateVerifying, TaskStateAssigned:
-			_ = tdb.ForceTransitionState(t.ID, TaskStateSuspended, "interrupted-restart")
-			if defaultTeamLog != nil {
-				defaultTeamLog.EngineResumeTask(t.ID, string(TaskStateSuspended))
-			}
-		}
-	}
-	mts, _ := tdb.ListMasterTasks()
-	for _, mt := range mts {
-		if mt.Status == "running" {
-			_ = tdb.UpdateMasterTaskStatus(mt.ID, "")
+			_ = store.ForceTransitionState(t.ID, TaskStateSuspended, "interrupted-restart")
 		}
 	}
 }
@@ -252,14 +245,14 @@ func CleanupInterruptedTasks(dbPath string) {
 // verifying, assigned) to suspended.  Called on engine open to handle
 // the case where a previous whale process was killed mid-execution.
 func (e *TeamEngine) cleanupInterruptedTasks() {
-	tasks, err := e.DB.ListTasks()
+	tasks, err := e.Store.ListTasks()
 	if err != nil {
 		return
 	}
 	for _, t := range tasks {
 		switch t.State {
 		case TaskStateProducing, TaskStateVerifying, TaskStateAssigned:
-			_ = e.DB.ForceTransitionState(t.ID, TaskStateSuspended, "interrupted-restart")
+			_ = e.Store.ForceTransitionState(t.ID, TaskStateSuspended, "interrupted-restart")
 			if defaultTeamLog != nil {
 				defaultTeamLog.EngineResumeTask(t.ID, string(TaskStateSuspended))
 			}
@@ -267,10 +260,10 @@ func (e *TeamEngine) cleanupInterruptedTasks() {
 	}
 	// Also reset any master task status from "running" so the dashboard
 	// doesn't show stale active states.
-	mts, _ := e.DB.ListMasterTasks()
+	mts, _ := e.Store.ListMasterTasks()
 	for _, mt := range mts {
 		if mt.Status == "running" {
-			_ = e.DB.UpdateMasterTaskStatus(mt.ID, "")
+			_ = e.Store.UpdateMasterTaskStatus(mt.ID, "")
 		}
 	}
 }
@@ -441,19 +434,16 @@ func (e *TeamEngine) CreateMasterTask(goal, workspacePath string) (*MasterTask, 
 		WorkspacePath: workspacePath,
 		Status:        "running",
 	}
-	if err := e.DB.InsertMasterTask(mt); err != nil {
+	if err := e.Store.InsertMasterTask(mt); err != nil {
 		return nil, fmt.Errorf("insert master task: %w", err)
 	}
 
-	// Flush WAL so the dashboard's separate DB connection can see the
-	// newly created master task immediately.  Without this checkpoint,
-	// the dashboard will open the DB right after receiving engine_ready
-	// but see zero master tasks — the data is still in the WAL journal.
-	if err := e.DB.Checkpoint(); err != nil && defaultTeamLog != nil {
-		Log("plan", "checkpoint after InsertMasterTask failed: %v", err)
+	// Dual-write to file store.
+	if e.Store != nil {
+		_ = e.Store.InsertMasterTask(mt)
 	}
 
-	// Notify dashboard that this workspace now has an engine (DB created).
+	// Notify dashboard that this workspace now has an engine.
 	eventbus.Global().Publish(eventbus.TopicWorkspace, eventbus.Event{
 		Type: eventbus.EventWSEngineReady,
 		Payload: map[string]string{
@@ -465,33 +455,33 @@ func (e *TeamEngine) CreateMasterTask(goal, workspacePath string) (*MasterTask, 
 
 // ListMasterTasks returns all master tasks.
 func (e *TeamEngine) ListMasterTasks() ([]*MasterTask, error) {
-	return e.DB.ListMasterTasks()
+	return e.Store.ListMasterTasks()
 }
 
 // ListTasksByMasterTask returns subtasks for a master task.
 func (e *TeamEngine) ListTasksByMasterTask(masterTaskID string) ([]*Task, error) {
-	return e.DB.ListTasksByMasterTask(masterTaskID)
+	return e.Store.ListTasksByMasterTask(masterTaskID)
 }
 
 // GetMasterTask retrieves a master task by ID.
 func (e *TeamEngine) GetMasterTask(id string) (*MasterTask, error) {
-	return e.DB.GetMasterTask(id)
+	return e.Store.GetMasterTask(id)
 }
 
 // CompleteMasterTask marks a master task as done.
 func (e *TeamEngine) CompleteMasterTask(id string) error {
-	return e.DB.UpdateMasterTaskStatus(id, "done")
+	return e.Store.UpdateMasterTaskStatus(id, "done")
 }
 
 // ListSuspendedMasterTasks returns master tasks with suspended subtasks.
 func (e *TeamEngine) ListSuspendedMasterTasks() ([]*MasterTask, error) {
-	all, err := e.DB.ListMasterTasks()
+	all, err := e.Store.ListMasterTasks()
 	if err != nil {
 		return nil, err
 	}
 	var result []*MasterTask
 	for _, mt := range all {
-		tasks, err := e.DB.ListTasksByMasterTask(mt.ID)
+		tasks, err := e.Store.ListTasksByMasterTask(mt.ID)
 		if err != nil {
 			continue
 		}
@@ -537,13 +527,13 @@ func (e *TeamEngine) saveCheckpoint(masterTaskID string, completed map[string]bo
 		cp.BatchCycles[b.ID] = b.CycleCount
 	}
 	data, _ := json.Marshal(cp)
-	_ = e.DB.SaveMasterTaskProgress(masterTaskID, string(data))
+	_ = e.Store.SaveMasterTaskProgress(masterTaskID, string(data))
 }
 
 // ResumeMasterTask resumes a previously suspended master task.
 func (e *TeamEngine) ResumeMasterTask(ctx context.Context, masterTaskID, goal, workdir string) ([]*Batch, error) {
 	// Mark as running so the dashboard shows "Stop" button.
-	_ = e.DB.UpdateMasterTaskStatus(masterTaskID, "running")
+	_ = e.Store.UpdateMasterTaskStatus(masterTaskID, "running")
 	// Register cancel so dashboard stop button can interrupt resume.
 	execCtx, execCancel := context.WithCancel(ctx)
 	defer execCancel()
@@ -556,7 +546,7 @@ func (e *TeamEngine) ResumeMasterTask(ctx context.Context, masterTaskID, goal, w
 		e.mu.Unlock()
 	}()
 
-	progressJSON, err := e.DB.GetMasterTaskProgress(masterTaskID)
+	progressJSON, err := e.Store.GetMasterTaskProgress(masterTaskID)
 	if err != nil {
 		return nil, fmt.Errorf("load checkpoint: %w", err)
 	}
@@ -591,7 +581,7 @@ func (e *TeamEngine) ResumeMasterTask(ctx context.Context, masterTaskID, goal, w
 		passedBatches[id] = true
 	}
 
-	allTasks, err := e.DB.ListTasksByMasterTask(masterTaskID)
+	allTasks, err := e.Store.ListTasksByMasterTask(masterTaskID)
 	if err != nil {
 		return nil, fmt.Errorf("list subtasks: %w", err)
 	}
@@ -634,13 +624,36 @@ func (e *TeamEngine) ResumeMasterTask(ctx context.Context, masterTaskID, goal, w
 		// and should not be retried.
 		if isParent[t.ID] {
 			if t.State != TaskStateDone {
-				_ = e.DB.ForceTransitionState(t.ID, TaskStateDone, "management node")
+				_ = e.Store.ForceTransitionState(t.ID, TaskStateDone, "management node")
 			}
 			continue
 		}
+
+		// File-based state: for done/verified tasks, verify output files
+		// still exist.  If files were deleted (e.g. user cleaned up), the
+		// task must be re-executed.
+		if t.State == TaskStateDone || t.State == TaskStateVerified {
+			if t.Output != "" {
+				if _, oErr := os.Stat(t.Output); oErr == nil {
+					if _, vErr := os.Stat(filepath.Join(filepath.Dir(t.Output), "verify.md")); vErr == nil {
+						// Both files exist — genuinely done, don't reset.
+						continue
+					}
+				}
+			}
+			// Files missing — reset to pending so the engine re-executes.
+			if defaultTeamLog != nil {
+				Log("resume", "task %s was %s but output files missing, resetting to pending", t.ID[:8], t.State)
+			}
+			_ = e.Store.UpdateTask(t.ID, map[string]interface{}{"state": string(TaskStatePending)})
+			_ = e.Whiteboard.WriteStatus(t.ID, string(TaskStatePending))
+			_ = e.Whiteboard.AppendOutput(t.ID, "\n[RESUMED — output files missing, re-executing]\n")
+			continue
+		}
+
 		newState := ResetForResume(t.State)
 		if newState != t.State {
-			_ = e.DB.UpdateTask(t.ID, map[string]interface{}{"state": string(newState)})
+			_ = e.Store.UpdateTask(t.ID, map[string]interface{}{"state": string(newState)})
 			_ = e.Whiteboard.WriteStatus(t.ID, string(newState))
 			_ = e.Whiteboard.AppendOutput(t.ID, "\n[RESUMED]\n")
 		}
@@ -739,7 +752,7 @@ func (e *TeamEngine) ResumeMasterTask(ctx context.Context, masterTaskID, goal, w
 					for _, t := range batch.Tasks {
 						e.SendFeedback(t.ID, review.Feedback)
 						if !t.State.IsTerminal() && t.State != TaskStateSuspended {
-							_ = e.DB.TransitionState(t.ID, TaskStateAssigned, "", "")
+							_ = e.Store.TransitionState(t.ID, TaskStateAssigned, "", "")
 						}
 					}
 					continue
@@ -748,9 +761,9 @@ func (e *TeamEngine) ResumeMasterTask(ctx context.Context, masterTaskID, goal, w
 					for _, t := range batch.Tasks {
 						e.SendFeedback(t.ID, review.Feedback)
 						if t.State == TaskStateFailed || t.State == TaskStateSuspended {
-							_ = e.DB.TransitionState(t.ID, TaskStatePending, "escalated retry", "")
+							_ = e.Store.TransitionState(t.ID, TaskStatePending, "escalated retry", "")
 						} else if !t.State.IsTerminal() {
-							_ = e.DB.TransitionState(t.ID, TaskStateAssigned, "", "")
+							_ = e.Store.TransitionState(t.ID, TaskStateAssigned, "", "")
 						}
 					}
 					continue
@@ -792,7 +805,7 @@ cancel := e.OnEvent(func(event TaskEvent) {
 		case <-ctx.Done():
 			return
 		case <-heartbeat.C:
-			tasks, err := e.DB.ListTasksByMasterTask(masterTaskID)
+			tasks, err := e.Store.ListTasksByMasterTask(masterTaskID)
 			if err != nil || len(tasks) == 0 {
 				continue
 			}
@@ -860,25 +873,29 @@ func (e *TeamEngine) CreateTask(title, description string, role AgentRole, profi
 	task := NewTask(id, title, description, role, profile, maxRetries, workdir, parentIDs, batchID, masterTaskID)
 	task.VerifierFocus = verifierFocus
 
-	if err := e.DB.InsertTask(task); err != nil {
+	if err := e.Store.InsertTask(task); err != nil {
 		return nil, fmt.Errorf("insert task: %w", err)
+	}
+	// Dual-write to file store.
+	if e.Store != nil {
+		_ = e.Store.InsertTask(task)
 	}
 	return task, nil
 }
 
 // GetTask retrieves a task by ID.
 func (e *TeamEngine) GetTask(taskID string) (*Task, error) {
-	return e.DB.GetTask(taskID)
+	return e.Store.GetTask(taskID)
 }
 
 // ListTasks returns all tasks.
 func (e *TeamEngine) ListTasks() ([]*Task, error) {
-	return e.DB.ListTasks()
+	return e.Store.ListTasks()
 }
 
 // ListTasksByState returns tasks in a given state.
 func (e *TeamEngine) ListTasksByState(state TaskState) ([]*Task, error) {
-	return e.DB.ListTasksByState(state)
+	return e.Store.ListTasksByState(state)
 }
 
 // ---------------------------------------------------------------------------
@@ -887,7 +904,7 @@ func (e *TeamEngine) ListTasksByState(state TaskState) ([]*Task, error) {
 
 // AssignTask transitions a task from pending → assigned.
 func (e *TeamEngine) AssignTask(taskID string) error {
-	return e.DB.TransitionState(taskID, TaskStateAssigned, "", "")
+	return e.Store.TransitionState(taskID, TaskStateAssigned, "", "")
 }
 
 // ---------------------------------------------------------------------------
@@ -913,7 +930,7 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 		Log("task", "task: %s start", taskID[:8])
 	}
 	e.mu.Lock()
-	task, err := e.DB.GetTask(taskID)
+	task, err := e.Store.GetTask(taskID)
 	if err != nil {
 		e.mu.Unlock()
 		return false, fmt.Errorf("get task: %w", err)
@@ -921,6 +938,17 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 	if task == nil {
 		e.mu.Unlock()
 		return false, fmt.Errorf("task %q not found", taskID)
+	}
+
+	// File-based completion: if output + verify files already exist, done.
+	if task.Output != "" {
+		if _, oErr := os.Stat(task.Output); oErr == nil {
+			if _, vErr := os.Stat(filepath.Join(filepath.Dir(task.Output), "verify.md")); vErr == nil {
+				e.mu.Unlock()
+				_ = e.Store.ForceTransitionState(taskID, TaskStateDone, "output files exist")
+				return true, nil
+			}
+		}
 	}
 
 	// Guard: only start from PENDING or ASSIGNED.
@@ -944,53 +972,68 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 		// Check for cancellation before each retry.
 		select {
 		case <-ctx.Done():
-			_ = e.DB.ForceTransitionState(taskID, TaskStateSuspended, "cancelled-by-user")
+			_ = e.Store.ForceTransitionState(taskID, TaskStateSuspended, "cancelled-by-user")
 			e.fireEvent(TaskEvent{Type: EventStateChanged})
 			return false, ctx.Err()
 		default:
 		}
 		// ---- Phase 1: Producing ----------------------------------------
-		// Build the full prompt including inbox messages + agent memory.
-		prompt := task.Description
-		if inboxCtx, err := e.Whiteboard.BuildInboxContext(task.ID); err == nil && inboxCtx != "" {
-			prompt += inboxCtx
+		// ---- Phase 1: Producing ----------------------------------------
+		// Build inbox.md with file-path references, not inline content.
+		// Agent reads inbox.md → does work → writes output file.
+
+		// Collect upstream output file references from parent tasks.
+		var upstreamRefs []UpstreamRef
+		for _, pid := range task.ParentIDs {
+			if pt, ptErr := e.Store.GetTask(pid); ptErr == nil && pt != nil && pt.Output != "" {
+				upstreamRefs = append(upstreamRefs, UpstreamRef{Name: pt.Title, Path: pt.Output})
+			}
 		}
-		// Inject relevant agent memories so the worker can learn from past tasks.
-		if memCtx, err := e.BuildMemoryContext(task.Role, task.Title); err == nil && memCtx != "" {
-			prompt += memCtx
+		// Also include done same-batch task outputs.
+		if task.BatchID != "" && task.MasterTaskID != "" {
+			batchTasks, _ := e.Store.ListTasksByMasterTask(task.MasterTaskID)
+			for _, bt := range batchTasks {
+				if bt.BatchID == task.BatchID && bt.ID != task.ID && bt.State == TaskStateDone && bt.Output != "" {
+					upstreamRefs = append(upstreamRefs, UpstreamRef{Name: bt.Title, Path: bt.Output})
+				}
+			}
 		}
-		// Self-split instruction: Worker assesses whether the task fits in
-		// one pass.  If too large, output a split plan instead.
-		prompt += fmt.Sprintf(`
 
-## Self-Split Capability
-Before producing the deliverable, assess whether you can complete this task in a single pass.
-RULE OF THUMB: if the expected output exceeds ~200 lines or ~10 sections, SPLIT IT.
-Do NOT try to squeeze a large document into one pass — it will be truncated and rejected.
+		// Read team template and memory.
+		template := e.readTeamTemplate(task.Output)
+		memory, _ := e.BuildMemoryContext(task.Role, task.Title)
 
-If the task is too large:
-1. Do NOT produce a partial deliverable
-2. Instead, output a split plan starting with the exact line [SPLIT_PLAN]
-3. Follow with a JSON array of 2-3 smaller subtasks, each with:
-   - "title": short title
-   - "description": what this child task should produce
-   - "role": "%s" (same role)
-   - "depends_on_index": -1 or the index of a sibling task (0-based)
-4. The engine will run these child tasks, then call you back to assemble the final deliverable
-5. Do NOT nest further — you can only split into ONE level of children
+		// Write structured inbox.md.
+		inboxParams := InboxParams{
+			Title:           task.Title,
+			Role:            string(task.Role),
+			Description:     task.Description,
+			Output:          task.Output,
+			UpstreamOutputs: upstreamRefs,
+			Template:        template,
+			Memory:          memory,
+			AllowSelfSplit:  len(task.ParentIDs) == 0,
+			RetryFeedback:   task.VerifierFeedback,
+		}
+		if err := e.Whiteboard.WriteInboxFile(task.ID, inboxParams); err != nil {
+			return false, fmt.Errorf("write inbox: %w", err)
+		}
 
-If the task fits in one pass (~200 lines or fewer), produce the deliverable normally.`, task.Role)
-		if err := e.Whiteboard.InitTask(task.ID, prompt); err != nil {
-			return false, fmt.Errorf("init whiteboard: %w", err)
+		// Agent prompt: short reference to inbox.md.
+		inboxPath := filepath.Join(e.Whiteboard.TaskDir(task.ID), "input.md")
+		prompt := fmt.Sprintf("[Role: %s]\n\n🎯 任务文件: %s\n📤 产出路径: %s\n\n请先阅读任务文件了解完整需求，然后产出到指定路径。", task.Role, inboxPath, task.Output)
+		if len(task.ParentIDs) == 0 {
+			prompt += "\n\n如果任务过大无法一次完成，在产出开头输出 [SPLIT_PLAN] 拆分。"
 		}
 
 		// State: assigned → producing (under lock).
 		e.mu.Lock()
-		if err := e.DB.TransitionState(taskID, TaskStateProducing, "", ""); err != nil {
+		if err := e.Store.TransitionState(taskID, TaskStateProducing, "", ""); err != nil {
 			e.mu.Unlock()
 			return false, fmt.Errorf("transition to producing: %w", err)
 		}
 		e.mu.Unlock()
+		e.fireEvent(TaskEvent{Type: EventStateChanged, TaskID: taskID, NewState: string(TaskStateProducing)})
 
 		workdir := task.Workdir
 		if workdir == "" {
@@ -1035,9 +1078,25 @@ If the task fits in one pass (~200 lines or fewer), produce the deliverable norm
 		e.mu.Lock()
 		e.activeCancels[taskID] = taskCancel
 		e.mu.Unlock()
-		result := e.Runner.RunWithContext(taskCtx, prompt, workdir, toolsStr, taskTimeout, liveOutput)
+		// onPID callback: track the OS process ID as soon as it starts,
+		// so the stop button can kill it during execution.
+		onPID := func(pid int) {
+			if pid > 0 {
+				e.mu.Lock()
+				e.activeAgents[taskID] = pid
+				e.mu.Unlock()
+			}
+		}
+		onStdin := func(w io.WriteCloser) {
+			e.mu.Lock()
+			e.activeStdinWriters[taskID] = w
+			e.mu.Unlock()
+		}
+		result := e.Runner.RunWithContext(taskCtx, prompt, workdir, toolsStr, taskTimeout, liveOutput, onPID, onStdin)
 		e.mu.Lock()
 		delete(e.activeCancels, taskID)
+		delete(e.activeAgents, taskID)
+		delete(e.activeStdinWriters, taskID)
 		e.mu.Unlock()
 		taskCancel()
 
@@ -1070,6 +1129,7 @@ If the task fits in one pass (~200 lines or fewer), produce the deliverable norm
 				if defaultTeamLog != nil {
 					Log("task", "task: %s self-split into %d children", task.ID[:8], len(childPlan))
 				}
+				var createdChildren []*Task
 				for _, pt := range childPlan {
 					child, err := e.CreateTask(pt.Title, pt.Description, task.Role, task.Profile, []string{task.ID}, 0, workdir, pt.VerifierFocus, task.BatchID, task.MasterTaskID)
 					if err != nil {
@@ -1081,11 +1141,13 @@ If the task fits in one pass (~200 lines or fewer), produce the deliverable norm
 					child.Output = pt.Output
 					child.BatchID = task.BatchID
 					child.MasterTaskID = task.MasterTaskID
-					_ = e.DB.UpdateTask(child.ID, map[string]interface{}{"batch_id": task.BatchID, "master_task_id": task.MasterTaskID})
+					_ = e.Store.UpdateTask(child.ID, map[string]interface{}{"batch_id": task.BatchID, "master_task_id": task.MasterTaskID})
+					createdChildren = append(createdChildren, child)
 					if defaultTeamLog != nil { Log("task", "task: %s child %s created", task.ID[:8], child.ID[:8]) }
 				}
+				e.writeTaskPlanJSON(task, createdChildren)
 				// Mark parent as done (children carry the work forward).
-				_ = e.DB.TransitionState(taskID, TaskStateDone, "", "self-split into children")
+				_ = e.Store.TransitionState(taskID, TaskStateDone, "", "self-split into children")
 				e.fireEvent(TaskEvent{Type: EventStateChanged})
 				return true, nil
 			}
@@ -1110,7 +1172,7 @@ If the task fits in one pass (~200 lines or fewer), produce the deliverable norm
 
 		// State: producing → produced (under lock).
 		e.mu.Lock()
-		if err := e.DB.TransitionState(taskID, TaskStateProduced, "", ""); err != nil {
+		if err := e.Store.TransitionState(taskID, TaskStateProduced, "", ""); err != nil {
 			e.mu.Unlock()
 			return false, fmt.Errorf("transition to produced: %w", err)
 		}
@@ -1118,7 +1180,7 @@ If the task fits in one pass (~200 lines or fewer), produce the deliverable norm
 
 		// ---- Phase 2: Verifying ----------------------------------------
 		e.mu.Lock()
-		if err := e.DB.TransitionState(taskID, TaskStateVerifying, "", ""); err != nil {
+		if err := e.Store.TransitionState(taskID, TaskStateVerifying, "", ""); err != nil {
 			e.mu.Unlock()
 			return false, fmt.Errorf("transition to verifying: %w", err)
 		}
@@ -1132,7 +1194,21 @@ If the task fits in one pass (~200 lines or fewer), produce the deliverable norm
 			// Dynamic Workflow mode: N verifiers in parallel + Synthesizer.
 			passed, isRetry, feedback = e.runDWVerification(task)
 		} else {
-			v := NewVerifier(e.Whiteboard, e.Runner, 0)
+			// Use team-configured verifier prompt if available.
+			verifierPrompt := ""
+			if e.team != nil {
+				roleKey := string(task.Role)
+				if vr, ok := e.team.Roles[roleKey]; ok && vr.Verifier != "" {
+					if vrole, ok2 := e.team.Roles[vr.Verifier]; ok2 {
+						verifierPrompt = vrole.Prompt
+					}
+				}
+			}
+			verifierModel := ""
+			if e.team != nil && e.team.Config != nil {
+				verifierModel = e.team.Config.Model.VerifierDefault
+			}
+			v := NewVerifier(e.Whiteboard, e.Runner, 0, verifierModel).WithCustomPrompt(verifierPrompt)
 			verifyStart := time.Now()
 			passed, isRetry, feedback, err = v.Verify(task)
 			verifyDur = time.Since(verifyStart)
@@ -1165,27 +1241,33 @@ If the task fits in one pass (~200 lines or fewer), produce the deliverable norm
 
 		if passed {
 			e.mu.Lock()
-			if err := e.DB.TransitionState(taskID, TaskStateVerified, "", ""); err != nil {
+			if err := e.Store.TransitionState(taskID, TaskStateVerified, "", ""); err != nil {
 				e.mu.Unlock()
 				return false, fmt.Errorf("transition to verified: %w", err)
 			}
-			if err := e.DB.TransitionState(taskID, TaskStateDone, "", ""); err != nil {
+			if err := e.Store.TransitionState(taskID, TaskStateDone, "", ""); err != nil {
 				e.mu.Unlock()
 				return false, fmt.Errorf("transition to done: %w", err)
 			}
-			if err := e.DB.UpdateTask(taskID, map[string]interface{}{
+			if err := e.Store.UpdateTask(taskID, map[string]interface{}{
 				"retry_count": attempt,
 			}); err != nil {
 				e.mu.Unlock()
 				return false, fmt.Errorf("update retry count: %w", err)
 			}
 			e.mu.Unlock()
+			// Write verify file — file-based completion proof.
+			if task.Output != "" {
+				os.WriteFile(filepath.Join(filepath.Dir(task.Output), "verify.md"), []byte(feedback), 0644)
+			}
+			// Record lesson for future agents with the same role.
+			e.recordLesson(task.Role, task.Title, truncateLesson(feedback, 80))
 			return true, nil
 		}
 
 		// Verification failed — prepare retry.
 		e.mu.Lock()
-		task, err = e.DB.GetTask(taskID)
+		task, err = e.Store.GetTask(taskID)
 		if err != nil {
 			e.mu.Unlock()
 			return false, fmt.Errorf("re-get task for retry: %w", err)
@@ -1216,7 +1298,7 @@ If the task fits in one pass (~200 lines or fewer), produce the deliverable norm
 			task.RetryCount, feedback,
 		)
 
-		if err := e.DB.UpdateTask(taskID, map[string]interface{}{
+		if err := e.Store.UpdateTask(taskID, map[string]interface{}{
 			"retry_count":        task.RetryCount,
 			"description":        task.Description,
 			"verifier_feedback":  feedback,
@@ -1232,7 +1314,7 @@ If the task fits in one pass (~200 lines or fewer), produce the deliverable norm
 			prevFindings := ParseFindings(task.VerifierFeedback)
 			currFindings := ParseFindings(feedback)
 			if findingsAreSame(prevFindings, currFindings) {
-				if err := e.DB.TransitionState(taskID, TaskStateSuspended, "same findings 2 rounds — early re-decomposition", feedback); err != nil {
+				if err := e.Store.TransitionState(taskID, TaskStateSuspended, "same findings 2 rounds — early re-decomposition", feedback); err != nil {
 					e.mu.Unlock()
 					return false, fmt.Errorf("transition to suspended: %w", err)
 				}
@@ -1243,7 +1325,7 @@ If the task fits in one pass (~200 lines or fewer), produce the deliverable norm
 
 		if task.RetryCount >= task.MaxRetries {
 			// Don't fail — the leader should re-decompose just this task.
-			if err := e.DB.TransitionState(taskID, TaskStateSuspended, "retries exhausted — needs re-decomposition", feedback); err != nil {
+			if err := e.Store.TransitionState(taskID, TaskStateSuspended, "retries exhausted — needs re-decomposition", feedback); err != nil {
 				e.mu.Unlock()
 				return false, fmt.Errorf("transition to suspended: %w", err)
 			}
@@ -1252,7 +1334,7 @@ If the task fits in one pass (~200 lines or fewer), produce the deliverable norm
 		}
 
 		// Reset state back to assigned for retry.
-		if err := e.DB.TransitionState(taskID, TaskStateAssigned, "", ""); err != nil {
+		if err := e.Store.TransitionState(taskID, TaskStateAssigned, "", ""); err != nil {
 			e.mu.Unlock()
 			return false, fmt.Errorf("transition to assigned for retry: %w", err)
 		}
@@ -1326,6 +1408,7 @@ func (e *TeamEngine) PlanAndRun(ctx context.Context, goal, workdir, masterTaskID
 		}
 		if defaultTeamLog != nil {
 			Log("plan", "plan: decompose OK: %d tasks in %d batches", len(planTasks), countBatches(planTasks))
+		e.writePlanJSON(workdir, planTasks)
 		}
 	}
 
@@ -1398,7 +1481,7 @@ func (e *TeamEngine) PlanAndRun(ctx context.Context, goal, workdir, masterTaskID
 			task.BatchID = bid
 			task.UseDW = pt.UseDW
 			task.MasterTaskID = masterTaskID
-			e.DB.UpdateTask(task.ID, map[string]interface{}{
+			e.Store.UpdateTask(task.ID, map[string]interface{}{
 				"batch_id":       bid,
 				"master_task_id": masterTaskID,
 			})
@@ -1426,7 +1509,7 @@ func (e *TeamEngine) PlanAndRun(ctx context.Context, goal, workdir, masterTaskID
 	e.writePlanMarkdown(goal, batches, workdir)
 
 	// Flush WAL so dashboard's separate DB connection can see new tasks.
-	if err := e.DB.Checkpoint(); err != nil {
+	if err := e.Store.Checkpoint(); err != nil {
 	}
 	// Notify dashboard that tasks have been created.
 	e.fireEvent(TaskEvent{Type: EventStateChanged})
@@ -1466,7 +1549,7 @@ func (e *TeamEngine) PlanAndRun(ctx context.Context, goal, workdir, masterTaskID
 			for _, b := range batches {
 				for _, t := range b.Tasks {
 					if !t.State.IsTerminal() {
-						_ = e.DB.ForceTransitionState(t.ID, TaskStateSuspended, "cancelled-by-user")
+						_ = e.Store.ForceTransitionState(t.ID, TaskStateSuspended, "cancelled-by-user")
 					}
 				}
 			}
@@ -1492,7 +1575,7 @@ func (e *TeamEngine) PlanAndRun(ctx context.Context, goal, workdir, masterTaskID
 				if depArtifacts := e.buildStageArtifactContext(completedBatchOutputs, batch.DependsOn); depArtifacts != "" {
 					for _, t := range batch.Tasks {
 						updated := t.Description + depArtifacts
-						e.DB.UpdateTask(t.ID, map[string]interface{}{"description": updated})
+						e.Store.UpdateTask(t.ID, map[string]interface{}{"description": updated})
 					}
 				}
 			}
@@ -1513,11 +1596,11 @@ func (e *TeamEngine) PlanAndRun(ctx context.Context, goal, workdir, masterTaskID
 
 				// Pick up self-split children for the next cycle.
 				for _, t := range batch.Tasks {
-					children, err := e.DB.ListTasksByParent(t.ID)
+					children, err := e.Store.ListTasksByParent(t.ID)
 					if err == nil && len(children) > 0 {
 						for _, child := range children {
 							if child.State == TaskStatePending || child.State == TaskStateAssigned {
-								_ = e.DB.UpdateTask(child.ID, map[string]interface{}{"batch_id": batch.ID, "master_task_id": t.MasterTaskID})
+								_ = e.Store.UpdateTask(child.ID, map[string]interface{}{"batch_id": batch.ID, "master_task_id": t.MasterTaskID})
 								batch.Tasks = append(batch.Tasks, child)
 							}
 						}
@@ -1544,7 +1627,7 @@ func (e *TeamEngine) PlanAndRun(ctx context.Context, goal, workdir, masterTaskID
 
 				// Check for tasks needing re-decomposition (retries exhausted).
 				newTasks, recount := escalator.ProcessBatch(batch, masterTaskID, workdir, decomposerTimeout, leaderModel,
-					func(id string) (*Task, error) { return e.DB.GetTask(id) },
+					func(id string) (*Task, error) { return e.Store.GetTask(id) },
 					func(pt PlanTask, batchID, mtID string, parentIDs []string) (*Task, error) {
 						profile := ToolProfile(pt.Profile)
 						task, err := e.CreateTask(pt.Title, pt.Description, AgentRole(pt.Role), profile, parentIDs, 0, workdir, pt.VerifierFocus, batchID, mtID)
@@ -1553,16 +1636,16 @@ func (e *TeamEngine) PlanAndRun(ctx context.Context, goal, workdir, masterTaskID
 						}
 						task.BatchID = batchID
 						task.UseDW = pt.UseDW
-						_ = e.DB.UpdateTask(task.ID, map[string]interface{}{"batch_id": batchID, "master_task_id": mtID})
+						_ = e.Store.UpdateTask(task.ID, map[string]interface{}{"batch_id": batchID, "master_task_id": mtID})
 						return task, nil
 					},
 					func(taskID string, state TaskState, reason string) error {
-						return e.DB.ForceTransitionState(taskID, state, reason)
+						return e.Store.ForceTransitionState(taskID, state, reason)
 					},
 				)
 				// Flush WAL so dashboard sees new re-decomposed tasks.
 				if len(newTasks) > 0 {
-					_ = e.DB.Checkpoint()
+					_ = e.Store.Checkpoint()
 				}
 				// Add new child tasks to the batch so RunBatch picks them up.
 				batch.Tasks = append(batch.Tasks, newTasks...)
@@ -1584,11 +1667,11 @@ func (e *TeamEngine) PlanAndRun(ctx context.Context, goal, workdir, masterTaskID
 				// Check for self-split children before declaring batch done.
 				anyNew := false
 				for _, t := range batch.Tasks {
-					if children, _ := e.DB.ListTasksByParent(t.ID); len(children) > 0 {
+					if children, _ := e.Store.ListTasksByParent(t.ID); len(children) > 0 {
 						for _, c := range children {
 							if c.State == TaskStatePending || c.State == TaskStateAssigned {
 								c.BatchID = batch.ID
-								_ = e.DB.UpdateTask(c.ID, map[string]interface{}{"batch_id": batch.ID, "master_task_id": t.MasterTaskID})
+								_ = e.Store.UpdateTask(c.ID, map[string]interface{}{"batch_id": batch.ID, "master_task_id": t.MasterTaskID})
 								batch.Tasks = append(batch.Tasks, c)
 								anyNew = true
 							}
@@ -1631,7 +1714,7 @@ func (e *TeamEngine) PlanAndRun(ctx context.Context, goal, workdir, masterTaskID
 						// Inject dependency artifacts into this batch's tasks.
 						for _, t := range batch.Tasks {
 							updated := t.Description + depArtifacts
-							e.DB.UpdateTask(t.ID, map[string]interface{}{"description": updated})
+							e.Store.UpdateTask(t.ID, map[string]interface{}{"description": updated})
 						}
 					}
 					break batchCycleLoop
@@ -1648,15 +1731,15 @@ func (e *TeamEngine) PlanAndRun(ctx context.Context, goal, workdir, masterTaskID
 						}
 						if t.State.IsTerminal() {
 							// Reset failed/done tasks: clear retries, bump max, re-assign.
-							_ = e.DB.UpdateTask(t.ID, map[string]interface{}{
+							_ = e.Store.UpdateTask(t.ID, map[string]interface{}{
 								"retry_count":       0,
 								"max_retries":       t.MaxRetries + 3,
 								"description":       t.Description + fmt.Sprintf("\n\n[Leader Feedback - Retry]\n%s", review.Feedback),
 								"verifier_feedback": "",
 							})
-							_ = e.DB.TransitionState(t.ID, TaskStateAssigned, "leader retry", "")
+							_ = e.Store.TransitionState(t.ID, TaskStateAssigned, "leader retry", "")
 						} else {
-							_ = e.DB.TransitionState(t.ID, TaskStateAssigned, "", "")
+							_ = e.Store.TransitionState(t.ID, TaskStateAssigned, "", "")
 						}
 					}
 					// Continue the cycle loop to retry.
@@ -1709,7 +1792,8 @@ func (e *TeamEngine) PlanAndRun(ctx context.Context, goal, workdir, masterTaskID
 
 	// Step 5: Leader final summary — collect all outputs and produce
 	// a user-facing summary of what was accomplished.
-	e.writeLeaderSummary(goal, batches, workdir, leader, decomposerTimeout, leaderModel)
+	e.assembleParentOutputs(batches)
+	e.writeMasterOutput(goal, batches, workdir)
 
 	return batches, nil
 }
@@ -1856,7 +1940,7 @@ func (e *TeamEngine) runDWCycle(
 		case <-ctx.Done():
 			for _, t := range batch.Tasks {
 				if !t.State.IsTerminal() {
-					_ = e.DB.ForceTransitionState(t.ID, TaskStateSuspended, "cancelled-by-user")
+					_ = e.Store.ForceTransitionState(t.ID, TaskStateSuspended, "cancelled-by-user")
 				}
 			}
 			e.fireEvent(TaskEvent{Type: EventStateChanged})
@@ -1894,7 +1978,7 @@ func (e *TeamEngine) runDWCycle(
 
 		// Escalator: re-decompose stuck tasks (retries exhausted).
 		newTasks, recount := escalator.ProcessBatch(batch, masterTaskID, workdir, decomposerTimeout, leaderModel,
-			func(id string) (*Task, error) { return e.DB.GetTask(id) },
+			func(id string) (*Task, error) { return e.Store.GetTask(id) },
 			func(pt PlanTask, batchID, mtID string, parentIDs []string) (*Task, error) {
 				profile := ToolProfile(pt.Profile)
 				task, err := e.CreateTask(pt.Title, pt.Description, AgentRole(pt.Role), profile, parentIDs, 0, workdir, pt.VerifierFocus, batchID, mtID)
@@ -1903,17 +1987,17 @@ func (e *TeamEngine) runDWCycle(
 				}
 				task.BatchID = batchID
 				task.UseDW = pt.UseDW
-				_ = e.DB.UpdateTask(task.ID, map[string]interface{}{"batch_id": batchID, "master_task_id": mtID})
+				_ = e.Store.UpdateTask(task.ID, map[string]interface{}{"batch_id": batchID, "master_task_id": mtID})
 				return task, nil
 			},
 			func(taskID string, state TaskState, reason string) error {
-				return e.DB.ForceTransitionState(taskID, state, reason)
+				return e.Store.ForceTransitionState(taskID, state, reason)
 			},
 		)
 		batch.Tasks = append(batch.Tasks, newTasks...)
 		// Flush WAL so dashboard sees new re-decomposed tasks.
 		if len(newTasks) > 0 {
-			_ = e.DB.Checkpoint()
+			_ = e.Store.Checkpoint()
 		}
 		if recount > 0 {
 			if cycle == cycleLimit-1 {
@@ -1931,7 +2015,7 @@ func (e *TeamEngine) runDWCycle(
 		// those are handled by Escalator).
 		allPassed := true
 		for _, t := range batch.Tasks {
-			current, err := e.DB.GetTask(t.ID)
+			current, err := e.Store.GetTask(t.ID)
 			if err != nil {
 				continue
 			}
@@ -1940,7 +2024,7 @@ func (e *TeamEngine) runDWCycle(
 			}
 			if current.State == TaskStateFailed {
 				allPassed = false
-				_ = e.DB.ForceTransitionState(t.ID, TaskStateAssigned, "dw-retry")
+				_ = e.Store.ForceTransitionState(t.ID, TaskStateAssigned, "dw-retry")
 			} else if current.State != TaskStateDone && current.State != TaskStateSuspended {
 				allPassed = false
 			}
@@ -1998,7 +2082,7 @@ func (e *TeamEngine) RunBatch(ctx context.Context, batch *Batch) error {
 			// Suspend all not-yet-launched tasks.
 			for _, t := range tasks {
 				if !t.State.IsTerminal() {
-					_ = e.DB.ForceTransitionState(t.ID, TaskStateSuspended, "cancelled-by-user")
+					_ = e.Store.ForceTransitionState(t.ID, TaskStateSuspended, "cancelled-by-user")
 				}
 			}
 			batch.Status = BatchStatusFailed
@@ -2118,7 +2202,7 @@ func (e *TeamEngine) RunPipeline(taskIDs []string) (map[string]bool, error) {
 			if completed[tid] {
 				continue
 			}
-			task, err := e.DB.GetTask(tid)
+			task, err := e.Store.GetTask(tid)
 			if err != nil || task == nil {
 				results[tid] = false
 				completed[tid] = true
@@ -2153,9 +2237,10 @@ func (e *TeamEngine) RunPipeline(taskIDs []string) (map[string]bool, error) {
 // Utilities
 // ---------------------------------------------------------------------------
 
-// CancelTask cancels a running task by transitioning it to failed.
+// CancelTask cancels a running task: first signals the agent to stop via
+// context cancellation, then force-kills the OS process after a grace period.
 func (e *TeamEngine) CancelTask(taskID string) error {
-	task, err := e.DB.GetTask(taskID)
+	task, err := e.Store.GetTask(taskID)
 	if err != nil {
 		return fmt.Errorf("get task: %w", err)
 	}
@@ -2166,35 +2251,96 @@ func (e *TeamEngine) CancelTask(taskID string) error {
 		return fmt.Errorf("task %q is already in terminal state %s", taskID, task.State)
 	}
 
+	// Phase 1: signal agent to exit gracefully via context cancellation.
+	e.mu.Lock()
+	if cancel, ok := e.activeCancels[taskID]; ok {
+		cancel()
+		delete(e.activeCancels, taskID)
+	}
+	e.mu.Unlock()
+
+	// Phase 2: after a grace period, force-kill the process if still alive.
+	e.forceKillAfterGrace(taskID, 5*time.Second)
+
 	// PENDING → ASSIGNED → FAILED (PENDING → FAILED is not valid alone).
 	if task.State == TaskStatePending {
-		if err := e.DB.TransitionState(taskID, TaskStateAssigned, "", ""); err != nil {
+		if err := e.Store.TransitionState(taskID, TaskStateAssigned, "", ""); err != nil {
 			return fmt.Errorf("transition to assigned: %w", err)
 		}
 	}
 
-	return e.DB.TransitionState(taskID, TaskStateSuspended, "cancelled by user", "")
+	return e.Store.TransitionState(taskID, TaskStateSuspended, "cancelled by user", "")
+}
+
+// forceKillAfterGrace waits for grace period then kills the agent process
+// by PID if it hasn't exited yet.  Safe to call multiple times.
+func (e *TeamEngine) forceKillAfterGrace(taskID string, grace time.Duration) {
+	e.mu.Lock()
+	pid, ok := e.activeAgents[taskID]
+	e.mu.Unlock()
+	if !ok || pid <= 0 {
+		return
+	}
+	go func() {
+		time.Sleep(grace)
+		e.mu.Lock()
+		currentPID, stillActive := e.activeAgents[taskID]
+		if stillActive && currentPID == pid {
+			delete(e.activeAgents, taskID)
+		}
+		e.mu.Unlock()
+		if !stillActive || currentPID != pid {
+			return // already cleaned up or replaced
+		}
+		if proc, err := os.FindProcess(pid); err == nil {
+			_ = proc.Kill()
+			if defaultTeamLog != nil {
+				Log("task", "task: %s force-killed PID=%d after grace period", taskID[:8], pid)
+			}
+		}
+	}()
+}
+
+// KillAgentProcess immediately kills the agent process for a task.
+// Prefer CancelTask for graceful shutdown; use this for cleanup.
+func (e *TeamEngine) KillAgentProcess(taskID string) {
+	e.mu.Lock()
+	pid, ok := e.activeAgents[taskID]
+	if ok {
+		delete(e.activeAgents, taskID)
+	}
+	e.mu.Unlock()
+	if !ok || pid <= 0 {
+		return
+	}
+	if proc, err := os.FindProcess(pid); err == nil {
+		_ = proc.Kill()
+		if defaultTeamLog != nil {
+			Log("task", "task: %s killed PID=%d", taskID[:8], pid)
+		}
+	}
 }
 
 // DeleteTask permanently removes a single task and its history from the database.
 func (e *TeamEngine) DeleteTask(taskID string) error {
-	return e.DB.DeleteTask(taskID)
+	return e.Store.DeleteTask(taskID)
 }
 
 // DeleteMasterTask deletes a master task and all its subtasks.
 // Actively running subtasks are transitioned to failed before deletion.
 func (e *TeamEngine) DeleteMasterTask(masterTaskID string) error {
-	subtasks, err := e.DB.ListTasksByMasterTask(masterTaskID)
+	subtasks, err := e.Store.ListTasksByMasterTask(masterTaskID)
 	if err != nil {
 	return fmt.Errorf("list subtasks: %w", err)
 	}
 	for _, t := range subtasks {
-	if t.State == TaskStateProducing || t.State == TaskStateVerifying {
-	_ = e.DB.TransitionState(t.ID, TaskStateFailed, "deleted by user", "")
+		if t.State == TaskStateProducing || t.State == TaskStateVerifying {
+			_ = e.Store.TransitionState(t.ID, TaskStateFailed, "deleted by user", "")
+		}
+		_ = e.Store.DeleteTask(t.ID)
 	}
-	}
-	if err := e.DB.DeleteMasterTask(masterTaskID); err != nil {
-	return err
+	if err := e.Store.DeleteMasterTask(masterTaskID); err != nil {
+		return err
 	}
 	// Clean up whiteboard files — task directories, board, deliverable.
 	var ids []string
@@ -2345,14 +2491,29 @@ func (e *TeamEngine) SendFeedback(taskID, message string) error {
 		ToTaskID: taskID,
 		From:     "human",
 		Content:  message,
-		Sync:     false, // fire-and-forget; agent sees it on next run
+		Sync:     false,
 	})
 	if err != nil {
 		return fmt.Errorf("send feedback via prompt channel: %w", err)
 	}
 
+	// Write directly to the agent's stdin if it's running.
+	e.mu.Lock()
+	w, hasStdin := e.activeStdinWriters[taskID]
+	e.mu.Unlock()
+	if hasStdin {
+		w.Write([]byte("\n\n[人类消息] " + message + "\n"))
+	} else {
+		// Fallback: write to messages/ directory.
+		// Fallback: write to messages/ directory.
+		msgDir := filepath.Join(e.Whiteboard.TaskDir(taskID), "messages")
+		os.MkdirAll(msgDir, 0755)
+		msgFile := filepath.Join(msgDir, fmt.Sprintf("%d.md", time.Now().UnixNano()))
+		os.WriteFile(msgFile, []byte(message), 0644)
+	}
+
 	// Also update the verifier_feedback field for state tracking.
-	return e.DB.UpdateTask(taskID, map[string]interface{}{
+	return e.Store.UpdateTask(taskID, map[string]interface{}{
 		"verifier_feedback": message,
 	})
 }
@@ -2387,41 +2548,56 @@ func GetProgress(state TaskState) int {
 // Agent Memory — 跨 session 经验复用
 // ---------------------------------------------------------------------------
 
-// RecordMemory persists an agent experience/learning for future reuse.
-// Agents can call this after task completion to save lessons learned.
-func (e *TeamEngine) RecordMemory(role AgentRole, key, content, sourceTaskID string) error {
-	memory := &MemoryEntry{
-		AgentRole:  string(role),
-		Key:        key,
-		Content:    content,
-		SourceTask: sourceTaskID,
+// recordLesson appends a one-line lesson to the role's memory file.
+// Called after Verifier PASS so the next agent with the same role benefits.
+
+// truncateLesson returns the first n runes of s.
+func truncateLesson(s string, n int) string {
+	runes := []rune(s)
+	if len(runes) > n {
+		return string(runes[:n]) + "…"
 	}
-	return e.DB.SaveMemory(memory)
+	return s
+}
+func (e *TeamEngine) recordLesson(role AgentRole, title, lesson string) {
+	if e.Store == nil {
+		return
+	}
+	line := fmt.Sprintf("- %s: %s — %s\n", time.Now().UTC().Format("2006-01-02"), title, lesson)
+	memDir := filepath.Join(e.Store.baseDir, "memory")
+	os.MkdirAll(memDir, 0755)
+	path := filepath.Join(memDir, string(role)+".md")
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	f.WriteString(line)
 }
 
-// GetMemories retrieves memories for an agent role, optionally filtered by key.
-func (e *TeamEngine) GetMemories(role AgentRole, key string) ([]MemoryEntry, error) {
-	return e.DB.GetMemories(role, key)
-}
-
-// BuildMemoryContext generates a memory prompt for an agent role.
-// This is injected into the agent's task description so it can leverage
-// past experiences.
+// BuildMemoryContext reads the role's historical lessons and injects them
+// into the agent's inbox so it learns from past successes and failures.
 func (e *TeamEngine) BuildMemoryContext(role AgentRole, key string) (string, error) {
-	memories, err := e.DB.GetMemories(role, key)
-	if err != nil || len(memories) == 0 {
+	if e.Store == nil {
 		return "", nil
 	}
-
-	var b strings.Builder
-	b.WriteString("\n\n## 🧠 Agent Memory — Past Experiences\n")
-	b.WriteString("You have the following relevant memories from past tasks:\n\n")
-	for _, m := range memories {
-		b.WriteString(fmt.Sprintf("### Memory (%s)\n", m.CreatedAt[:10]))
-		b.WriteString(fmt.Sprintf("Key: %s\n", m.Key))
-		b.WriteString(fmt.Sprintf("%s\n\n", m.Content))
+	path := filepath.Join(e.Store.baseDir, "memory", string(role)+".md")
+	data, err := os.ReadFile(path)
+	if err != nil || len(data) == 0 {
+		return "", nil
 	}
-	b.WriteString("Use these experiences to avoid repeating past mistakes and to apply proven strategies.\n")
+	// Only include last 10 lessons to avoid bloat.
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	if len(lines) > 10 {
+		lines = lines[len(lines)-10:]
+	}
+	var b strings.Builder
+	b.WriteString("\n\n## 🧠 历史经验（同角色）\n")
+	b.WriteString("以下是本角色在过去任务中的关键教训：\n\n")
+	for _, line := range lines {
+		b.WriteString(line + "\n")
+	}
+	b.WriteString("\n参考这些经验，避免重复错误。\n")
 	return b.String(), nil
 }
 
@@ -2434,7 +2610,7 @@ func (e *TeamEngine) BuildMemoryContext(role AgentRole, key string) (string, err
 // artifacts list, and inbox messages. This is the "可恢复对象" required by
 // Scenario 1 (IM 异步 — 外部 session log).
 func (e *TeamEngine) ExportTaskLog(taskID string) (map[string]interface{}, error) {
-	task, err := e.DB.GetTask(taskID)
+	task, err := e.Store.GetTask(taskID)
 	if err != nil || task == nil {
 		return nil, fmt.Errorf("task %q not found", taskID)
 	}
@@ -2451,7 +2627,7 @@ func (e *TeamEngine) ExportTaskLog(taskID string) (map[string]interface{}, error
 	}
 
 	// State history.
-	history, _ := e.DB.GetTaskHistory(taskID)
+	history, _ := e.Store.GetTaskHistory(taskID)
 	var histEntries []map[string]string
 	for _, h := range history {
 		histEntries = append(histEntries, map[string]string{
@@ -2497,7 +2673,7 @@ type Stats struct {
 
 // GetStats computes aggregate statistics across all tasks.
 func (e *TeamEngine) GetStats() (*Stats, error) {
-	tasks, err := e.DB.ListTasks()
+	tasks, err := e.Store.ListTasks()
 	if err != nil {
 		return nil, fmt.Errorf("list tasks: %w", err)
 	}
@@ -2617,48 +2793,31 @@ func countTasks(batches []*Batch) int {
 	return n
 }
 
-// writeLeaderSummary asks the Leader to produce a final summary for the user.
-func (e *TeamEngine) writeLeaderSummary(goal string, batches []*Batch, workdir string, leader *Leader, timeout time.Duration, model string) {
-	// Collect all task outputs.
-	var outputs strings.Builder
-	for _, batch := range batches {
-		outputs.WriteString(fmt.Sprintf("\n## Batch: %s\n", batch.LabelOrID()))
-		for _, t := range batch.Tasks {
-			out, err := e.Whiteboard.ReadOutput(t.ID)
-			if err != nil || out == "" {
-				continue
+	// writeMasterOutput writes the master task's output.md by listing all
+	// subtask outputs with file references.
+	func (e *TeamEngine) writeMasterOutput(goal string, batches []*Batch, workdir string) {
+		var b strings.Builder
+		b.WriteString(fmt.Sprintf("# %s\n\n", goal))
+		b.WriteString("---\n\n")
+
+		for _, batch := range batches {
+			b.WriteString(fmt.Sprintf("## %s\n\n", batch.LabelOrID()))
+			for _, t := range batch.Tasks {
+				if t.Output == "" {
+					b.WriteString(fmt.Sprintf("- **%s** (%s): 无产出路径\n", t.Title, t.Role))
+					continue
+				}
+				b.WriteString(fmt.Sprintf("- **%s** (%s) → [%s](%s)\n", t.Title, t.Role, filepath.Base(t.Output), t.Output))
 			}
-			// Truncate long outputs to avoid blowing up the prompt.
-			if len(out) > 2000 {
-				out = out[:2000] + "\n...(truncated)"
-			}
-			outputs.WriteString(fmt.Sprintf("\n### %s (%s)\n%s\n", t.Title, t.Role, out))
+			b.WriteString("\n")
+		}
+
+		path := filepath.Join(workdir, "output.md")
+		os.WriteFile(path, []byte(b.String()), 0644)
+		if defaultTeamLog != nil {
+			Log("output", "wrote output.md (%d bytes)", b.Len())
 		}
 	}
-
-	prompt := fmt.Sprintf(`You are the Team Leader. Your team has completed all tasks for the following objective.
-
-First, restate the GOAL in your own structured words — what the user asked for and what was actually delivered. Do NOT copy the user's raw input.
-
-Then, for each batch, list:
-- The deliverable produced
-- Which file(s) to look at
-- Pass/fail status
-
-GOAL:
-%s
-
-TEAM OUTPUTS:
-%s
-
-Write to summary.md. Use clear, professional language. The user should understand at a glance what was done and where to find everything.`, goal, outputs.String())
-
-	result := e.Runner.RunDecomposer(prompt, workdir, timeout, model)
-	if result.Success && result.Stdout != "" {
-		path := filepath.Join(workdir, "summary.md")
-		os.WriteFile(path, []byte(result.Stdout), 0644)
-	}
-}
 
 // readTeamTemplate reads a template matching the task's output basename.
 // E.g. output "docs/requirements.md" → templates/requirements.md
@@ -2705,3 +2864,163 @@ func (e *TeamEngine) appendTeamMemory(role AgentRole, lesson string) {
 	defer f.Close()
 	f.WriteString(fmt.Sprintf("\n## %s\n%s\n", time.Now().Format("2006-01-02 15:04"), lesson))
 }
+
+	// assembleParentOutputs finds tasks that were decomposed into children
+	// (management nodes) and whose children are all done.  For each such
+	// parent, it reads all child output files and concatenates them into the
+
+	// writePlanJSON writes the decomposition plan as plan.json.
+	// plan.json is the authoritative record of how a task was decomposed.
+	func (e *TeamEngine) writePlanJSON(workdir string, planTasks []PlanTask) {
+		type planEntry struct {
+			ID          string   `json:"id"`
+			Title       string   `json:"title"`
+			Description string   `json:"description"`
+			Role        string   `json:"role"`
+			Output      string   `json:"output"`
+			BatchID     string   `json:"batch_id"`
+			DependsOn   []string `json:"depends_on,omitempty"`
+		}
+		entries := make([]planEntry, len(planTasks))
+		for i, pt := range planTasks {
+			entries[i] = planEntry{
+				Title:       pt.Title,
+				Description: pt.Description,
+				Role:        pt.Role,
+				Output:      pt.Output,
+				BatchID:     pt.BatchID,
+				DependsOn:   pt.DependsOnBatch,
+			}
+		}
+		plan := map[string]interface{}{
+			"generated": time.Now().UTC().Format(time.RFC3339),
+			"tasks":     entries,
+		}
+		data, _ := json.MarshalIndent(plan, "", "  ")
+		path := filepath.Join(workdir, ".whale", "plan.json")
+		os.MkdirAll(filepath.Dir(path), 0755)
+		os.WriteFile(path, data, 0644)
+		if defaultTeamLog != nil {
+			Log("plan", "wrote plan.json (%d tasks) → %s", len(planTasks), path)
+		}
+	}
+	// writeTaskPlanJSON writes a per-task plan.json for a self-split task.
+	func (e *TeamEngine) writeTaskPlanJSON(task *Task, children []*Task) {
+		type childEntry struct {
+			ID          string `json:"id"`
+			Title       string `json:"title"`
+			Description string `json:"description"`
+			Output      string `json:"output"`
+		}
+		entries := make([]childEntry, len(children))
+		for i, c := range children {
+			entries[i] = childEntry{
+				ID:          c.ID,
+				Title:       c.Title,
+				Description: c.Description,
+				Output:      c.Output,
+			}
+		}
+		plan := map[string]interface{}{
+			"parent_id": task.ID,
+			"generated": time.Now().UTC().Format(time.RFC3339),
+			"children":  entries,
+		}
+		data, _ := json.MarshalIndent(plan, "", "  ")
+		taskDir := e.Whiteboard.TaskDir(task.ID)
+		os.MkdirAll(taskDir, 0755)
+		os.WriteFile(filepath.Join(taskDir, "plan.json"), data, 0644)
+		if defaultTeamLog != nil {
+			Log("task", "task: %s wrote plan.json (%d children)", task.ID[:8], len(children))
+		}
+	}
+	// readPlanJSON reads a plan.json file and returns the list of PlanTasks.
+	// Returns nil if the file doesn't exist or can't be parsed.
+	func (e *TeamEngine) readPlanJSON(workdir string) []PlanTask {
+		path := filepath.Join(workdir, ".whale", "plan.json")
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return nil
+		}
+		var plan struct {
+			Tasks []struct {
+				Title       string   `json:"title"`
+				Description string   `json:"description"`
+				Role        string   `json:"role"`
+				Output      string   `json:"output"`
+				BatchID     string   `json:"batch_id"`
+				DependsOn   []string `json:"depends_on"`
+			} `json:"tasks"`
+		}
+		if err := json.Unmarshal(data, &plan); err != nil {
+			return nil
+		}
+		planTasks := make([]PlanTask, len(plan.Tasks))
+		for i, t := range plan.Tasks {
+			planTasks[i] = PlanTask{
+				Title:          t.Title,
+				Description:    t.Description,
+				Role:           t.Role,
+				Output:         t.Output,
+				BatchID:        t.BatchID,
+				DependsOnBatch: t.DependsOn,
+			}
+		}
+		return planTasks
+	}
+
+	// parent's output file, then writes the .verify file.
+	func (e *TeamEngine) assembleParentOutputs(batches []*Batch) {
+	for _, batch := range batches {
+		for _, t := range batch.Tasks {
+			children, err := e.Store.ListTasksByParent(t.ID)
+			if err != nil || len(children) == 0 {
+				continue
+			}
+			// Check if all children are done.
+			allDone := true
+			for _, c := range children {
+				if c.State != TaskStateDone {
+					allDone = false
+					break
+				}
+			}
+			if !allDone {
+				continue
+			}
+			// Assemble parent output from children.
+			if t.Output == "" {
+				continue
+			}
+			var assembled strings.Builder
+			assembled.WriteString(fmt.Sprintf("# %s\n\n", t.Title))
+			assembled.WriteString(fmt.Sprintf("> 以下内容由 %d 个子任务产出自动拼接生成。\n\n", len(children)))
+			for _, c := range children {
+				out, err := e.Whiteboard.ReadOutput(c.ID)
+				if err != nil || out == "" {
+					// Try reading from file system directly.
+					if c.Output != "" {
+						data, fErr := os.ReadFile(c.Output)
+						if fErr == nil {
+							out = string(data)
+						}
+					}
+				}
+				if out == "" {
+					assembled.WriteString(fmt.Sprintf("## %s\n\n*(无产出)*\n\n", c.Title))
+					continue
+				}
+				assembled.WriteString(fmt.Sprintf("## %s\n\n", c.Title))
+				assembled.WriteString(out)
+				assembled.WriteString("\n\n")
+			}
+			// Write parent output + verify file.
+			os.MkdirAll(filepath.Dir(t.Output), 0755)
+			os.WriteFile(t.Output, []byte(assembled.String()), 0644)
+			os.WriteFile(filepath.Join(filepath.Dir(t.Output), "verify.md"), []byte("auto-assembled from children"), 0644)
+			if defaultTeamLog != nil {
+				Log("task", "task: %s parent assembled from %d children → %s", t.ID[:8], len(children), t.Output)
+			}
+		}
+	}
+	}

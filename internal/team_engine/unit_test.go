@@ -20,7 +20,7 @@ func TestDeleteTask(t *testing.T) {
 		t.Fatalf("delete task: %v", err)
 	}
 	// Verify it's gone.
-	got, _ := eng.DB.GetTask(task.ID)
+	got, _ := eng.Store.GetTask(task.ID)
 	if got != nil {
 		t.Error("expected nil after delete")
 	}
@@ -35,7 +35,7 @@ func TestDeleteMasterTaskCascades(t *testing.T) {
 	for i := 0; i < 3; i++ {
 		task, _ := eng.CreateTask("Sub", "subtask", RoleDeveloper, "", nil, 0, ".", "", "", "")
 		task.MasterTaskID = mt.ID
-		eng.DB.UpdateTask(task.ID, map[string]interface{}{"master_task_id": mt.ID})
+		eng.Store.UpdateTask(task.ID, map[string]interface{}{"master_task_id": mt.ID})
 	}
 
 	// Delete the master task.
@@ -44,12 +44,12 @@ func TestDeleteMasterTaskCascades(t *testing.T) {
 	}
 
 	// All subtasks should be gone.
-	tasks, _ := eng.DB.ListTasks()
+	tasks, _ := eng.Store.ListTasks()
 	if len(tasks) != 0 {
 		t.Errorf("expected 0 subtasks after cascade delete, got %d", len(tasks))
 	}
 	// Master task itself should be gone.
-	got, _ := eng.DB.GetMasterTask(mt.ID)
+	got, _ := eng.Store.GetMasterTask(mt.ID)
 	if got != nil {
 		t.Error("master task should be deleted")
 	}
@@ -67,10 +67,10 @@ func TestForceTransitionState(t *testing.T) {
 	}
 
 	// ForceTransitionState bypasses the transition table.
-	if err := eng.DB.ForceTransitionState(task.ID, TaskStateDone, "forced"); err != nil {
+	if err := eng.Store.ForceTransitionState(task.ID, TaskStateDone, "forced"); err != nil {
 		t.Fatalf("force transition: %v", err)
 	}
-	updated, _ := eng.DB.GetTask(task.ID)
+	updated, _ := eng.Store.GetTask(task.ID)
 	if updated.State != TaskStateDone {
 		t.Errorf("expected DONE, got %s", updated.State)
 	}
@@ -80,7 +80,7 @@ func TestGetTaskNonexistent(t *testing.T) {
 	eng := newTestEngine(t)
 	defer eng.Close()
 
-	task, err := eng.DB.GetTask("no-such-task")
+	task, err := eng.Store.GetTask("no-such-task")
 	if err != nil {
 		t.Fatalf("get task: %v", err)
 	}
@@ -95,7 +95,7 @@ func TestUpdateTaskFields(t *testing.T) {
 
 	task, _ := eng.CreateTask("Update", "Original desc", RoleDeveloper, "", nil, 0, ".", "", "", "")
 
-	if err := eng.DB.UpdateTask(task.ID, map[string]interface{}{
+	if err := eng.Store.UpdateTask(task.ID, map[string]interface{}{
 		"description":     "Updated desc",
 		"verifier_focus":  "security",
 		"max_retries":     5,
@@ -103,7 +103,7 @@ func TestUpdateTaskFields(t *testing.T) {
 		t.Fatalf("update task: %v", err)
 	}
 
-	updated, _ := eng.DB.GetTask(task.ID)
+	updated, _ := eng.Store.GetTask(task.ID)
 	if updated.Description != "Updated desc" {
 		t.Errorf("description = %q, want 'Updated desc'", updated.Description)
 	}
@@ -295,32 +295,32 @@ func TestEscalatorStuckTasks(t *testing.T) {
 
 	// Create tasks and set their state in DB.
 	t1, _ := eng.CreateTask("Normal", "ok", RoleDeveloper, "", nil, 0, ".", "", "", "")
-	eng.DB.UpdateTask(t1.ID, map[string]interface{}{"retry_count": 2})
-	eng.DB.TransitionState(t1.ID, TaskStateAssigned, "", "")
-	eng.DB.TransitionState(t1.ID, TaskStateProducing, "", "")
+	eng.Store.UpdateTask(t1.ID, map[string]interface{}{"retry_count": 2})
+	eng.Store.TransitionState(t1.ID, TaskStateAssigned, "", "")
+	eng.Store.TransitionState(t1.ID, TaskStateProducing, "", "")
 	// t1 is producing, retries not exhausted → not stuck
 
 	t2, _ := eng.CreateTask("Stuck", "stuck", RoleDeveloper, "", nil, 0, ".", "", "", "")
-	eng.DB.UpdateTask(t2.ID, map[string]interface{}{"retry_count": 3, "max_retries": 3})
-	eng.DB.TransitionState(t2.ID, TaskStateAssigned, "", "")
-	eng.DB.ForceTransitionState(t2.ID, TaskStateSuspended, "retries exhausted")
+	eng.Store.UpdateTask(t2.ID, map[string]interface{}{"retry_count": 3, "max_retries": 3})
+	eng.Store.TransitionState(t2.ID, TaskStateAssigned, "", "")
+	eng.Store.ForceTransitionState(t2.ID, TaskStateSuspended, "retries exhausted")
 	// t2 is suspended with retries exhausted → stuck
 
 	t3, _ := eng.CreateTask("Done", "done", RoleDeveloper, "", nil, 0, ".", "", "", "")
-	eng.DB.TransitionState(t3.ID, TaskStateAssigned, "", "")
-	eng.DB.TransitionState(t3.ID, TaskStateDone, "", "")
+	eng.Store.TransitionState(t3.ID, TaskStateAssigned, "", "")
+	eng.Store.TransitionState(t3.ID, TaskStateDone, "", "")
 	// t3 is done → not stuck
 
 	// Re-read from DB to get current state.
-	t1, _ = eng.DB.GetTask(t1.ID)
-	t2, _ = eng.DB.GetTask(t2.ID)
-	t3, _ = eng.DB.GetTask(t3.ID)
+	t1, _ = eng.Store.GetTask(t1.ID)
+	t2, _ = eng.Store.GetTask(t2.ID)
+	t3, _ = eng.Store.GetTask(t3.ID)
 
 	batch := &Batch{ID: "test", Tasks: []*Task{t1, t2, t3}}
 	esc := NewEscalator(nil) // planner not needed for StuckTasks
 
 	stuck := esc.StuckTasks(batch, func(id string) (*Task, error) {
-		return eng.DB.GetTask(id)
+		return eng.Store.GetTask(id)
 	})
 	if len(stuck) != 1 {
 		t.Fatalf("expected 1 stuck task, got %d", len(stuck))

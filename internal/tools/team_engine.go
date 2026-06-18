@@ -36,27 +36,18 @@ func (b *Toolset) teamEnginePaths() (dbPath, wbDir string) {
 
 func (b *Toolset) newTeamEngine() (*team_engine.TeamEngine, error) {
 	dbPath, wbDir := b.teamEnginePaths()
-	// Prefer per-instance spawn func, then package-level default, then shell.
-	var spawner team_engine.SubagentSpawner
-	if b.teamEngineSpawnFunc != nil {
-		spawner = team_engine.NewFuncSpawner(b.teamEngineSpawnFunc)
-		if true { team_engine.SpawnerType("default", "adapter", "", 0) }
-	} else if df := team_engine.DefaultSpawnFunc(); df != nil {
-		spawner = team_engine.NewFuncSpawner(df)
-		if true { team_engine.SpawnerType("default", "adapter", "", 0) }
-	} else {
-		spawner = team_engine.NewShellSubagentSpawner()
-		if true { team_engine.SpawnerType("default", "shell", "", 0) }
-	}
+	// Shell spawner by default — independent OS processes.
+	spawner := team_engine.NewShellSubagentSpawner()
+	team_engine.SpawnerType("default", "shell", "", 0)
 	return team_engine.New(dbPath, wbDir, "", spawner)
 }
 
 func toolResult(text string) core.ToolResult {
-	return core.ToolResult{Content: text}
+	return core.ToolResult{ModelText: text}
 }
 
 func toolError(format string, args ...interface{}) core.ToolResult {
-	return core.ToolResult{Content: fmt.Sprintf(format, args...), IsError: true}
+	return core.ToolResult{ModelText: fmt.Sprintf(format, args...), Outcome: core.OutcomeFailure}
 }
 
 // --- team_plan ---
@@ -101,11 +92,11 @@ func (b *Toolset) AutoExecuteMasterTask(masterTaskID string) {
 			if b.dashboardClient != nil {
 				var lastSync time.Time
 				eng.OnEvent(func(event team_engine.TaskEvent) { defer func() { if r := recover(); r != nil && true { team_engine.Log("sync", "event callback panic: %v", r) } }()
-					b.dashboardClient.SendTaskEvent(bridge.TaskEvent{Type: bridge.TaskEventType(event.Type), TaskID: event.TaskID, Title: event.Title, Progress: event.Progress, NewState: event.NewState})
 					if (event.Type == team_engine.EventStateChanged || event.Type == team_engine.EventAgentLog) && time.Since(lastSync) > 2*time.Second {
 						lastSync = time.Now()
 						pushSyncState(eng, b.dashboardClient, b.root)
 					}
+					b.dashboardClient.SendTaskEvent(bridge.TaskEvent{Type: bridge.TaskEventType(event.Type), TaskID: event.TaskID, Title: event.Title, Progress: event.Progress, NewState: event.NewState})
 				})
 			}
 
@@ -113,6 +104,55 @@ func (b *Toolset) AutoExecuteMasterTask(masterTaskID string) {
 		if eng.Loggers != nil {
 			eng.Loggers.Engine("dashboard-resume: masterTask=%s goal=%q batches=%d err=%v",
 				masterTaskID, mt.Goal, len(batches), err)
+		}
+	}()
+}
+
+// RunSingleTask runs a single subtask independently (per-subtask Run button).
+// Called from the dashboard via bridge WebSocket command.
+func (b *Toolset) RunSingleTask(taskID string) {
+	go func() {
+		eng, err := b.newTeamEngine()
+		if err != nil {
+			logToFile(filepath.Join(b.root, ".whale", "team_tasks", "logs", "engine.log"),
+				"run-single-task: newTeamEngine failed: %v", err)
+			return
+		}
+		defer eng.Close()
+
+		ctx, cancel := context.WithCancel(context.Background())
+		b.autoExecCancelMu.Lock()
+		b.autoExecCancel = cancel
+		b.autoExecCancelMu.Unlock()
+		defer func() {
+			cancel()
+			b.autoExecCancelMu.Lock()
+			b.autoExecCancel = nil
+			b.autoExecCancelMu.Unlock()
+		}()
+
+		// Forward events to dashboard.
+		if b.dashboardClient != nil {
+			var lastSync time.Time
+			eng.OnEvent(func(event team_engine.TaskEvent) {
+				defer func() { recover() }()
+				if (event.Type == team_engine.EventStateChanged || event.Type == team_engine.EventAgentLog) && time.Since(lastSync) > 2*time.Second {
+					lastSync = time.Now()
+					pushSyncState(eng, b.dashboardClient, b.root)
+				}
+				b.dashboardClient.SendTaskEvent(bridge.TaskEvent{
+					Type:     bridge.TaskEventType(event.Type),
+					TaskID:   event.TaskID,
+					Title:    event.Title,
+					Progress: event.Progress,
+					NewState: event.NewState,
+				})
+			})
+		}
+
+		ok, err := eng.RunTask(ctx, taskID)
+		if eng.Loggers != nil {
+			eng.Loggers.Engine("run-single-task: taskID=%s ok=%v err=%v", taskID, ok, err)
 		}
 	}()
 }
@@ -216,7 +256,6 @@ func (b *Toolset) runTeamPlan(ctx context.Context, call core.ToolCall, progress 
 	if b.dashboardClient != nil {
 		var lastSync time.Time
 		eng.OnEvent(func(event team_engine.TaskEvent) { defer func() { if r := recover(); r != nil && true { team_engine.Log("sync", "event callback panic: %v", r) } }()
-			b.dashboardClient.SendTaskEvent(bridge.TaskEvent{Type: bridge.TaskEventType(event.Type), TaskID: event.TaskID, Title: event.Title, Progress: event.Progress, NewState: event.NewState})
 			// Throttled full sync (max 1 per 2s) after state changes.
 			if (event.Type == team_engine.EventStateChanged || event.Type == team_engine.EventAgentLog) && time.Since(lastSync) > 2*time.Second {
 				lastSync = time.Now()
@@ -225,6 +264,7 @@ func (b *Toolset) runTeamPlan(ctx context.Context, call core.ToolCall, progress 
 				}
 				pushSyncState(eng, b.dashboardClient, b.root)
 			}
+			b.dashboardClient.SendTaskEvent(bridge.TaskEvent{Type: bridge.TaskEventType(event.Type), TaskID: event.TaskID, Title: event.Title, Progress: event.Progress, NewState: event.NewState})
 		})
 	}
 
@@ -262,7 +302,7 @@ func (b *Toolset) runTeamPlan(ctx context.Context, call core.ToolCall, progress 
 	// --- Phase 1: Create master task immediately so dashboard sees it ---
 			var masterTask *team_engine.MasterTask
 			var mtErr error
-			existing, _ := eng.DB.ListMasterTasks()
+			existing, _ := eng.Store.ListMasterTasks()
 			for _, mt := range existing {
 				if mt.Goal == args.Goal { masterTask = mt; break }
 			}
@@ -281,14 +321,14 @@ func (b *Toolset) runTeamPlan(ctx context.Context, call core.ToolCall, progress 
 		// The master task is already visible in the bridge.
 		if args.Async {
 			return core.ToolResult{
-				Content: fmt.Sprintf("📋 Master task created: `%s`\nRun `team_plan goal=\"...\"` (without async) to execute.", masterTask.ID),
+				ModelText: fmt.Sprintf("📋 Master task created: `%s`\nRun `team_plan goal=\"...\"` (without async) to execute.", masterTask.ID),
 				Metadata: map[string]any{"master_task_id": masterTask.ID, "mode": "async"},
 			}, nil
 		}
 
 		// Synchronous mode: PlanAndRun handles decompose + execution in one step.
 			var batches []*team_engine.Batch
-			existingTasks, _ := eng.DB.ListTasksByMasterTask(masterTask.ID)
+			existingTasks, _ := eng.Store.ListTasksByMasterTask(masterTask.ID)
 			if len(existingTasks) > 0 {
 				batches, err = eng.ResumeMasterTask(ctx, masterTask.ID, args.Goal, b.root)
 			} else {
@@ -386,7 +426,7 @@ func (b *Toolset) runTeamPlan(ctx context.Context, call core.ToolCall, progress 
 				"done_count":  doneCount,
 				"tasks":       allTasks,
 			}
-			return core.ToolResult{Content: fullResult, Metadata: metadata}, nil
+			return core.ToolResult{ModelText: fullResult, Metadata: metadata}, nil
 }
 
 // --- team_create ---
@@ -600,7 +640,7 @@ func (b *Toolset) teamHistoryTool() toolFn {
 			}
 			defer eng.Close()
 
-			entries, err := eng.DB.GetTaskHistory(args.TaskID)
+			entries, err := eng.Store.GetTaskHistory(args.TaskID)
 			if err != nil {
 				return toolError("history: %v", err), nil
 			}
@@ -730,7 +770,7 @@ func (b *Toolset) teamOutputTool() toolFn {
 				"progress":   team_engine.GetProgress(task.State),
 				"workdir":    task.Workdir,
 			}
-			return core.ToolResult{Content: md, Metadata: metadata}, nil
+			return core.ToolResult{ModelText: md, Metadata: metadata}, nil
 		},
 	}
 }
@@ -839,7 +879,7 @@ func (b *Toolset) teamResultTool() toolFn {
 				"done_count": doneCount,
 				"tasks":      taskList,
 			}
-			return core.ToolResult{Content: mdBuilder, Metadata: metadata}, nil
+			return core.ToolResult{ModelText: mdBuilder, Metadata: metadata}, nil
 		},
 	}
 }
@@ -874,7 +914,7 @@ func (b *Toolset) teamDeleteTool() toolFn {
 
 			if args.All {
 				// Delete all master tasks first (each cascades to subtasks).
-				masterTasks, err := eng.DB.ListMasterTasks()
+				masterTasks, err := eng.Store.ListMasterTasks()
 				if err != nil {
 					return toolError("list master: %v", err), nil
 				}
@@ -887,7 +927,7 @@ func (b *Toolset) teamDeleteTool() toolFn {
 				}
 
 				// Delete remaining standalone tasks.
-				tasks, err := eng.DB.ListTasks()
+				tasks, err := eng.Store.ListTasks()
 				if err != nil {
 					return toolError("list: %v", err), nil
 				}
@@ -944,7 +984,7 @@ func pushSyncState(eng *team_engine.TeamEngine, client interface {
 			}
 		}
 	}()
-	mts, err := eng.DB.ListMasterTasks()
+	mts, err := eng.Store.ListMasterTasks()
 	if true {
 		team_engine.Log("sync", "pushSyncState: mts=%d err=%v", len(mts), err)
 	}
@@ -954,7 +994,7 @@ func pushSyncState(eng *team_engine.TeamEngine, client interface {
 	var masterTasks []bridge.MasterTaskJSON
 	subtaskMap := make(map[string][]bridge.SubtaskJSON)
 	for _, mt := range mts {
-		tasks, _ := eng.DB.ListTasksByMasterTask(mt.ID)
+		tasks, _ := eng.Store.ListTasksByMasterTask(mt.ID)
 		mj := buildMasterTaskJSON(mt, tasks, true)
 		mj.WorkspacePath = workspacePath
 		masterTasks = append(masterTasks, mj)

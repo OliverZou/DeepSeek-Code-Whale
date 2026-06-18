@@ -3,6 +3,7 @@ package team_engine
 import (
 	"context"
 	"fmt"
+	"io"
 	"math"
 	"strings"
 	"time"
@@ -59,6 +60,7 @@ type RunResult struct {
 	UsagePrompt     int            `json:"-"` // prompt tokens (0 if unavailable)
 	UsageCompletion int            `json:"-"` // completion tokens (0 if unavailable)
 	SpawnerType     string         `json:"-"` // "adapter" or "shell" — which spawner was used
+	PID             int            `json:"-"` // OS process ID (0 if in-process)
 }
 
 func round(v float64, decimals int) float64 {
@@ -95,6 +97,8 @@ type SubagentRequest struct {
 	MaxTokens    int               // Completion token budget (0 = runner default)
 	OutputSchema map[string]any    // Force structured JSON output (nil = free text)
 	OnProgress   SubagentProgress  // Real-time progress callback (nil = no streaming)
+	OnPID        func(int)              // Called with PID when OS process starts (nil = no-op)
+	OnStdin      func(io.WriteCloser)   // Called with stdin pipe for real-time messaging (nil = no-op)
 }
 
 // SubagentResponse contains the result of a subagent execution.
@@ -107,6 +111,7 @@ type SubagentResponse struct {
 	UsagePrompt     int            // prompt tokens consumed
 	UsageCompletion int            // completion tokens consumed
 	Diagnostic      string         // detailed debug info (tool resolution, status, errors)
+	PID             int            // OS process ID (0 if in-process adapter)
 }
 
 // AgentRunner is a stateless wrapper around a SubagentSpawner.
@@ -130,7 +135,7 @@ func NewRunner(spawner SubagentSpawner) *AgentRunner {
 // IMPORTANT: RunWithContext creates its own derived context with the given
 // timeout.  The `ctx` parameter is used ONLY for cancellation — if the
 // parent context is cancelled (e.g. via Close()), the spawn is aborted.
-func (ar *AgentRunner) RunWithContext(ctx context.Context, prompt, workdir, tools string, timeout time.Duration, onProgress SubagentProgress, model ...string) *RunResult {
+func (ar *AgentRunner) RunWithContext(ctx context.Context, prompt, workdir, tools string, timeout time.Duration, onProgress SubagentProgress, onPID func(int), onStdin func(io.WriteCloser), model ...string) *RunResult {
 	start := time.Now()
 
 	toolNames := parseToolList(tools)
@@ -143,6 +148,8 @@ func (ar *AgentRunner) RunWithContext(ctx context.Context, prompt, workdir, tool
 		MaxIters:   80,
 		MaxCalls:   200,
 		OnProgress: onProgress,
+		OnPID:      onPID,
+		OnStdin:    onStdin,
 	}
 	if len(model) > 0 && model[0] != "" {
 		req.Model = model[0]
@@ -164,6 +171,7 @@ func (ar *AgentRunner) RunWithContext(ctx context.Context, prompt, workdir, tool
 			Stderr:          fmt.Sprintf("subagent error: %v", err),
 			DurationSeconds: round(elapsed, 2),
 			Success:         false,
+			PID:             resp.PID,
 		}
 	}
 
@@ -177,12 +185,13 @@ func (ar *AgentRunner) RunWithContext(ctx context.Context, prompt, workdir, tool
 		Structured:      resp.Structured,
 		UsagePrompt:     resp.UsagePrompt,
 		UsageCompletion: resp.UsageCompletion,
+		PID:             resp.PID,
 	}
 }
 
 // Run is a convenience wrapper for RunWithContext with a background context.
 func (ar *AgentRunner) Run(prompt, workdir, tools string, timeout time.Duration, model ...string) *RunResult {
-	return ar.RunWithContext(context.Background(), prompt, workdir, tools, timeout, nil, model...)
+	return ar.RunWithContext(context.Background(), prompt, workdir, tools, timeout, nil, nil, nil, model...)
 }
 
 // RunVerifier is a convenience wrapper for running a verifier subagent
@@ -217,6 +226,7 @@ func (ar *AgentRunner) RunVerifier(prompt, workdir string, timeout time.Duration
 			Stderr:          fmt.Sprintf("verifier subagent error: %v", err),
 			DurationSeconds: round(elapsed, 2),
 			Success:         false,
+			PID:             resp.PID,
 		}
 	}
 
@@ -230,6 +240,7 @@ func (ar *AgentRunner) RunVerifier(prompt, workdir string, timeout time.Duration
 		Structured:      resp.Structured,
 		UsagePrompt:     resp.UsagePrompt,
 		UsageCompletion: resp.UsageCompletion,
+		PID:             resp.PID,
 	}
 }
 
@@ -300,6 +311,7 @@ func (ar *AgentRunner) RunDecomposer(prompt, workdir string, timeout time.Durati
 			Stderr:          fmt.Sprintf("decomposer subagent error: %v", err),
 			DurationSeconds: round(elapsed, 2),
 			Success:         false,
+			PID:             resp.PID,
 		}
 	}
 
