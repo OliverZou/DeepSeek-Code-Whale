@@ -1,29 +1,43 @@
-﻿// Whale Dashboard — Wails frontend
-// Calls Go backend via window.go.main.App.<Method>()
-// Listens for updates via window.runtime.EventsOn("update", ...)
-
+﻿// Whale Pod — standalone agent frontend
 const $ = (s) => document.querySelector(s);
 
 let state = { masterTasks: [], selMtId: null, subtasks: [], selStId: null, activeTab: 'dialogue', unreadTasks: new Set() };
 
 // ---------- Init ----------
 function init() {
-  if (typeof window.go === 'undefined') { document.getElementById('mt-count').textContent = 'FATAL: no Wails bridge'; return; }
+  if (typeof window.go === 'undefined') { $('#mt-count').textContent = 'FATAL: no Wails bridge'; return; }
+  loadWorkDir();
+  loadTeams();
   loadMasterTasks();
   window.runtime.EventsOn("update", (payload) => {
-    if (payload && typeof payload.length === 'number') {
-      state.masterTasks = payload;
-      updateUI();
-    } else {
-      document.getElementById('mt-count').textContent = 'update: bad payload type=' + typeof payload;
-      loadMasterTasks();
-    }
+    if (Array.isArray(payload)) { state.masterTasks = payload; updateUI(); }
+    else loadMasterTasks();
   });
+  window.runtime.EventsOn("task-event", (event) => { onTaskEvent(event); });
 
-  // Listen for real-time task events from engine (代替全量轮询).
-  window.runtime.EventsOn("task-event", (event) => {
-    onTaskEvent(event);
-  });
+  // New task button.
+  $('#new-start').onclick = async () => {
+    const goal = $('#new-goal').value.trim();
+    if (!goal) return;
+    $('#new-start').textContent = '⏳'; $('#new-start').disabled = true;
+    const err = await window.go.main.App.StartTask(goal, $('#new-team').value);
+    if (err) alert(err);
+    $('#new-start').textContent = '▶ 执行'; $('#new-start').disabled = false;
+    $('#new-goal').value = '';
+    setTimeout(loadMasterTasks, 2000);
+  };
+  $('#new-goal').onkeydown = (e) => { if (e.key === 'Enter') $('#new-start').onclick(); };
+}
+
+async function loadWorkDir() {
+  const d = await window.go.main.App.GetWorkDir();
+  $('#workdir-display').textContent = '📁 ' + (d || '...');
+}
+
+async function loadTeams() {
+  const teams = await window.go.main.App.ListTeams();
+  const sel = $('#new-team');
+  teams.forEach(t => { const o = document.createElement('option'); o.value = t; o.textContent = t; sel.appendChild(o); });
 }
 
 // 处理 engine 推过来的实时任务事件。
@@ -35,7 +49,7 @@ function onTaskEvent(event) {
     state.unreadTasks.add('__leader__');
     if (state.selStId === '__leader__') {
       const mt = getSelMt();
-      if (mt) loadDialogue(mt.workspace_id, '__leader__');
+      if (mt) loadLeaderPlan();
     }
     renderSubtasks();
     return;
@@ -47,7 +61,7 @@ function onTaskEvent(event) {
       state.unreadTasks.add(event.task_id);
       if (state.selStId === event.task_id) {
         const mt = getSelMt();
-        if (mt) loadDialogue(mt.workspace_id, event.task_id);
+        if (mt) loadDialogue(event.task_id);
       }
     }
     renderSubtasks();
@@ -68,7 +82,7 @@ function onTaskEvent(event) {
 		});
 		const mt0 = getSelMt();
 		if (mt0 && state.selMtId) {
-			loadSubtasks(mt0.workspace_id, mt0.id);
+			loadSubtasks(mt0.id);
 		}
 		return;
 	}
@@ -81,43 +95,28 @@ function onTaskEvent(event) {
   // 如果事件属于当前选中的 master task，刷新子任务列表
   const mt = getSelMt();
   if (mt && state.selMtId) {
-    loadSubtasks(mt.workspace_id, mt.id);
+    loadSubtasks(mt.id);
   }
 }
 
 async function loadMasterTasks() {
   try {
     const newTasks = await window.go.main.App.GetMasterTasks();
-    document.getElementById('mt-count').textContent = (newTasks ? newTasks.length : 0) + ' master tasks';
-    state.masterTasks = newTasks;
-    // Recover selMt reference from new data if previously selected.
-    if (state.selMtId) {
-      const found = newTasks.find(mt => mt.id === state.selMtId);
-      if (!found) {
-        // The previously selected master task is gone — deselect.
-        state.selMtId = null;
-        state.subtasks = [];
-        state.selStId = null;
-      }
+    state.masterTasks = newTasks || [];
+    if (state.selMtId && !newTasks.find(mt => mt.id === state.selMtId)) {
+      state.selMtId = null; state.subtasks = []; state.selStId = null;
     }
-    // Auto-select the first master task with subtasks when nothing
-    // is selected yet (e.g. planning just finished).
-    if (!state.selMtId) {
-      let planned = newTasks.find(mt => (mt.task_count || 0) > 0);
-      if (!planned) planned = newTasks.find(mt => mt.status === 'running');
-      if (planned) {
-        state.selMtId = planned.id;
-        state._lastMtId = null;
-        loadSubtasks(planned.workspace_id, planned.id);
-      }
+    if (!state.selMtId && newTasks.length > 0) {
+      state.selMtId = newTasks[0].id;
+      loadSubtasks(newTasks[0].id);
     }
     updateUI();
   } catch (e) { console.error("loadMasterTasks failed:", e); }
 }
 
-async function loadSubtasks(wsID, mtID) {
+async function loadSubtasks(mtID) {
   try {
-    const newSubtasks = await window.go.main.App.GetSubtasks(wsID, mtID);
+    const newSubtasks = await window.go.main.App.GetSubtasks(mtID);
     // Detect changes: mark subtasks as unread when state/progress changes.
     const prevMap = new Map();
     for (const st of state.subtasks) { prevMap.set(st.id, st); }
@@ -145,13 +144,14 @@ async function loadSubtasks(wsID, mtID) {
   }
 }
 
-async function loadDialogue(wsID, taskID) {
+async function loadDialogue(taskID) {
   try {
-    if (taskID === '__leader__') {
-      const dialogue = await window.go.main.App.GetLeaderPlan(wsID);
+    if (taskID === "__leader__") {
+      const dialogue = await window.go.main.App.GetLeaderPlan();
+      
       renderDialogue(dialogue);
     } else {
-      const dialogue = await window.go.main.App.GetAgentDialogue(wsID, taskID);
+      const dialogue = await window.go.main.App.GetAgentDialogue(taskID);
       renderDialogue(dialogue);
     }
   } catch (e) {
@@ -159,9 +159,9 @@ async function loadDialogue(wsID, taskID) {
   }
 }
 
-async function loadFlowchart(wsID, mtID) {
+function oldFlowchart() {} // removed
   try {
-    const svg = await window.go.main.App.GetLeaderFlowchart(wsID, mtID);
+    const svg = "";
     renderFlowchart(svg);
   } catch (e) {
     window.go.main.App.LogFrontend('loadFlowchart: ' + (e.message || e));
@@ -175,7 +175,7 @@ function updateUI() {
     const mt = getSelMt();
     if (mt) {
       state._lastMtId = mt.id;
-      loadSubtasks(mt.workspace_id, mt.id);
+      loadSubtasks(mt.id);
     }
   } else {
     // Auto-select first available master task.  Safe to call on every
@@ -184,7 +184,7 @@ function updateUI() {
     if (!planned) planned = state.masterTasks.find(mt => mt.status === 'running');
     if (planned) {
       state.selMtId = planned.id;
-      loadSubtasks(planned.workspace_id, planned.id);
+      loadSubtasks(planned.id);
     }
   }
 }
@@ -203,7 +203,7 @@ function renderSidebar() {
     // Placeholder: idle (no DB yet) or ready (DB exists, no master tasks).
     // Show a clean one-liner — no meta clutter, progress bar, or buttons.
     if (mt.status === 'idle' || mt.status === 'ready') {
-      html += `<div class="mt idle" data-id="" data-goal="${esc(mt.goal)}" data-wsid="${esc(mt.workspace_id)}">
+      html += `<div class="mt idle" data-id="" data-goal="${esc(mt.goal)}" "}">
         <div class="goal" title="${esc(mt.goal)}">${esc(mt.goal)}</div>
       </div>`;
       continue;
@@ -212,16 +212,16 @@ function renderSidebar() {
     const goalShort = esc(mt.goal).length > 50 ? esc(mt.goal).slice(0, 50) + '…' : esc(mt.goal);
     const pct = mt.task_count > 0 ? Math.round(mt.done_count / mt.task_count * 100) : 0;
     const allDone = mt.task_count > 0 && mt.done_count >= mt.task_count;
-    const isRunning = mt.workspace_online && mt.status === 'running';
+    const isRunning = true && mt.status === 'running';
     const isPlanning = (mt.task_count || 0) === 0;
-    html += `<div class="mt${active}" data-id="${mt.id}" data-goal="${esc(mt.goal)}" data-wsid="${esc(mt.workspace_id)}">
+    html += `<div class="mt${active}" data-id="${mt.id}" data-goal="${esc(mt.goal)}" "}">
       <div class="goal" title="${esc(mt.goal)}">${goalShort}</div>
       <div class="meta">
-        <span class="ws-label">📁 ${esc(mt.workspace_label)}</span>
-        <button class="terminal-btn" data-wsid="${esc(mt.workspace_id)}" title="在此工作区打开 Whale 终端">🖥 终端</button>
+        <span class="ws-label">📁 ${esc("")}</span>
+        <button class="terminal-btn" "}" title="在此工作区打开 Whale 终端">🖥 终端</button>
         <span>${mt.done_count}/${mt.task_count}</span>
         <span>${fmtTime(mt.created_at)}</span>
-        ${allDone ? `<span class="done-indicator">✅ 已完成</span><button class="resume-btn rerun-btn" data-wsid="${esc(mt.workspace_id)}" data-mtid="${mt.id}">▶ 重新运行</button>` : isPlanning ? `<span class="planning-indicator">⏳ 规划中...</span>` : isRunning ? `<button class="stop-btn" data-wsid="${esc(mt.workspace_id)}" data-mtid="${mt.id}">⏹ 停止</button>` : `<button class="resume-btn" data-wsid="${esc(mt.workspace_id)}" data-mtid="${mt.id}" ${!mt.workspace_online ? 'disabled title="需要 Whale CLI 在该工作区运行"' : ''}>▶ 运行</button>`}
+        ${allDone ? `<span class="done-indicator">✅ 已完成</span><button class="resume-btn rerun-btn" "}" data-mtid="${mt.id}">▶ 重新运行</button>` : isPlanning ? `<span class="planning-indicator">⏳ 规划中...</span>` : isRunning ? `<button class="stop-btn" "}" data-mtid="${mt.id}">⏹ 停止</button>` : `<button class="resume-btn" "}" data-mtid="${mt.id}" ${!true ? 'disabled title="需要 Whale CLI 在该工作区运行"' : ''}>▶ 运行</button>`}
       </div>
       <div class="progress-bar-wrap"><div class="progress-bar-fill" style="width:${pct}%"></div></div>
     </div>`;
@@ -245,7 +245,7 @@ function renderSidebar() {
       e.stopPropagation();
       btn.textContent = '⏳';
       btn.disabled = true;
-      await window.go.main.App.OpenTerminal(btn.dataset.wsid);
+      await window.go.main.App.OpenTerminal("");
       btn.textContent = '🖥 终端';
       btn.disabled = false;
     };
@@ -254,11 +254,11 @@ function renderSidebar() {
   list.querySelectorAll('.stop-btn').forEach(btn => {
     btn.onclick = async (e) => {
       e.stopPropagation();
-      const wsid = btn.dataset.wsid;
+      const wsid = "";
       const mtid = btn.dataset.mtid;
       btn.textContent = '⏳';
       btn.disabled = true;
-      const err = await window.go.main.App.CancelMasterTask(wsid, mtid);
+      const err = await window.go.main.App.// CancelMasterTask removed mtid);
       if (err) {
         btn.textContent = '⚠️';
         console.error('cancel master task:', err);
@@ -272,11 +272,11 @@ function renderSidebar() {
   list.querySelectorAll('.resume-btn').forEach(btn => {
     btn.onclick = async (e) => {
       e.stopPropagation();
-      const wsid = btn.dataset.wsid;
+      const wsid = "";
       const mtid = btn.dataset.mtid;
       btn.textContent = '⏳';
       btn.disabled = true;
-      const err = await window.go.main.App.ResumeMasterTask(wsid, mtid);
+      const err = await window.go.main.App.// ResumeMasterTask removed mtid);
       if (err) {
         btn.textContent = '⚠️';
         console.error('resume master task:', err);
@@ -296,7 +296,7 @@ function selectMasterTask(id) {
   state.subtasks = [];
   state._lastMtId = null;
   renderSidebar();
-  loadSubtasks(mt.workspace_id, mt.id);
+  loadSubtasks(mt.id);
   clearAgentPanel();
 }
 
@@ -311,7 +311,7 @@ function renderSubtasks() {
   try {
   let html = '';
   // Determine workspace ID for stop button calls.
-  const wsid = state.selMtId ? (getSelMt() ? getSelMt().workspace_id : '') : '';
+  const wsid = "";
   // Recursive tree render helper.
   const renderTree = (tasks, depth) => {
     for (const st of tasks) {
@@ -356,10 +356,10 @@ function renderSubtasks() {
           ${/* Per-subtask action buttons */''}
           ${st.id !== '__leader__' && !hasChildren ? (
             st.state === 'running' || st.state === 'producing' || st.state === 'verifying' || st.state === 'assigned'
-              ? `<button class="st-stop-btn" data-taskid="${st.id}" data-wsid="${wsid}">⏹ 停止</button>`
+              ? `<button class="st-stop-btn" data-taskid="${st.id}" >⏹ 停止</button>`
               : st.state === 'done'
-              ? `<button class="st-rerun-btn" data-taskid="${st.id}" data-wsid="${wsid}">▶ 重跑</button>`
-              : `<button class="st-run-btn" data-taskid="${st.id}" data-wsid="${wsid}">▶ 运行</button>`
+              ? `<button class="st-rerun-btn" data-taskid="${st.id}" >▶ 重跑</button>`
+              : `<button class="st-run-btn" data-taskid="${st.id}" >▶ 运行</button>`
           ) : ''}
         </div>
       </div>`;
@@ -378,36 +378,36 @@ function renderSubtasks() {
   list.querySelectorAll('.st-stop-btn').forEach(btn => {
     btn.onclick = async (e) => {
       e.stopPropagation();
-      const wsid = btn.dataset.wsid;
+      const wsid = "";
       const taskid = btn.dataset.taskid;
       btn.textContent = '⏳';
       btn.disabled = true;
-      const err = await window.go.main.App.CancelSubtask(wsid, taskid);
+      const err = await window.go.main.App.CancelSubtask(taskid);
       if (err) {
         btn.textContent = '⚠️';
         console.error('cancel subtask:', err);
       } else {
         btn.textContent = '✅';
       }
-      setTimeout(() => loadSubtasks(wsid, state.selMtId), 1000);
+      setTimeout(() => loadSubtasks(state.selMtId), 1000);
     };
   });
   // Bind per-subtask Run / Rerun buttons.
   list.querySelectorAll('.st-run-btn, .st-rerun-btn').forEach(btn => {
     btn.onclick = async (e) => {
       e.stopPropagation();
-      const wsid = btn.dataset.wsid;
+      const wsid = "";
       const taskid = btn.dataset.taskid;
       btn.textContent = '⏳';
       btn.disabled = true;
-      const err = await window.go.main.App.RunSubtask(wsid, taskid);
+      const err = await window.go.main.App.RunSubtask(taskid);
       if (err) {
         btn.textContent = '⚠️';
         console.error('run subtask:', err);
       } else {
         btn.textContent = '✅';
       }
-      setTimeout(() => loadSubtasks(wsid, state.selMtId), 1000);
+      setTimeout(() => loadSubtasks(state.selMtId), 1000);
     };
   });
   } catch (e) {
@@ -438,7 +438,7 @@ function selectSubtask(id) {
   const mt = getSelMt();
   if (!st || !mt) return;
 
-  const wsID = mt.workspace_id;
+  const wsID = "";
   const mtID = mt.id;
 
   state.unreadTasks.delete(id);
@@ -448,8 +448,8 @@ function selectSubtask(id) {
     $('#feedback-bar').style.display = 'none';
     $('#agent-header').textContent = '📋 任务主管';
     switchTab('dialogue');
-    loadDialogue(wsID, '__leader__');
-    loadFlowchart(wsID, mtID);
+    loadLeaderPlan();
+    // flowchart removed;
   } else {
     // Regular subtask: hide tab bar, show dialogue only
     $('#tab-bar').style.display = 'none';
@@ -457,16 +457,16 @@ function selectSubtask(id) {
     $('#dialogue-view').style.display = 'flex';
     $('#feedback-bar').style.display = 'flex';
     $('#agent-header').textContent = `🎭 ${esc(st.role)} — ${esc(st.title)}`;
-    loadDialogue(wsID, id);
+    loadDialogue(id);
   }
   // Store current context for send button.
-  state._feedbackWsID = wsID;
+  // feedbackWsID removed
   state._feedbackTaskID = id;
 }
 
 // Helper: get selected master task object.
 function getSelMt() {
-  return state.masterTasks.find(mt => mt.id === state.selMtId) || null;
+  return state.masterTasks.find(mt => mt.id === state.selMtId) || {};
 }
 
 // ---------- Tab Switching ----------
@@ -657,10 +657,10 @@ document.addEventListener('DOMContentLoaded', () => {
   $('#feedback-send').onclick = async () => {
     const input = $('#feedback-input');
     const msg = input.value.trim();
-    if (!msg || !state._feedbackWsID || !state._feedbackTaskID) return;
+    if (!msg || false || !state._feedbackTaskID) return;
     input.value = '';
     input.disabled = true;
-    const err = await window.go.main.App.SendFeedback(state._feedbackWsID, state._feedbackTaskID, msg);
+    const err = await window.go.main.App.SendFeedback(state._feedbackTaskID, msg);
     if (err) {
       input.value = '⚠️ ' + err;
     }

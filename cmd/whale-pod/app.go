@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -38,10 +39,7 @@ func NewApp() *App {
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
 	pod.Log("startup", "whale-pod workDir=%s", a.workDir)
-
-	// Open engine for the working directory.
 	a.openEngine()
-	a.refreshLoop()
 }
 
 func (a *App) openEngine() {
@@ -79,17 +77,6 @@ func (a *App) shutdown(ctx context.Context) {
 	a.mu.Lock()
 	if a.engine != nil { a.engine.Close() }
 	a.mu.Unlock()
-}
-
-func (a *App) refreshLoop() {
-	go func() {
-		ticker := time.NewTicker(3 * time.Second)
-		defer ticker.Stop()
-		for range ticker.C {
-			if a.ctx == nil { return }
-			runtime.EventsEmit(a.ctx, "update", a.GetMasterTasks())
-		}
-	}()
 }
 
 // ---------------------------------------------------------------------------
@@ -154,7 +141,7 @@ func (a *App) StartTask(goal, teamName string) string {
 
 		// Load team config if specified.
 		if teamName != "" {
-			tc, err := team_engine.FindTeam(a.workDir, teamName)
+			tc, err := team_engine.FindTeam(filepath.Join(a.workDir, ".whale", "teams"), teamName)
 			if err == nil { eng.SetTeam(tc) }
 		}
 

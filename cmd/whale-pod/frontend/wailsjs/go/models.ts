@@ -1,4 +1,4 @@
-export namespace dashboard {
+export namespace pod {
 	
 	export class AgentDialogueJSON {
 	    role: string;
@@ -14,18 +14,20 @@ export namespace dashboard {
 	        this.content = source["content"];
 	    }
 	}
-	export class LogFileJSON {
-	    name: string;
-	    size: number;
+	export class ChatMessageJSON {
+	    time: string;
+	    from: string;
+	    content: string;
 	
 	    static createFrom(source: any = {}) {
-	        return new LogFileJSON(source);
+	        return new ChatMessageJSON(source);
 	    }
 	
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.name = source["name"];
-	        this.size = source["size"];
+	        this.time = source["time"];
+	        this.from = source["from"];
+	        this.content = source["content"];
 	    }
 	}
 	export class MasterTaskJSON {
@@ -115,60 +117,6 @@ export namespace dashboard {
 		    }
 		    return a;
 		}
-	}
-	export class TaskJSON {
-	    workspace_id: string;
-	    id: string;
-	    title: string;
-	    state: string;
-	    role: string;
-	    elapsed_sec: number;
-	    retry_count: number;
-	    max_retries: number;
-	    progress_pct: number;
-	
-	    static createFrom(source: any = {}) {
-	        return new TaskJSON(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.workspace_id = source["workspace_id"];
-	        this.id = source["id"];
-	        this.title = source["title"];
-	        this.state = source["state"];
-	        this.role = source["role"];
-	        this.elapsed_sec = source["elapsed_sec"];
-	        this.retry_count = source["retry_count"];
-	        this.max_retries = source["max_retries"];
-	        this.progress_pct = source["progress_pct"];
-	    }
-	}
-	export class WorkspaceJSON {
-	    id: string;
-	    path: string;
-	    label: string;
-	    registered: string;
-	    last_seen: string;
-	    online: boolean;
-	    task_count: number;
-	    active_count: number;
-	
-	    static createFrom(source: any = {}) {
-	        return new WorkspaceJSON(source);
-	    }
-	
-	    constructor(source: any = {}) {
-	        if ('string' === typeof source) source = JSON.parse(source);
-	        this.id = source["id"];
-	        this.path = source["path"];
-	        this.label = source["label"];
-	        this.registered = source["registered"];
-	        this.last_seen = source["last_seen"];
-	        this.online = source["online"];
-	        this.task_count = source["task_count"];
-	        this.active_count = source["active_count"];
-	    }
 	}
 
 }
