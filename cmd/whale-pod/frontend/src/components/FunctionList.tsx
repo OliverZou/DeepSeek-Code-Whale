@@ -11,7 +11,7 @@ export default function FunctionList() {
         onClick={() => setActive(activeFunction === 'create' ? null : 'create')}
         style={{ fontSize: 15, padding: '10px 14px' }}
       >
-        📝 创建新任务
+        ✏️ 创建新任务
       </div>
     </div>
   );

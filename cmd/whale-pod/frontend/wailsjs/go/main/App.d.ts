@@ -27,3 +27,11 @@ export function SendFeedback(arg1:string,arg2:string):Promise<string>;
 export function SetWorkDir(arg1:string):Promise<string>;
 
 export function StartTask(arg1:string,arg2:string):Promise<string>;
+
+export function StartWindowDrag():Promise<void>;
+
+export function WindowClose():Promise<void>;
+
+export function WindowMaximize():Promise<void>;
+
+export function WindowMinimize():Promise<void>;

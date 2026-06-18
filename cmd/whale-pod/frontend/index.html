@@ -4,8 +4,12 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Whale Pod</title>
+  <style>
+    /* 默认不可拖拽，只有 .panel-titlebar 可以拖拽窗口 */
+    button, input, select, textarea { --wails-draggable: no-drag; }
+  </style>
 </head>
-<body>
+<body style="--wails-draggable: no-drag">
   <div id="root"></div>
   <script type="module" src="/src/main.tsx"></script>
 </body>

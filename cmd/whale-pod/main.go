@@ -12,7 +12,7 @@ import (
 	"github.com/wailsapp/wails/v2/pkg/options/windows"
 )
 
-//go:embed all:frontend
+//go:embed all:frontend/dist
 var assets embed.FS
 
 func main() {
@@ -31,6 +31,9 @@ func main() {
 		OnShutdown:       app.shutdown,
 		Bind:             []interface{}{app},
 		WindowStartState: options.Normal,
+		Frameless:       true,
+		CSSDragProperty: "--wails-draggable",
+		CSSDragValue:    "drag",
 		Windows: &windows.Options{
 			WebviewIsTransparent: false,
 			WindowIsTranslucent:  false,

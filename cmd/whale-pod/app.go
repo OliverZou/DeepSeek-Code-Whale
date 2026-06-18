@@ -260,6 +260,15 @@ func (a *App) CancelSubtask(taskID string) string { updateMetaState(a.workDir, t
 // OpenTerminal launches whale TUI in the working directory.
 func (a *App) OpenTerminal() string { pod.OpenTerminal(a.workDir); return "" }
 
+// WindowMinimize minimizes the window.
+func (a *App) WindowMinimize() { runtime.WindowMinimise(a.ctx) }
+
+// WindowMaximize toggles maximized state.
+func (a *App) WindowMaximize() { runtime.WindowToggleMaximise(a.ctx) }
+
+// WindowClose closes the window.
+func (a *App) WindowClose() { runtime.Quit(a.ctx) }
+
 // GetChatMessages returns human-agent chat history.
 func (a *App) GetChatMessages(taskID string) []pod.ChatMessageJSON {
 	return readChat(a.workDir, taskID)

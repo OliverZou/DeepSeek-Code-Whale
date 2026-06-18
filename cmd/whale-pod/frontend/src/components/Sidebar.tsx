@@ -5,7 +5,9 @@ import TeamList from './TeamList';
 export default function Sidebar() {
   return (
     <div id="sidebar">
-      <h2>🐳 Whale Pod</h2>
+      <div className="panel-titlebar">
+        <span className="titlebar-label">🐳 Whale Pod</span>
+      </div>
       <FunctionList />
       <TaskTree />
       <TeamList />

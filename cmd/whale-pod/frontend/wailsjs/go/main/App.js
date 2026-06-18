@@ -53,3 +53,19 @@ export function SetWorkDir(arg1) {
 export function StartTask(arg1, arg2) {
   return window['go']['main']['App']['StartTask'](arg1, arg2);
 }
+
+export function StartWindowDrag() {
+  return window['go']['main']['App']['StartWindowDrag']();
+}
+
+export function WindowClose() {
+  return window['go']['main']['App']['WindowClose']();
+}
+
+export function WindowMaximize() {
+  return window['go']['main']['App']['WindowMaximize']();
+}
+
+export function WindowMinimize() {
+  return window['go']['main']['App']['WindowMinimize']();
+}

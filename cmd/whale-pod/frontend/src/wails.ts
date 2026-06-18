@@ -17,4 +17,8 @@ export const api = {
   runSubtask: (taskId: string): Promise<string> => go()?.RunSubtask(taskId) ?? '',
   cancelSubtask: (taskId: string): Promise<string> => go()?.CancelSubtask(taskId) ?? '',
   openTerminal: (): Promise<string> => go()?.OpenTerminal() ?? '',
+  windowMinimize: () => go()?.WindowMinimize(),
+  windowMaximize: () => go()?.WindowMaximize(),
+  windowClose: () => go()?.WindowClose(),
+  startWindowDrag: () => go()?.StartWindowDrag(),
 };

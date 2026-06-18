@@ -16,12 +16,12 @@ export default function TaskTree() {
   return (
     <div className="section">
       <div className="section-title">
-        <span>任务列表</span>
+        <span>🗂 任务列表</span>
         <button className="btn-icon" onClick={() => api.openTerminal()} title="打开文件夹">📂</button>
       </div>
       {[...grouped.entries()].map(([dir, tasks]) => (
         <div key={dir}>
-          <div className="tree-dir">📁 {shortPath(dir)}</div>
+          <div className="tree-dir">🗂 {shortPath(dir)}</div>
           {tasks.map(t => {
             const pct = t.task_count > 0 ? Math.round(t.done_count / t.task_count * 100) : 0;
             const done = t.task_count > 0 && t.done_count >= t.task_count;

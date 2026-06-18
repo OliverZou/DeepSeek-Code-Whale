@@ -19,6 +19,9 @@ export default function Resizer({ target, side }: Props) {
       let w = startW + dx;
       w = Math.max(160, Math.min(500, w));
       el.style.width = w + 'px';
+      // Sync drag strip width.
+      const dragLeft = document.querySelector('.drag-left') as HTMLElement;
+      if (dragLeft) dragLeft.style.width = w + 'px';
     };
     const onUp = () => {
       ghostRef.current?.classList.remove('active');

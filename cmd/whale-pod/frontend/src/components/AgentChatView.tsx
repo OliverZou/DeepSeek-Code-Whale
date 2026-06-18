@@ -13,7 +13,6 @@ export default function AgentChatView() {
 
   return (
     <div className="chat-view">
-      <div className="chat-header">💬 {selSubtaskId?.slice(0, 8) || ''}</div>
       <div className="chat-messages">
         {chatMessages.length === 0 && (
           <div className="empty-state">暂无对话。在下方输入消息与 Agent 沟通。</div>

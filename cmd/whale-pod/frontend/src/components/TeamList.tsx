@@ -6,15 +6,15 @@ export default function TeamList() {
   return (
     <div className="section">
       <div className="section-title">
-        <span>Agent 团队</span>
+        <span>👥 Agent 团队</span>
         <span>
           <button className="btn-icon" title="添加团队">＋</button>
-          <button className="btn-icon" title="添加 Agent">👤＋</button>
+          <button className="btn-icon" title="添加 Agent">＋</button>
         </span>
       </div>
       {teams.map(team => (
         <div key={team}>
-          <div className="tree-dir">🏢 {team}</div>
+          <div className="tree-dir">▸ {team}</div>
         </div>
       ))}
     </div>
