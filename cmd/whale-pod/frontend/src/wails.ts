@@ -1,21 +1,37 @@
 // Wails bridge — wraps window.go.main.App.* calls
-import type { MasterTask, Subtask, DialogueEntry, ChatMessage } from './types';
+import type { MasterTask, Subtask, DialogueEntry, ChatMessage, TeamInfo, AgentInfo, SummonedItem, TeamChatMessage, TaskConfirmation } from './types';
 
 const go = () => (window as any).go?.main?.App;
 
 export const api = {
   setWorkDir: (path: string): Promise<string> => go()?.SetWorkDir(path) ?? '',
   getWorkDir: (): Promise<string> => go()?.GetWorkDir() ?? '',
+  pickFolder: (): Promise<string> => go()?.PickFolder() ?? '',
   listTeams: (): Promise<string[]> => go()?.ListTeams() ?? [],
-  startTask: (goal: string, team: string): Promise<string> => go()?.StartTask(goal, team) ?? '',
+  loadSummonedItems: (): Promise<SummonedItem[]> => go()?.LoadSummonedItems() ?? [],
+  saveSummonedItems: (items: SummonedItem[]): Promise<void> => go()?.SaveSummonedItems(items) ?? undefined,
+  listTeamDetails: (): Promise<TeamInfo[]> => go()?.ListTeamDetails() ?? [],
+  listAgents: (): Promise<AgentInfo[]> => go()?.ListAgents() ?? [],
+  startTask: (goal: string, team: string, workDir?: string): Promise<string> => go()?.StartTask(goal, team, workDir ?? '') ?? '',
+  startExpertTask: (goal: string, agentName: string, workDir?: string): Promise<string> => go()?.StartExpertTask(goal, agentName, workDir ?? '') ?? '',
+  createDirectTask: (goal: string, workDir?: string, agent?: string, deepThink?: boolean): Promise<string> => go()?.CreateDirectTask(goal, workDir ?? '', agent ?? '', !!deepThink) ?? '',
+  directChat: (taskId: string, message: string, deepThink?: boolean): Promise<string> => go()?.DirectChat(taskId, message, !!deepThink) ?? '',
   getMasterTasks: (): Promise<MasterTask[]> => go()?.GetMasterTasks() ?? [],
   getSubtasks: (mtId: string): Promise<Subtask[]> => go()?.GetSubtasks(mtId) ?? [],
+  getSubtasksBySession: (sessionID: string): Promise<Subtask[]> => go()?.GetSubtasksBySession(sessionID) ?? [],
   getAgentDialogue: (taskId: string): Promise<DialogueEntry[]> => go()?.GetAgentDialogue(taskId) ?? [],
   getLeaderPlan: (): Promise<DialogueEntry[]> => go()?.GetLeaderPlan() ?? [],
   sendFeedback: (taskId: string, msg: string): Promise<string> => go()?.SendFeedback(taskId, msg) ?? '',
   getChatMessages: (taskId: string): Promise<ChatMessage[]> => go()?.GetChatMessages(taskId) ?? [],
   runSubtask: (taskId: string): Promise<string> => go()?.RunSubtask(taskId) ?? '',
   cancelSubtask: (taskId: string): Promise<string> => go()?.CancelSubtask(taskId) ?? '',
+  deleteSession: (sessionID: string): Promise<string> => go()?.DeleteSession(sessionID) ?? '',
+  renameMasterTask: (taskId: string, newGoal: string): Promise<string> => go()?.RenameMasterTask(taskId, newGoal) ?? '',
+  sendTeamChat: (masterTaskId: string, message: string, targetRole: string): Promise<string> => go()?.SendTeamChat(masterTaskId, message, targetRole) ?? '',
+  getTeamChat: (masterTaskId: string): Promise<TeamChatMessage[]> => go()?.GetTeamChat(masterTaskId) ?? [],
+  getTaskConfirmation: (taskId: string): Promise<TaskConfirmation | null> => go()?.GetTaskConfirmation(taskId) ?? null,
+  confirmTask: (taskId: string, approved: boolean, feedback: string): Promise<string> => go()?.ConfirmTask(taskId, approved, feedback) ?? '',
+  getConfirmationsForMaster: (masterTaskId: string): Promise<TaskConfirmation[]> => go()?.GetConfirmationsForMaster(masterTaskId) ?? [],
   openTerminal: (): Promise<string> => go()?.OpenTerminal() ?? '',
   windowMinimize: () => go()?.WindowMinimize(),
   windowMaximize: () => go()?.WindowMaximize(),

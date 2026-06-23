@@ -1,8 +1,16 @@
 @echo off
 setlocal
 
+REM === Step 0: Generate app icon ===
+echo [0/3] Generating app icon...
+cd /d "%~dp0cmd\whale-pod"
+go run gen_icon.go
+if %ERRORLEVEL% neq 0 (
+    echo WARNING: icon generation failed, will use default
+)
+
 REM === Step 1: Build frontend ===
-echo [1/2] Building frontend...
+echo [1/3] Building frontend...
 cd /d "%~dp0cmd\whale-pod\frontend"
 
 where npm >nul 2>&1
@@ -32,7 +40,7 @@ if not exist "dist\index.html" (
 echo   Frontend build OK.
 
 REM === Step 2: Build Go binary with Wails ===
-echo [2/2] Building whale-pod.exe...
+echo [2/3] Building whale-pod.exe...
 cd /d "%~dp0cmd\whale-pod"
 
 set GOPROXY=https://goproxy.cn,direct
@@ -48,4 +56,4 @@ if %ERRORLEVEL% neq 0 (
 cd /d "%~dp0"
 if not exist bin mkdir bin
 copy /Y "cmd\whale-pod\build\bin\whale-pod.exe" "bin\whale-pod.exe" >nul 2>&1
-echo BUILD OK - bin\whale-pod.exe
+echo BUILD OK - bin\whale-pod.exe (whale icon)

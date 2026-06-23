@@ -111,6 +111,7 @@ func (e *TeamEngine) OnEvent(cb TaskEventCallback) func() {
 // SetTeam configures a team for the next PlanAndRun execution.
 func (e *TeamEngine) SetTeam(tc *TeamConfig) {
 	e.team = tc
+	e.Runner.WithTeam(tc)
 }
 
 // Team returns the current team configuration, or nil if none is set.
@@ -427,10 +428,20 @@ func filepathJoin(elem ...string) string {
 // ---------------------------------------------------------------------------
 
 // CreateMasterTask creates a new master task record.
-func (e *TeamEngine) CreateMasterTask(goal, workspacePath string) (*MasterTask, error) {
+func (e *TeamEngine) CreateMasterTask(goal, workspacePath, sessionID string) (*MasterTask, error) {
+	agent := ""
+	if e.team != nil {
+		if len(e.team.Roles) == 1 {
+			agent = "expert:" + e.team.Roles[0]
+		} else if e.team.Label != "" {
+			agent = "team:" + e.team.Label
+		}
+	}
 	mt := &MasterTask{
 		ID:            uuid.New().String(),
 		Goal:          goal,
+		Agent:         agent,
+		SessionID:     sessionID,
 		WorkspacePath: workspacePath,
 		Status:        "running",
 	}
@@ -456,6 +467,20 @@ func (e *TeamEngine) CreateMasterTask(goal, workspacePath string) (*MasterTask, 
 // ListMasterTasks returns all master tasks.
 func (e *TeamEngine) ListMasterTasks() ([]*MasterTask, error) {
 	return e.Store.ListMasterTasks()
+}
+
+// ListMasterTasksBySession returns master tasks for a given session.
+func (e *TeamEngine) ListMasterTasksBySession(sessionID string) ([]*MasterTask, error) {
+	return e.Store.ListMasterTasksBySession(sessionID)
+}
+
+// DeleteMasterTaskAndChildren removes a master task and all its subtasks.
+func (e *TeamEngine) DeleteMasterTaskAndChildren(masterTaskID string) error {
+	tasks, _ := e.Store.ListTasksByMasterTask(masterTaskID)
+	for _, t := range tasks {
+		e.Store.DeleteTask(t.ID)
+	}
+	return e.Store.DeleteMasterTask(masterTaskID)
 }
 
 // ListTasksByMasterTask returns subtasks for a master task.
@@ -1194,15 +1219,14 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 			// Dynamic Workflow mode: N verifiers in parallel + Synthesizer.
 			passed, isRetry, feedback = e.runDWVerification(task)
 		} else {
-			// Use team-configured verifier prompt if available.
+			// Use task-level verifier role if specified, otherwise default verifier.
 			verifierPrompt := ""
-			if e.team != nil {
-				roleKey := string(task.Role)
-				if vr, ok := e.team.Roles[roleKey]; ok && vr.Verifier != "" {
-					if vrole, ok2 := e.team.Roles[vr.Verifier]; ok2 {
-						verifierPrompt = vrole.Prompt
-					}
-				}
+			verifierAgentName := task.VerifierRole
+			if verifierAgentName != "" && e.team != nil {
+				// The verifier's agent definition will be resolved by the
+				// spawner adapter via AgentName — we just need to set the
+				// role so the prompt prefix is correct.
+				verifierPrompt = fmt.Sprintf("[Role: %s]\n\n", verifierAgentName)
 			}
 			verifierModel := ""
 			if e.team != nil && e.team.Config != nil {
@@ -1480,6 +1504,7 @@ func (e *TeamEngine) PlanAndRun(ctx context.Context, goal, workdir, masterTaskID
 			task.Output = pt.Output
 			task.BatchID = bid
 			task.UseDW = pt.UseDW
+			task.VerifierRole = pt.VerifierRole
 			task.MasterTaskID = masterTaskID
 			e.Store.UpdateTask(task.ID, map[string]interface{}{
 				"batch_id":       bid,
@@ -1636,6 +1661,7 @@ func (e *TeamEngine) PlanAndRun(ctx context.Context, goal, workdir, masterTaskID
 						}
 						task.BatchID = batchID
 						task.UseDW = pt.UseDW
+						task.VerifierRole = pt.VerifierRole
 						_ = e.Store.UpdateTask(task.ID, map[string]interface{}{"batch_id": batchID, "master_task_id": mtID})
 						return task, nil
 					},
@@ -1987,6 +2013,7 @@ func (e *TeamEngine) runDWCycle(
 				}
 				task.BatchID = batchID
 				task.UseDW = pt.UseDW
+				task.VerifierRole = pt.VerifierRole
 				_ = e.Store.UpdateTask(task.ID, map[string]interface{}{"batch_id": batchID, "master_task_id": mtID})
 				return task, nil
 			},
@@ -2166,6 +2193,7 @@ func (e *TeamEngine) PlanAndRunLegacy(goal, workdir string) ([]*Task, error) {
 		if err != nil {
 			return nil, fmt.Errorf("create subtask %d: %w", i, err)
 		}
+		task.VerifierRole = pt.VerifierRole
 		tasks = append(tasks, task)
 		taskIndex[i] = task.ID
 	}

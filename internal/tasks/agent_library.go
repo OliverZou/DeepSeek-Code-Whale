@@ -283,6 +283,11 @@ func parseAgentDefinitionFile(path, source string) (AgentDefinition, bool, error
 	}
 }
 
+// ParseMarkdownAgentDefinition is the exported version of parseMarkdownAgentDefinition.
+func ParseMarkdownAgentDefinition(content, filename, source string) (AgentDefinition, bool, error) {
+	return parseMarkdownAgentDefinition(content, filename, source)
+}
+
 func parseMarkdownAgentDefinition(content, filename, _ string) (AgentDefinition, bool, error) {
 	frontmatter, body, ok, err := splitAgentFrontmatter(content)
 	if err != nil || !ok {
@@ -299,6 +304,7 @@ func parseMarkdownAgentDefinition(content, filename, _ string) (AgentDefinition,
 	}
 	def := AgentDefinition{
 		Name:            name,
+		Role:            stringFrontmatterValue(values, "role"),
 		Description:     desc,
 		WhenToUse:       stringFrontmatterValue(values, "whenToUse"),
 		Prompt:          strings.TrimSpace(body),

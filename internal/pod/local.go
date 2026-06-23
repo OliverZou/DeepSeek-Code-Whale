@@ -33,7 +33,7 @@ func SetLogFile(path string) {
 }
 
 func Log(cat, format string, args ...interface{}) {
-	line := fmt.Sprintf("[%s] [%s] %s", time.Now().UTC().Format(time.RFC3339), cat, fmt.Sprintf(format, args...))
+	line := fmt.Sprintf("[%s] [%s] %s", time.Now().Format("2006-01-02T15:04:05Z07:00"), cat, fmt.Sprintf(format, args...))
 	localLogMu.Lock()
 	if localLogFile != nil {
 		fmt.Fprintln(localLogFile, line)

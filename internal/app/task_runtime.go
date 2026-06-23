@@ -93,7 +93,7 @@ func (a *App) rebuildTaskRuntimeLocked() error {
 		// Inject native subagent spawner for Team Engine, replacing the
 		// ShellSubagentSpawner (whale exec subprocess) with Whale's own
 		// subagent spawning mechanism.
-		toolset.SetTeamEngineSpawnFunc(teamEngineSpawnAdapter(taskRunner))
+		toolset.SetTeamEngineSpawnFunc(teamEngineSpawnAdapter(taskRunner, taskRunner.AgentLibrary()))
 		return core.NewToolRegistryChecked(toolset.Tools())
 	}
 	var extraSkills []*skills.Skill
@@ -134,7 +134,7 @@ func (a *App) rebuildTaskRuntimeLocked() error {
 	})
 	a.taskTools = tasks.NewTools(taskRunner)
 	// Wire native subagent adapter as the main toolset's Team Engine spawner.
-	a.toolset.SetTeamEngineSpawnFunc(teamEngineSpawnAdapter(taskRunner))
+	a.toolset.SetTeamEngineSpawnFunc(teamEngineSpawnAdapter(taskRunner, taskRunner.AgentLibrary()))
 	a.workflowManager = nil
 	a.workflowRunner = nil
 	workflowLibrary := workflow.NewLibrary(a.workspaceRoot)

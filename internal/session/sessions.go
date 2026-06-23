@@ -28,39 +28,55 @@ func ListSessions(sessionsDir string, limit int) ([]SessionSummary, error) {
 		}
 		return nil, err
 	}
-	out := make([]SessionSummary, 0, len(entries))
+
+	type entryInfo struct {
+		id      string
+		modTime time.Time
+	}
+	candidates := make([]entryInfo, 0, len(entries))
 	for _, e := range entries {
 		if e.IsDir() || !core.IsSessionJSONLName(e.Name()) {
+			continue
+		}
+		id := strings.TrimSuffix(e.Name(), ".jsonl")
+		if id == "" || isSubagentSessionID(id) {
 			continue
 		}
 		info, err := e.Info()
 		if err != nil {
 			continue
 		}
-		id := strings.TrimSuffix(e.Name(), ".jsonl")
-		if id == "" {
+		candidates = append(candidates, entryInfo{id: id, modTime: info.ModTime()})
+	}
+
+	sort.Slice(candidates, func(i, j int) bool {
+		return candidates[i].modTime.After(candidates[j].modTime)
+	})
+
+	need := len(candidates)
+	if limit > 0 && limit < need {
+		need = limit
+	}
+
+	out := make([]SessionSummary, 0, need)
+	for _, c := range candidates {
+		if limit > 0 && len(out) >= limit {
+			break
+		}
+		meta, err := LoadSessionMeta(sessionsDir, c.id)
+		if err != nil {
 			continue
 		}
-		if isSubagentSessionID(id) {
-			continue
-		}
-		meta, err := LoadSessionMeta(sessionsDir, id)
-		if err == nil && strings.TrimSpace(meta.Kind) == "subagent" {
+		if strings.TrimSpace(meta.Kind) == "subagent" {
 			continue
 		}
 		out = append(out, SessionSummary{
-			ID:      id,
-			ModTime: info.ModTime(),
-			Size:    info.Size(),
+			ID:      c.id,
+			ModTime: c.modTime,
 			Meta:    meta,
 		})
 	}
-	sort.Slice(out, func(i, j int) bool {
-		return out[i].ModTime.After(out[j].ModTime)
-	})
-	if limit > 0 && len(out) > limit {
-		out = out[:limit]
-	}
+
 	for i := range out {
 		out[i].Conversation = SessionConversationTitle(sessionsDir, out[i].ID, out[i].Meta)
 	}

@@ -36,6 +36,7 @@ type Message struct {
 	FinishReason FinishReason
 	CreatedAt    time.Time
 	UpdatedAt    time.Time
+	DurationMs   int64       `json:"duration_ms,omitempty"`
 	// Usage carries the provider-reported token accounting for assistant
 	// turns; ErrorDetail preserves the failure reason for turns that end
 	// with FinishReasonError (session analysis was previously impossible:

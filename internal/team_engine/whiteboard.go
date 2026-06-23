@@ -245,6 +245,109 @@ func (wb *Whiteboard) ReadVerifier(taskID string) (string, error) {
 	return wb.readFile(filepath.Join(wb.TaskDir(taskID), "verifier.md"))
 }
 
+// WriteConfirmation writes the agent's confirmation request.
+func (wb *Whiteboard) WriteConfirmation(taskID, content string) error {
+	return wb.writeFile(filepath.Join(wb.TaskDir(taskID), "confirmation.md"), content)
+}
+
+// ReadConfirmation reads the agent's confirmation request.
+func (wb *Whiteboard) ReadConfirmation(taskID string) (string, error) {
+	return wb.readFile(filepath.Join(wb.TaskDir(taskID), "confirmation.md"))
+}
+
+// ClearConfirmation removes the confirmation file after it's been handled.
+func (wb *Whiteboard) ClearConfirmation(taskID string) error {
+	return os.Remove(filepath.Join(wb.TaskDir(taskID), "confirmation.md"))
+}
+
+// HasConfirmation reports whether a confirmation request exists for a task.
+func (wb *Whiteboard) HasConfirmation(taskID string) bool {
+	_, err := os.Stat(filepath.Join(wb.TaskDir(taskID), "confirmation.md"))
+	return err == nil
+}
+
+// MasterDir returns the directory for a master task.
+func (wb *Whiteboard) MasterDir(masterTaskID string) string {
+	return filepath.Join(wb.baseDir, "masters", masterTaskID)
+}
+
+// ChatDir returns the chat directory for a master task.
+func (wb *Whiteboard) ChatDir(masterTaskID string) string {
+	return filepath.Join(wb.MasterDir(masterTaskID), "chat")
+}
+
+// WriteChatMessage writes a chat message to the master task's chat directory.
+func (wb *Whiteboard) WriteChatMessage(masterTaskID, from, to, content string) error {
+	chatDir := wb.ChatDir(masterTaskID)
+	if err := os.MkdirAll(chatDir, 0755); err != nil {
+		return fmt.Errorf("create chat dir: %w", err)
+	}
+	seq := time.Now().UTC().Format("20060102-150405.000000000")
+	meta := fmt.Sprintf("---\nfrom: %s\nto: %s\ntimestamp: %s\n---\n\n%s", from, to, time.Now().UTC().Format(time.RFC3339), content)
+	filename := fmt.Sprintf("%s_%s.md", seq, safeSenderName(from))
+	return wb.writeFile(filepath.Join(chatDir, filename), meta)
+}
+
+// ChatMessage represents a single chat message in the master task conversation.
+type ChatMessage struct {
+	From      string `json:"from"`
+	To        string `json:"to"`
+	Content   string `json:"content"`
+	Timestamp string `json:"timestamp"`
+	Filename  string `json:"filename"`
+}
+
+// ReadChatMessages reads all chat messages for a master task, sorted by time.
+func (wb *Whiteboard) ReadChatMessages(masterTaskID string) ([]ChatMessage, error) {
+	chatDir := wb.ChatDir(masterTaskID)
+	entries, err := os.ReadDir(chatDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("read chat dir: %w", err)
+	}
+	var messages []ChatMessage
+	for _, e := range entries {
+		if e.IsDir() || filepath.Ext(e.Name()) != ".md" {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(chatDir, e.Name()))
+		if err != nil {
+			continue
+		}
+		msg := ChatMessage{Filename: e.Name()}
+		content := string(data)
+		if strings.HasPrefix(content, "---") {
+			end := strings.Index(content[3:], "---")
+			if end > 0 {
+				frontmatter := content[3 : end+3]
+				body := strings.TrimSpace(content[end+6:])
+				for _, line := range strings.Split(frontmatter, "\n") {
+					line = strings.TrimSpace(line)
+					if strings.HasPrefix(line, "from:") {
+						msg.From = strings.TrimSpace(strings.TrimPrefix(line, "from:"))
+					} else if strings.HasPrefix(line, "to:") {
+						msg.To = strings.TrimSpace(strings.TrimPrefix(line, "to:"))
+					} else if strings.HasPrefix(line, "timestamp:") {
+						msg.Timestamp = strings.TrimSpace(strings.TrimPrefix(line, "timestamp:"))
+					}
+				}
+				msg.Content = body
+			} else {
+				msg.Content = content
+			}
+		} else {
+			msg.Content = content
+		}
+		messages = append(messages, msg)
+	}
+	sort.Slice(messages, func(i, j int) bool {
+		return messages[i].Filename < messages[j].Filename
+	})
+	return messages, nil
+}
+
 // WriteStatus writes status.json with the current task state.
 func (wb *Whiteboard) WriteStatus(taskID, status string) error {
 	data := map[string]interface{}{

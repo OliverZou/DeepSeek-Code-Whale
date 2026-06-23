@@ -23,6 +23,7 @@ const (
 // model, and runtime limits are resolved.
 type AgentDefinition struct {
 	Name            string                `json:"name,omitempty"`
+	Role            string                `json:"role,omitempty"`
 	Description     string                `json:"description,omitempty"`
 	WhenToUse       string                `json:"whenToUse,omitempty"`
 	Prompt          string                `json:"prompt,omitempty"`

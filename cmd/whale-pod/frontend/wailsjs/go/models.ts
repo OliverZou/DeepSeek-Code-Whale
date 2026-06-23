@@ -1,3 +1,46 @@
+export namespace main {
+	
+	export class TaskConfirmation {
+	    task_id: string;
+	    task_title: string;
+	    role: string;
+	    content: string;
+	    state: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new TaskConfirmation(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.task_id = source["task_id"];
+	        this.task_title = source["task_title"];
+	        this.role = source["role"];
+	        this.content = source["content"];
+	        this.state = source["state"];
+	    }
+	}
+	export class TeamChatMessage {
+	    from: string;
+	    to: string;
+	    content: string;
+	    timestamp: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new TeamChatMessage(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.from = source["from"];
+	        this.to = source["to"];
+	        this.content = source["content"];
+	        this.timestamp = source["timestamp"];
+	    }
+	}
+
+}
+
 export namespace pod {
 	
 	export class AgentDialogueJSON {
@@ -14,10 +57,37 @@ export namespace pod {
 	        this.content = source["content"];
 	    }
 	}
+	export class AgentInfoJSON {
+	    name: string;
+	    role?: string;
+	    description: string;
+	    whenToUse?: string;
+	    category?: string;
+	    tools?: string[];
+	    skills?: string[];
+	
+	    static createFrom(source: any = {}) {
+	        return new AgentInfoJSON(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.role = source["role"];
+	        this.description = source["description"];
+	        this.whenToUse = source["whenToUse"];
+	        this.category = source["category"];
+	        this.tools = source["tools"];
+	        this.skills = source["skills"];
+	    }
+	}
 	export class ChatMessageJSON {
 	    time: string;
 	    from: string;
 	    content: string;
+	    thinking?: string;
+	    durationMs?: number;
+	    to?: string;
 	
 	    static createFrom(source: any = {}) {
 	        return new ChatMessageJSON(source);
@@ -28,11 +98,15 @@ export namespace pod {
 	        this.time = source["time"];
 	        this.from = source["from"];
 	        this.content = source["content"];
+	        this.thinking = source["thinking"];
+	        this.durationMs = source["durationMs"];
+	        this.to = source["to"];
 	    }
 	}
 	export class MasterTaskJSON {
 	    id: string;
 	    goal: string;
+	    agent?: string;
 	    workspace_id: string;
 	    workspace_path: string;
 	    workspace_label: string;
@@ -52,6 +126,7 @@ export namespace pod {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.id = source["id"];
 	        this.goal = source["goal"];
+	        this.agent = source["agent"];
 	        this.workspace_id = source["workspace_id"];
 	        this.workspace_path = source["workspace_path"];
 	        this.workspace_label = source["workspace_label"];
@@ -117,6 +192,46 @@ export namespace pod {
 		    }
 		    return a;
 		}
+	}
+	export class SummonedItemJSON {
+	    type: string;
+	    name: string;
+	    label: string;
+	    category?: string;
+	    description?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new SummonedItemJSON(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.type = source["type"];
+	        this.name = source["name"];
+	        this.label = source["label"];
+	        this.category = source["category"];
+	        this.description = source["description"];
+	    }
+	}
+	export class TeamDetailJSON {
+	    name: string;
+	    label: string;
+	    category?: string;
+	    description: string;
+	    roles: string[];
+	
+	    static createFrom(source: any = {}) {
+	        return new TeamDetailJSON(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.label = source["label"];
+	        this.category = source["category"];
+	        this.description = source["description"];
+	        this.roles = source["roles"];
+	    }
 	}
 
 }

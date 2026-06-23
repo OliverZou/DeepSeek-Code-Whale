@@ -52,9 +52,14 @@ func TestBuildLeaderPrompt_StripsGenericRoles(t *testing.T) {
 			Role:  "队长",
 			Model: "test-model",
 		},
-		Roles: map[string]TeamRoleConfig{
-			"后端工程师": {Description: "写后端"},
-			"前端工程师": {Description: "写前端"},
+		Roles: []string{"backend-engineer", "frontend-engineer"},
+		RoleTitles: map[string]string{
+			"backend-engineer":  "后端工程师",
+			"frontend-engineer": "前端工程师",
+		},
+		RoleDescs: map[string]string{
+			"backend-engineer":  "写后端",
+			"frontend-engineer": "写前端",
 		},
 	}
 
@@ -117,6 +122,84 @@ func TestBuildLeaderPrompt_InjectRules(t *testing.T) {
 	}
 	if !strings.Contains(result, "必须 Git 提交") {
 		t.Error("missing team rule: Git")
+	}
+}
+
+func TestBuildLeaderPrompt_InjectPipeline(t *testing.T) {
+	tc := &TeamConfig{
+		Label: "test",
+		Leader: TeamLeaderConfig{Role: "队长"},
+		Roles: []string{"backend-engineer"},
+		RoleTitles: map[string]string{"backend-engineer": "后端工程师"},
+		RoleDescs:  map[string]string{"backend-engineer": "写后端"},
+		Pipeline: &PipelineFile{
+			Pipelines: map[string]PipelineDef{
+				"new-feature": {
+					Description: "新功能开发",
+					Trigger:     "新建|开发",
+					Stages: []PipelineStage{
+						{ID: "design", Label: "设计", Roles: []string{"软件架构师"}},
+						{ID: "impl", Label: "实施", Roles: []string{"后端工程师", "前端工程师"}, DependsOn: []string{"design"}, Parallel: true},
+					},
+				},
+				"bugfix": {
+					Description: "Bug修复",
+					Trigger:     "bug|修复",
+					Stages: []PipelineStage{
+						{ID: "fix", Label: "修复", Roles: []string{"后端工程师"}},
+					},
+				},
+			},
+			Default: "dynamic",
+		},
+	}
+
+	basePrompt := DecomposePrompt("test goal")
+	result := tc.BuildLeaderPrompt(basePrompt)
+
+	if !strings.Contains(result, "Pipeline Templates") {
+		t.Error("missing pipeline section header")
+	}
+	if !strings.Contains(result, "ADVISORY") {
+		t.Error("missing advisory label")
+	}
+	if !strings.Contains(result, "new-feature") {
+		t.Error("missing pipeline name: new-feature")
+	}
+	if !strings.Contains(result, "bugfix") {
+		t.Error("missing pipeline name: bugfix")
+	}
+	if !strings.Contains(result, "dynamic") {
+		t.Error("missing default strategy")
+	}
+	if !strings.Contains(result, "parallel=true") {
+		t.Error("missing parallel flag")
+	}
+}
+
+func TestBuildLeaderPrompt_NoPipeline(t *testing.T) {
+	tc := &TeamConfig{
+		Label:    "test",
+		Category: "开发",
+		Leader:   TeamLeaderConfig{Role: "队长"},
+	}
+
+	basePrompt := DecomposePrompt("test goal")
+	result := tc.BuildLeaderPrompt(basePrompt)
+
+	if strings.Contains(result, "Pipeline Templates") {
+		t.Error("should not have pipeline section when Pipeline is nil")
+	}
+}
+
+func TestTeamConfig_Category(t *testing.T) {
+	tc := &TeamConfig{
+		Label:    "test",
+		Category: "开发",
+		Leader:   TeamLeaderConfig{Role: "队长"},
+	}
+	if tc.Category != "开发" {
+		t.Errorf("expected category '开发', got %q", tc.Category)
 	}
 }
 

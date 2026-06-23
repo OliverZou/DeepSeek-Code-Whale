@@ -20,9 +20,10 @@ const (
 	TaskStateProduced  TaskState = "produced"
 	TaskStateVerifying TaskState = "verifying"
 	TaskStateVerified  TaskState = "verified"
-	TaskStateFailed     TaskState = "failed"
-	TaskStateDone       TaskState = "done"
-	TaskStateSuspended  TaskState = "suspended"
+	TaskStateFailed               TaskState = "failed"
+	TaskStateDone                 TaskState = "done"
+	TaskStateSuspended            TaskState = "suspended"
+	TaskStatePendingConfirmation  TaskState = "pending_confirmation"
 )
 
 // IsTerminal reports whether the state is a terminal state
@@ -35,7 +36,7 @@ func (s TaskState) IsTerminal() bool {
 // IsResumable reports whether the task can be resumed.
 // Only suspended tasks can be resumed.
 func (s TaskState) IsResumable() bool {
-	return s == TaskStateSuspended
+	return s == TaskStateSuspended || s == TaskStatePendingConfirmation
 }
 
 // AgentRole is the role an agent plays in the collaboration.
@@ -80,6 +81,7 @@ type Task struct {
 	Description      string     `json:"description"`       // 任务描述（给 Agent 的 prompt）
 	Output           string     `json:"output,omitempty"`  // 声明产出（不进DB，运行时传递）
 	Role             AgentRole  `json:"role"`              // 角色
+	VerifierRole     string     `json:"verifier_role,omitempty"` // 验证者角色（agent name）
 	Profile          ToolProfile `json:"profile"`          // 工具权限配置
 	State            TaskState  `json:"state"`             // 当前状态
 	MaxRetries       int        `json:"max_retries"`       // 最大重试次数
@@ -90,7 +92,7 @@ type Task struct {
 	VerifierFeedback string     `json:"verifier_feedback"` // Verifier 反馈
 	VerifierFocus    string     `json:"verifier_focus"`    // 验证重点 (correctness,security,sources,plausibility,...)
 	BatchID          string     `json:"batch_id"`          // 所属 Batch（stage）
- 	MasterTaskID     string     `json:"master_task_id"`    // 所属总任务
+  	MasterTaskID     string     `json:"master_task_id"`    // 所属总任务
 	UseDW            bool       `json:"use_dw"`            // use Dynamic Workflow for verification
 	CreatedAt        string     `json:"created_at"`        // ISO 8601
 	UpdatedAt        string     `json:"updated_at"`        // ISO 8601
@@ -163,6 +165,7 @@ type PlanTask struct {
 	Description      string   `json:"description"`
 	Output           string   `json:"output,omitempty"` // declared deliverable
 	Role             string   `json:"role"`
+	VerifierRole     string   `json:"verifier_role,omitempty"` // who verifies this task (agent name)
 	BatchID          string   `json:"batch_id,omitempty"`     // which batch (stage) this belongs to
 	BatchLabel       string   `json:"batch_label,omitempty"`  // human label for the batch
 	DependsOnBatch   []string `json:"depends_on_batch,omitempty"` // batch dependencies
@@ -219,16 +222,17 @@ var ValidTransitions = map[TaskState][]TaskState{
 	TaskStateProduced:  {TaskStateVerifying, TaskStateDone, TaskStateAssigned, TaskStateSuspended, TaskStateFailed},
 	TaskStateVerifying: {TaskStateVerified, TaskStateProducing, TaskStateSuspended, TaskStateAssigned, TaskStateFailed},
 	TaskStateVerified:  {TaskStateDone, TaskStateSuspended, TaskStateAssigned, TaskStateFailed},
-	TaskStateSuspended: {TaskStatePending}, // resume
-	TaskStateFailed:    {}, // terminal
-	TaskStateDone:      {}, // terminal
+	TaskStateSuspended:            {TaskStatePending, TaskStatePendingConfirmation},
+	TaskStatePendingConfirmation:  {TaskStateProducing, TaskStateSuspended},
+	TaskStateFailed:               {}, // terminal
+	TaskStateDone:                 {}, // terminal
 }
 
 // ResetForResume transitions stuck tasks back to a runnable state so
 // ResumeMasterTask can re-execute them.  This bypasses the normal
 // transition table because resume is a recovery operation.
 func ResetForResume(state TaskState) TaskState {
-	if state == TaskStateFailed || state == TaskStateSuspended {
+	if state == TaskStateFailed || state == TaskStateSuspended || state == TaskStatePendingConfirmation {
 		return TaskStatePending
 	}
 	if state == TaskStateDone {
@@ -369,6 +373,7 @@ func AllStates() []TaskState {
 		TaskStateVerified,
 		TaskStateFailed,
 		TaskStateSuspended,
+		TaskStatePendingConfirmation,
 		TaskStateDone,
 	}
 }

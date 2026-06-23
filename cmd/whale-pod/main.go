@@ -1,4 +1,4 @@
-// Whale Dashboard — multi-workspace team-engine desktop monitor.
+// Whale Pod — multi-workspace team-engine desktop monitor.
 // Built with Wails v2.
 package main
 
@@ -19,7 +19,7 @@ func main() {
 	app := NewApp()
 
 	err := wails.Run(&options.App{
-		Title:     "Whale Dashboard",
+		Title:     "Whale Pod",
 		Width:     1200,
 		Height:    800,
 		MinWidth:  900,

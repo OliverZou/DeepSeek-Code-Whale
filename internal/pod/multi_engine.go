@@ -25,6 +25,7 @@ var wsUpgrader = websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { re
 type MasterTaskJSON struct {
 	ID              string `json:"id"`
 	Goal            string `json:"goal"`
+	Agent           string `json:"agent,omitempty"`
 	WorkspaceID     string `json:"workspace_id"`
 	WorkspacePath   string `json:"workspace_path"`
 	WorkspaceLabel  string `json:"workspace_label"`
@@ -59,9 +60,12 @@ type AgentDialogueJSON struct {
 }
 
 type ChatMessageJSON struct {
-	Time    string `json:"time"`
-	From    string `json:"from"`
-	Content string `json:"content"`
+	Time       string `json:"time"`
+	From       string `json:"from"`
+	Content    string `json:"content"`
+	Thinking   string `json:"thinking,omitempty"`
+	DurationMs int64  `json:"durationMs,omitempty"`
+	To         string `json:"to,omitempty"`
 }
 
 type WorkspaceJSON struct {
@@ -73,6 +77,32 @@ type WorkspaceJSON struct {
 	Online      bool   `json:"online"`
 	TaskCount   int    `json:"task_count"`
 	ActiveCount int    `json:"active_count"`
+}
+
+type TeamDetailJSON struct {
+	Name        string   `json:"name"`
+	Label       string   `json:"label"`
+	Category    string   `json:"category,omitempty"`
+	Description string   `json:"description"`
+	Roles       []string `json:"roles"`
+}
+
+type AgentInfoJSON struct {
+	Name        string   `json:"name"`
+	Role        string   `json:"role,omitempty"`
+	Description string   `json:"description"`
+	WhenToUse   string   `json:"whenToUse,omitempty"`
+	Category    string   `json:"category,omitempty"`
+	Tools       []string `json:"tools,omitempty"`
+	Skills      []string `json:"skills,omitempty"`
+}
+
+type SummonedItemJSON struct {
+	Type        string `json:"type"` // "expert" or "team"
+	Name        string `json:"name"`
+	Label       string `json:"label"`
+	Category    string `json:"category,omitempty"`
+	Description string `json:"description,omitempty"`
 }
 
 // =========================================================================

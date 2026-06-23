@@ -4,6 +4,8 @@ package team_engine
 type MasterTask struct {
 	ID            string `json:"id"`
 	Goal          string `json:"goal"`
+	Agent         string `json:"agent,omitempty"`
+	SessionID     string `json:"session_id,omitempty"`
 	WorkspacePath string `json:"workspace_path,omitempty"`
 	Status        string `json:"status"`
 	CreatedAt     string `json:"created_at,omitempty"`

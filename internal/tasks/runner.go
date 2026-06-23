@@ -148,6 +148,15 @@ func NewRunner(cfg RunnerConfig) *Runner {
 	}
 }
 
+// AgentLibrary returns the agent definition library used for resolving
+// agent names to their full definitions (prompt, tools, skills, etc.).
+func (r *Runner) AgentLibrary() *AgentDefinitionLibrary {
+	if r == nil {
+		return nil
+	}
+	return r.agentDefinitions
+}
+
 func (r *Runner) newProvider(model string, maxTokens int, effort string, disableThinking bool) (llm.Provider, error) {
 	if r.providerFactoryWithOptions != nil {
 		return r.providerFactoryWithOptions(ProviderRequest{

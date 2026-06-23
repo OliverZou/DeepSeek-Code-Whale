@@ -1,10 +1,47 @@
 import { create } from 'zustand';
-import type { MasterTask, Subtask, DialogueEntry, ChatMessage, TaskEvent, TeamInfo } from './types';
+import type { MasterTask, Subtask, DialogueEntry, ChatMessage, TaskEvent, TeamInfo, AgentInfo, SummonedItem, TeamChatMessage, TaskConfirmation } from './types';
 import { api } from './wails';
+
+const PINNED_KEY = 'whale_pinned_task_ids';
+const OLD_PINNED_KEY = 'whale-pod-pinned-tasks';
+const WORKSPACES_KEY = 'whale-pod-open-workspaces';
+
+function loadPinnedIds(): string[] {
+  try {
+    const raw = localStorage.getItem(PINNED_KEY);
+    if (raw) return JSON.parse(raw);
+    // 迁移旧 key 数据
+    const old = localStorage.getItem(OLD_PINNED_KEY);
+    if (old) {
+      const ids = JSON.parse(old);
+      localStorage.setItem(PINNED_KEY, old);
+      localStorage.removeItem(OLD_PINNED_KEY);
+      return ids;
+    }
+    return [];
+  } catch { return []; }
+}
+
+let _loadMasterTasksPromise: Promise<void> | null = null;
+
+export function persistPinnedIds(ids: string[]) {
+  try { localStorage.setItem(PINNED_KEY, JSON.stringify(ids)); } catch { /* ignore */ }
+}
+
+function loadWorkspaces(): string[] {
+  try {
+    const raw = localStorage.getItem(WORKSPACES_KEY);
+    return raw ? JSON.parse(raw) : [];
+  } catch { return []; }
+}
+
+function persistWorkspaces(dirs: string[]) {
+  try { localStorage.setItem(WORKSPACES_KEY, JSON.stringify(dirs)); } catch { /* ignore */ }
+}
 
 interface PodState {
   workDir: string;
-  workDirs: string[];
+  openWorkspaces: string[];
   masterTasks: MasterTask[];
   selWorkDir: string | null;
   selMasterTaskId: string | null;
@@ -17,22 +54,45 @@ interface PodState {
   activeFunction: string | null;
   activeTab: 'dialogue' | 'observer';
   teams: string[];
+  teamDetails: TeamInfo[];
+  agentDetails: AgentInfo[];
+  summonedItems: SummonedItem[];
+  preselectedExpert: string;
+  pinnedTaskIds: string[];
+  directChatTaskId: string | null;
+  directMessages: ChatMessage[];
+  teamChatMessages: TeamChatMessage[];
+  confirmations: TaskConfirmation[];
+  targetRole: string;
+  sidebarCollapsed: boolean;
 
   init: () => Promise<void>;
   loadMasterTasks: () => Promise<void>;
   loadSubtasks: (mtId: string) => Promise<void>;
   selectMasterTask: (id: string) => Promise<void>;
   selectSubtask: (id: string) => Promise<void>;
-  startTask: (goal: string, team: string) => Promise<string>;
+  startTask: (goal: string, team: string, workDir?: string) => Promise<string>;
+  startDirectChat: (goal: string, workDir?: string, agent?: string, deepThink?: boolean) => Promise<void>;
+  sendDirectChat: (message: string, deepThink?: boolean) => Promise<void>;
   sendFeedback: (msg: string) => Promise<void>;
+  sendTeamChat: (message: string, targetRole?: string) => Promise<void>;
+  loadTeamChat: () => Promise<void>;
+  confirmTask: (taskId: string, approved: boolean, feedback?: string) => Promise<void>;
+  loadConfirmations: () => Promise<void>;
+  summonItem: (item: SummonedItem) => void;
+  dismissItem: (name: string, type: string) => void;
+  summonAndOpen: (item: SummonedItem) => Promise<void>;
+  toggleSidebar: () => void;
   runSubtask: (taskId: string) => Promise<void>;
   cancelSubtask: (taskId: string) => Promise<void>;
   handleTaskEvent: (event: TaskEvent) => void;
+  openWorkspace: (dir: string) => Promise<void>;
+  removeWorkspace: (dir: string) => Promise<void>;
 }
 
 export const useStore = create<PodState>((set, get) => ({
   workDir: '',
-  workDirs: [],
+  openWorkspaces: loadWorkspaces(),
   masterTasks: [],
   selWorkDir: null,
   selMasterTaskId: null,
@@ -42,25 +102,51 @@ export const useStore = create<PodState>((set, get) => ({
   leaderPlan: [],
   chatMessages: [],
   unreadTasks: new Set(),
-  activeFunction: null,
+  activeFunction: 'create',
   activeTab: 'dialogue',
   teams: [],
+  teamDetails: [],
+  agentDetails: [] as AgentInfo[],
+  summonedItems: [] as SummonedItem[],
+  preselectedExpert: '',
+  sidebarCollapsed: false,
+  pinnedTaskIds: loadPinnedIds(),
+  directChatTaskId: null,
+  directMessages: [],
+  teamChatMessages: [],
+  confirmations: [],
+  targetRole: '',
 
   init: async () => {
     const dir = await api.getWorkDir() || '';
     const teams = (await api.listTeams()) || [];
-    set({ workDir: dir, workDirs: dir ? [dir] : [], teams });
+    const teamDetails = (await api.listTeamDetails()) || [];
+    const agentDetails = (await api.listAgents()) || [];
+    const summoned = (await api.loadSummonedItems()) || [];
+    const openWorkspaces = loadWorkspaces();
+    set({ workDir: dir, openWorkspaces, teams, teamDetails, agentDetails, summonedItems: summoned });
     await get().loadMasterTasks();
   },
 
   loadMasterTasks: async () => {
-    const tasks = (await api.getMasterTasks()) || [];
-    const dirs = [...new Set(tasks.map(t => t.workspace_path).filter(Boolean))];
-    set({ masterTasks: tasks, workDirs: dirs });
+    if (_loadMasterTasksPromise) return _loadMasterTasksPromise;
+    _loadMasterTasksPromise = (async () => {
+      try {
+        let tasks = await api.getMasterTasks();
+        if (!tasks || tasks.length === 0) {
+          await new Promise(r => setTimeout(r, 500));
+          tasks = await api.getMasterTasks();
+        }
+        set({ masterTasks: tasks || [] });
+      } finally {
+        _loadMasterTasksPromise = null;
+      }
+    })();
+    return _loadMasterTasksPromise;
   },
 
-  loadSubtasks: async (mtId: string) => {
-    const sts = await api.getSubtasks(mtId);
+  loadSubtasks: async (sessionId: string) => {
+    const sts = await api.getSubtasksBySession(sessionId);
     set({ subtasks: sts });
   },
 
@@ -72,7 +158,12 @@ export const useStore = create<PodState>((set, get) => ({
       dialogue: [],
       leaderPlan: [],
       activeFunction: null,
+      directChatTaskId: task && task.task_count === 0 ? id : get().directChatTaskId,
     });
+    // Direct chat task: skip subtask loading
+    if (task && task.task_count === 0) {
+      return;
+    }
     await get().loadSubtasks(id);
     if (task?.task_count && task.task_count > 0) {
       const plan = await api.getLeaderPlan();
@@ -94,13 +185,45 @@ export const useStore = create<PodState>((set, get) => ({
     }
   },
 
-  startTask: async (goal: string, team: string) => {
-    const err = await api.startTask(goal, team);
+  startTask: async (goal: string, team: string, workDir?: string) => {
+    const err = await api.startTask(goal, team, workDir);
     if (!err) {
       set({ activeFunction: null });
       setTimeout(() => get().loadMasterTasks(), 2000);
     }
     return err;
+  },
+
+  startDirectChat: async (goal: string, workDir?: string, agent?: string, deepThink?: boolean) => {
+    const taskId = await api.createDirectTask(goal, workDir, agent, deepThink);
+    if (!taskId) return;
+    set({ directChatTaskId: taskId, selMasterTaskId: taskId, activeFunction: 'chat', directMessages: [{ from: 'human', content: goal, time: '' }] });
+    setTimeout(() => get().loadMasterTasks(), 1000);
+    // Get initial AI reply
+    const raw = await api.directChat(taskId, goal, deepThink);
+    if (raw) {
+      try {
+        const result = JSON.parse(raw);
+        set(s => ({ directMessages: [...s.directMessages, { from: 'agent', content: result.reply || raw, time: '', thinking: result.thinking, durationMs: result.durationMs, needsAction: result.needsAction, actionType: result.actionType }] }));
+      } catch {
+        set(s => ({ directMessages: [...s.directMessages, { from: 'agent', content: raw, time: '' }] }));
+      }
+    }
+  },
+
+  sendDirectChat: async (message: string, deepThink?: boolean) => {
+    const taskId = get().directChatTaskId;
+    if (!taskId) return;
+    set(s => ({ directMessages: [...s.directMessages, { from: 'human', content: message, time: '' }] }));
+    const raw = await api.directChat(taskId, message, deepThink);
+    if (raw) {
+      try {
+        const result = JSON.parse(raw);
+        set(s => ({ directMessages: [...s.directMessages, { from: 'agent', content: result.reply || raw, time: '', thinking: result.thinking, durationMs: result.durationMs, needsAction: result.needsAction, actionType: result.actionType }] }));
+      } catch {
+        set(s => ({ directMessages: [...s.directMessages, { from: 'agent', content: raw, time: '' }] }));
+      }
+    }
   },
 
   sendFeedback: async (msg: string) => {
@@ -109,6 +232,34 @@ export const useStore = create<PodState>((set, get) => ({
     await api.sendFeedback(taskId, msg);
     const chat = await api.getChatMessages(taskId);
     set({ chatMessages: chat });
+  },
+
+  sendTeamChat: async (message: string, targetRole?: string) => {
+    const masterTaskId = get().selMasterTaskId;
+    if (!masterTaskId) return;
+    const role = targetRole || get().targetRole || '';
+    await api.sendTeamChat(masterTaskId, message, role);
+    await get().loadTeamChat();
+  },
+
+  loadTeamChat: async () => {
+    const masterTaskId = get().selMasterTaskId;
+    if (!masterTaskId) return;
+    const messages = await api.getTeamChat(masterTaskId);
+    set({ teamChatMessages: messages || [] });
+  },
+
+  confirmTask: async (taskId: string, approved: boolean, feedback?: string) => {
+    await api.confirmTask(taskId, approved, feedback || '');
+    await get().loadConfirmations();
+    if (get().selMasterTaskId) get().loadSubtasks(get().selMasterTaskId!);
+  },
+
+  loadConfirmations: async () => {
+    const masterTaskId = get().selMasterTaskId;
+    if (!masterTaskId) return;
+    const confs = await api.getConfirmationsForMaster(masterTaskId);
+    set({ confirmations: confs || [] });
   },
 
   runSubtask: async (taskId: string) => {
@@ -124,6 +275,34 @@ export const useStore = create<PodState>((set, get) => ({
       if (get().selMasterTaskId) get().loadSubtasks(get().selMasterTaskId!);
     }, 1000);
   },
+
+  summonItem: (item: SummonedItem) => {
+    const current = get().summonedItems;
+    if (current.find(s => s.name === item.name && s.type === item.type)) return;
+    const next = [...current, item];
+    set({ summonedItems: next });
+    api.saveSummonedItems(next);
+  },
+
+  dismissItem: (name: string, type: string) => {
+    const next = get().summonedItems.filter(s => !(s.name === name && s.type === type));
+    set({ summonedItems: next });
+    api.saveSummonedItems(next);
+  },
+
+  summonAndOpen: async (item: SummonedItem) => {
+    // 召唤（不重复）
+    const current = get().summonedItems;
+    if (!current.find(s => s.name === item.name && s.type === item.type)) {
+      const next = [...current, item];
+      set({ summonedItems: next });
+      api.saveSummonedItems(next);
+    }
+    // 设置预选专家 → 打开新对话
+    set({ preselectedExpert: item.name, activeFunction: 'create' });
+  },
+
+  toggleSidebar: () => set(s => ({ sidebarCollapsed: !s.sidebarCollapsed })),
 
   handleTaskEvent: (event: TaskEvent) => {
     const unread = new Set(get().unreadTasks);
@@ -143,7 +322,27 @@ export const useStore = create<PodState>((set, get) => ({
       }
     } else if (event.type === 0) { // state changed
       get().loadMasterTasks();
-      if (get().selMasterTaskId) get().loadSubtasks(get().selMasterTaskId!);
+      if (get().selMasterTaskId) {
+        get().loadSubtasks(get().selMasterTaskId!);
+        get().loadConfirmations();
+      }
     }
+  },
+
+  openWorkspace: async (dir: string) => {
+    const current = get().openWorkspaces;
+    if (!current.includes(dir)) {
+      const updated = [...current, dir];
+      persistWorkspaces(updated);
+      set({ openWorkspaces: updated });
+    }
+    await get().loadMasterTasks();
+  },
+
+  removeWorkspace: async (dir: string) => {
+    const updated = get().openWorkspaces.filter(d => d !== dir);
+    persistWorkspaces(updated);
+    set({ openWorkspaces: updated });
+    await get().loadMasterTasks();
   },
 }));

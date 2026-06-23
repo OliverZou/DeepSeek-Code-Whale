@@ -7,15 +7,16 @@ import Resizer from './components/Resizer';
 
 export default function App() {
   const init = useStore(s => s.init);
+  const sidebarCollapsed = useStore(s => s.sidebarCollapsed);
 
-  useEffect(() => { init(); }, []);
+  useEffect(() => { useStore.getState().init(); }, []);
 
   return (
     <div className="app-frame">
       <TitleBar />
       <div className="app-container">
         <Sidebar />
-        <Resizer target="sidebar" side="right" />
+        {!sidebarCollapsed && <Resizer target="sidebar" side="right" />}
         <RightPanel />
       </div>
     </div>

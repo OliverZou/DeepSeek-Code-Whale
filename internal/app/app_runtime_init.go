@@ -109,7 +109,7 @@ func initAppRuntime(cfg Config, sessionInit appSessionInit, toolInit appToolInit
 		// ShellSubagentSpawner (whale exec subprocess) with Whale's own
 		// subagent spawning mechanism. Prevents cold-start hangs and enables
 		// proper context isolation, tool permissions, and audit logging.
-		toolset.SetTeamEngineSpawnFunc(teamEngineSpawnAdapter(taskRunner))
+		toolset.SetTeamEngineSpawnFunc(teamEngineSpawnAdapter(taskRunner, taskRunner.AgentLibrary()))
 		return core.NewToolRegistryChecked(toolset.Tools())
 	}
 	extraSkills := []*skills.Skill(nil)
@@ -147,7 +147,7 @@ func initAppRuntime(cfg Config, sessionInit appSessionInit, toolInit appToolInit
 	// Without this, team_plan falls back to ShellSubagentSpawner which calls
 	// `whale exec` as a subprocess and cannot pass max_tokens, producing
 	// empty output for reasoning models.
-	toolInit.toolset.SetTeamEngineSpawnFunc(teamEngineSpawnAdapter(taskRunner))
+	toolInit.toolset.SetTeamEngineSpawnFunc(teamEngineSpawnAdapter(taskRunner, taskRunner.AgentLibrary()))
 	goalTools := newGoalTools(cfg.DataDir, sessionInit.sessionsDir, parentSessionIDFunc)
 	var workflowManager *workflow.RunManager
 	var workflowRunner *workflow.ScriptRunner

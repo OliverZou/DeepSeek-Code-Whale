@@ -308,7 +308,7 @@ func (b *Toolset) runTeamPlan(ctx context.Context, call core.ToolCall, progress 
 			}
 				for _, mt := range existing { if mt != masterTask { _ = eng.DeleteMasterTask(mt.ID) } }
 			if masterTask == nil {
-				masterTask, mtErr = eng.CreateMasterTask(args.Goal, b.root)
+				masterTask, mtErr = eng.CreateMasterTask(args.Goal, b.root, "")
 				if mtErr != nil {
 					return toolError("create master task: %v", mtErr), nil
 				}

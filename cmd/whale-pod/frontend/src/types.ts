@@ -2,6 +2,7 @@
 export interface MasterTask {
   id: string;
   goal: string;
+  agent?: string;
   workspace_id: string;
   workspace_path: string;
   workspace_label: string;
@@ -42,6 +43,11 @@ export interface ChatMessage {
   time: string;
   from: string; // "human" | "agent"
   content: string;
+  thinking?: string;
+  durationMs?: number;
+  needsAction?: boolean;
+  actionType?: string;
+  to?: string;
 }
 
 // Matches Go TaskEvent
@@ -56,5 +62,45 @@ export interface TaskEvent {
 // Team info
 export interface TeamInfo {
   name: string;
-  members: string[];
+  label: string;
+  category?: string;
+  description: string;
+  roles: string[];
+}
+
+// Agent info
+export interface AgentInfo {
+  name: string;
+  role?: string;
+  description: string;
+  whenToUse?: string;
+  category?: string;
+  tools?: string[];
+  skills?: string[];
+}
+
+// Summoned item (expert or team)
+export interface SummonedItem {
+  type: 'expert' | 'team';
+  name: string;
+  label: string;
+  category?: string;
+  description?: string;
+}
+
+// Matches Go TeamChatMessage
+export interface TeamChatMessage {
+  from: string;
+  to: string;
+  content: string;
+  timestamp: string;
+}
+
+// Matches Go TaskConfirmation
+export interface TaskConfirmation {
+  task_id: string;
+  task_title: string;
+  role: string;
+  content: string;
+  state: string;
 }

@@ -88,6 +88,7 @@ type SubagentProgress func(status, summary, toolName string)
 type SubagentRequest struct {
 	Task         string            // The prompt/description for the agent
 	Role         string            // Role name (e.g. "developer", "verifier")
+	AgentName    string            // Agent definition name from .md file (e.g. "backend-engineer")
 	Model        string            // LLM model name; "" = Whale default
 	Tools        []string          // Allowed tool names
 	Workdir      string            // Working directory
@@ -117,11 +118,18 @@ type SubagentResponse struct {
 // AgentRunner is a stateless wrapper around a SubagentSpawner.
 type AgentRunner struct {
 	spawner SubagentSpawner
+	team    *TeamConfig
 }
 
 // NewRunner creates an AgentRunner backed by the given spawner.
 func NewRunner(spawner SubagentSpawner) *AgentRunner {
 	return &AgentRunner{spawner: spawner}
+}
+
+// WithTeam attaches a TeamConfig so the runner can resolve role→agent mappings.
+func (ar *AgentRunner) WithTeam(team *TeamConfig) *AgentRunner {
+	ar.team = team
+	return ar
 }
 
 // RunWithContext spawns a worker subagent with cancellation support.  The
@@ -139,9 +147,28 @@ func (ar *AgentRunner) RunWithContext(ctx context.Context, prompt, workdir, tool
 	start := time.Now()
 
 	toolNames := parseToolList(tools)
+
+	// Extract role from prompt prefix "[Role: xxx]" and resolve agent name.
+	role := "worker"
+	agentName := ""
+	if strings.HasPrefix(prompt, "[Role: ") {
+		if idx := strings.Index(prompt, "]"); idx > 7 {
+			role = prompt[7:idx]
+		}
+	}
+	if ar.team != nil {
+		for _, name := range ar.team.Roles {
+			if name == role {
+				agentName = name
+				break
+			}
+		}
+	}
+
 	req := SubagentRequest{
 		Task:       prompt,
-		Role:       "worker",
+		Role:       role,
+		AgentName:  agentName,
 		Tools:      toolNames,
 		Workdir:    workdir,
 		Timeout:    timeout,

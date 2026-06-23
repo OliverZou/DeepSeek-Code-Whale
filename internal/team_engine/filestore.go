@@ -69,7 +69,7 @@ func (fs *FileTaskStore) rebuildIndex() {
 			if err != nil {
 				continue
 			}
-			fs.masters[e.Name()] = &MasterTask{ID: meta.ID, Goal: meta.Title, CreatedAt: meta.CreatedAt}
+			fs.masters[e.Name()] = &MasterTask{ID: meta.ID, Goal: meta.Title, Agent: meta.Agent, SessionID: meta.SessionID, WorkspacePath: meta.WorkspacePath, CreatedAt: meta.CreatedAt}
 		}
 	}
 }
@@ -94,6 +94,9 @@ type taskMeta struct {
 	Title            string   `json:"title"`
 	Description      string   `json:"description"`
 	Role             string   `json:"role"`
+	Agent            string   `json:"agent,omitempty"`
+	SessionID        string   `json:"session_id,omitempty"`
+	WorkspacePath    string   `json:"workspace_path,omitempty"`
 	State            string   `json:"state,omitempty"`
 	Output           string   `json:"output"`
 	ParentIDs        []string `json:"parent_ids,omitempty"`
@@ -152,6 +155,14 @@ func (fs *FileTaskStore) taskFromMeta(meta *taskMeta) *Task {
 // ---------------------------------------------------------------------------
 
 func (fs *FileTaskStore) deriveState(dir string) TaskState {
+	conf := filepath.Join(dir, "confirmation.md")
+	if _, err := os.Stat(conf); err == nil {
+		if meta, merr := fs.readMeta(dir); merr == nil {
+			if TaskState(meta.State) == TaskStatePendingConfirmation {
+				return TaskStatePendingConfirmation
+			}
+		}
+	}
 	out := filepath.Join(dir, "output.md")
 	verify := filepath.Join(dir, "verify.md")
 	_, outErr := os.Stat(out)
@@ -192,14 +203,14 @@ func (fs *FileTaskStore) InsertMasterTask(mt *MasterTask) error {
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return err
 	}
-	meta := &taskMeta{ID: mt.ID, Title: mt.Goal, Role: "teamleader", CreatedAt: time.Now().UTC().Format(time.RFC3339)}
+	meta := &taskMeta{ID: mt.ID, Title: mt.Goal, Role: "teamleader", Agent: mt.Agent, SessionID: mt.SessionID, WorkspacePath: mt.WorkspacePath, CreatedAt: time.Now().UTC().Format(time.RFC3339)}
 	if err := fs.writeMeta(dir, meta); err != nil {
 		return err
 	}
 	fs.writeGoal(dir, mt.Goal, "teamleader", mt.Goal, "")
 
 	fs.mu.Lock()
-	fs.masters[mt.ID] = &MasterTask{ID: mt.ID, Goal: mt.Goal, CreatedAt: meta.CreatedAt}
+	fs.masters[mt.ID] = &MasterTask{ID: mt.ID, Goal: mt.Goal, Agent: mt.Agent, SessionID: mt.SessionID, WorkspacePath: mt.WorkspacePath, CreatedAt: meta.CreatedAt}
 	fs.mu.Unlock()
 	return nil
 }
@@ -214,6 +225,26 @@ func (fs *FileTaskStore) ListMasterTasks() ([]*MasterTask, error) {
 	return result, nil
 }
 
+func (fs *FileTaskStore) ListMasterTasksBySession(sessionID string) ([]*MasterTask, error) {
+	fs.mu.RLock()
+	defer fs.mu.RUnlock()
+	result := make([]*MasterTask, 0)
+	for _, mt := range fs.masters {
+		if mt.SessionID == sessionID {
+			result = append(result, mt)
+		}
+	}
+	return result, nil
+}
+
+func (fs *FileTaskStore) DeleteMasterTask(id string) error {
+	fs.mu.Lock()
+	delete(fs.masters, id)
+	fs.mu.Unlock()
+	dir := fs.masterDir(id)
+	return os.RemoveAll(dir)
+}
+
 func (fs *FileTaskStore) GetMasterTask(id string) (*MasterTask, error) {
 	fs.mu.RLock()
 	defer fs.mu.RUnlock()
@@ -225,12 +256,7 @@ func (fs *FileTaskStore) GetMasterTask(id string) (*MasterTask, error) {
 }
 
 func (fs *FileTaskStore) UpdateMasterTaskStatus(id, status string) error { return nil }
-func (fs *FileTaskStore) DeleteMasterTask(id string) error {
-	fs.mu.Lock()
-	delete(fs.masters, id)
-	fs.mu.Unlock()
-	return os.RemoveAll(fs.masterDir(id))
-}
+
 
 func (fs *FileTaskStore) SaveMasterTaskProgress(masterTaskID, progressJSON string) error {
 	return os.WriteFile(filepath.Join(fs.masterDir(masterTaskID), "plan.json"), []byte(progressJSON), 0644)

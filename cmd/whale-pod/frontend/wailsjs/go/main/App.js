@@ -6,12 +6,32 @@ export function CancelSubtask(arg1) {
   return window['go']['main']['App']['CancelSubtask'](arg1);
 }
 
+export function ConfirmTask(arg1, arg2, arg3) {
+  return window['go']['main']['App']['ConfirmTask'](arg1, arg2, arg3);
+}
+
+export function CreateDirectTask(arg1, arg2, arg3, arg4) {
+  return window['go']['main']['App']['CreateDirectTask'](arg1, arg2, arg3, arg4);
+}
+
+export function DeleteSession(arg1) {
+  return window['go']['main']['App']['DeleteSession'](arg1);
+}
+
+export function DirectChat(arg1, arg2, arg3) {
+  return window['go']['main']['App']['DirectChat'](arg1, arg2, arg3);
+}
+
 export function GetAgentDialogue(arg1) {
   return window['go']['main']['App']['GetAgentDialogue'](arg1);
 }
 
 export function GetChatMessages(arg1) {
   return window['go']['main']['App']['GetChatMessages'](arg1);
+}
+
+export function GetConfirmationsForMaster(arg1) {
+  return window['go']['main']['App']['GetConfirmationsForMaster'](arg1);
 }
 
 export function GetLeaderPlan() {
@@ -26,32 +46,76 @@ export function GetSubtasks(arg1) {
   return window['go']['main']['App']['GetSubtasks'](arg1);
 }
 
+export function GetSubtasksBySession(arg1) {
+  return window['go']['main']['App']['GetSubtasksBySession'](arg1);
+}
+
+export function GetTaskConfirmation(arg1) {
+  return window['go']['main']['App']['GetTaskConfirmation'](arg1);
+}
+
+export function GetTeamChat(arg1) {
+  return window['go']['main']['App']['GetTeamChat'](arg1);
+}
+
 export function GetWorkDir() {
   return window['go']['main']['App']['GetWorkDir']();
+}
+
+export function ListAgents() {
+  return window['go']['main']['App']['ListAgents']();
+}
+
+export function ListTeamDetails() {
+  return window['go']['main']['App']['ListTeamDetails']();
 }
 
 export function ListTeams() {
   return window['go']['main']['App']['ListTeams']();
 }
 
+export function LoadSummonedItems() {
+  return window['go']['main']['App']['LoadSummonedItems']();
+}
+
 export function OpenTerminal() {
   return window['go']['main']['App']['OpenTerminal']();
+}
+
+export function PickFolder() {
+  return window['go']['main']['App']['PickFolder']();
+}
+
+export function RenameMasterTask(arg1, arg2) {
+  return window['go']['main']['App']['RenameMasterTask'](arg1, arg2);
 }
 
 export function RunSubtask(arg1) {
   return window['go']['main']['App']['RunSubtask'](arg1);
 }
 
+export function SaveSummonedItems(arg1) {
+  return window['go']['main']['App']['SaveSummonedItems'](arg1);
+}
+
 export function SendFeedback(arg1, arg2) {
   return window['go']['main']['App']['SendFeedback'](arg1, arg2);
+}
+
+export function SendTeamChat(arg1, arg2, arg3) {
+  return window['go']['main']['App']['SendTeamChat'](arg1, arg2, arg3);
 }
 
 export function SetWorkDir(arg1) {
   return window['go']['main']['App']['SetWorkDir'](arg1);
 }
 
-export function StartTask(arg1, arg2) {
-  return window['go']['main']['App']['StartTask'](arg1, arg2);
+export function StartExpertTask(arg1, arg2, arg3) {
+  return window['go']['main']['App']['StartExpertTask'](arg1, arg2, arg3);
+}
+
+export function StartTask(arg1, arg2, arg3) {
+  return window['go']['main']['App']['StartTask'](arg1, arg2, arg3);
 }
 
 export function StartWindowDrag() {
