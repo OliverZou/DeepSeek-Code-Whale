@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -8,7 +9,9 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -33,6 +36,15 @@ type App struct {
 	engine       *team_engine.TeamEngine
 	mu           sync.Mutex
 	running      bool
+
+	// Cached at startup to avoid repeated disk reads.
+	cachedAPIKey    string
+	agentDefCache   map[string]tasks.AgentDefinition
+	agentDefCacheMu sync.RWMutex
+
+	// Streaming chat cancellation.
+	abortMu     sync.Mutex
+	abortCancels map[string]context.CancelFunc // sessionID → cancel
 }
 
 func NewApp() *App {
@@ -70,6 +82,13 @@ func (a *App) startup(ctx context.Context) {
 	} else {
 		a.sessionStore = sessStore
 	}
+
+	// Cache API key (avoids repeated disk reads on every LLM call).
+	a.cachedAPIKey = resolveAPIKey()
+
+	// Cache agent definitions (avoids repeated filesystem scans).
+	a.cacheAgentDefs()
+
 	pod.Log("startup", "whale-pod workDir=%s teamsDir=%s sessionsDir=%s", a.workDir, a.teamsDir, a.sessionsDir)
 	a.openEngine()
 }
@@ -165,13 +184,22 @@ func (a *App) LoadSummonedItems() []pod.SummonedItemJSON {
 		return nil
 	}
 	var items []pod.SummonedItemJSON
-	json.Unmarshal(data, &items)
+	if err := json.Unmarshal(data, &items); err != nil {
+		pod.Log("summoned", "unmarshal error: %v", err)
+		return nil
+	}
 	return items
 }
 
 func (a *App) SaveSummonedItems(items []pod.SummonedItemJSON) {
-	data, _ := json.Marshal(items)
-	os.WriteFile(filepath.Join(a.workDir, "summoned.json"), data, 0644)
+	data, err := json.Marshal(items)
+	if err != nil {
+		pod.Log("summoned", "marshal error: %v", err)
+		return
+	}
+	if err := os.WriteFile(filepath.Join(a.workDir, "summoned.json"), data, 0644); err != nil {
+		pod.Log("summoned", "write error: %v", err)
+	}
 }
 
 // agentNameResolver implements team_engine.AgentInfoProvider by scanning
@@ -183,14 +211,16 @@ type agentNameResolver struct {
 func (r *agentNameResolver) AgentRole(name string) string { return r.roleMap[name] }
 func (r *agentNameResolver) AgentDesc(name string) string  { return "" }
 
-// loadAgentNameResolver scans the agents directory and returns a resolver
-// that maps agent name → role title (e.g. "backend-engineer" → "后端工程师").
-func (a *App) loadAgentNameResolver() *agentNameResolver {
+// cacheAgentDefs scans the agents directory once and caches all definitions in memory.
+// This avoids repeated filesystem scans on every API call.
+func (a *App) cacheAgentDefs() {
 	agentsDir := filepath.Join(filepath.Dir(a.teamsDir), "agents")
-	m := make(map[string]string)
+	m := make(map[string]tasks.AgentDefinition)
+
 	entries, err := os.ReadDir(agentsDir)
 	if err != nil {
-		return &agentNameResolver{roleMap: m}
+		pod.Log("agents", "cacheAgentDefs read %s: %v", agentsDir, err)
+		return
 	}
 	for _, e := range entries {
 		if !e.IsDir() {
@@ -207,16 +237,34 @@ func (a *App) loadAgentNameResolver() *agentNameResolver {
 			path := filepath.Join(agentsDir, e.Name(), se.Name())
 			data, err := os.ReadFile(path)
 			if err != nil {
+				pod.Log("agents", "read %s: %v", path, err)
 				continue
 			}
 			def, ok, _ := tasks.ParseMarkdownAgentDefinition(string(data), se.Name(), "")
 			if !ok {
 				continue
 			}
-			m[def.Name] = def.Role
+			m[def.Name] = def
 		}
 	}
-	return &agentNameResolver{roleMap: m}
+
+	a.agentDefCacheMu.Lock()
+	a.agentDefCache = m
+	a.agentDefCacheMu.Unlock()
+	pod.Log("agents", "cached %d agent definitions", len(m))
+}
+
+// loadAgentNameResolver builds a resolver from the cached agent definitions.
+func (a *App) loadAgentNameResolver() *agentNameResolver {
+	a.agentDefCacheMu.RLock()
+	cache := a.agentDefCache
+	a.agentDefCacheMu.RUnlock()
+
+	roleMap := make(map[string]string, len(cache))
+	for name, def := range cache {
+		roleMap[name] = def.Role
+	}
+	return &agentNameResolver{roleMap: roleMap}
 }
 
 // loadAgentSystemPrompt returns the system prompt for a given agent identifier.
@@ -248,43 +296,31 @@ func (a *App) loadAgentSystemPrompt(agentID string) string {
 }
 
 // loadExpertPrompt loads an expert agent's markdown definition and returns
-// a system prompt based on its role and personality.
+// a system prompt based on its role and personality. Uses cached definitions.
 func (a *App) loadExpertPrompt(agentName string) string {
-	agentsDir := filepath.Join(filepath.Dir(a.teamsDir), "agents")
-	entries, err := os.ReadDir(agentsDir)
-	if err != nil {
-		return ""
+	a.agentDefCacheMu.RLock()
+	def, ok := a.agentDefCache[agentName]
+	a.agentDefCacheMu.RUnlock()
+
+	if !ok {
+		pod.Log("agents", "expert '%s' not found in cache", agentName)
+		return "你是 Whale Pod 的专家助手。请基于你的专业知识回答用户的问题。"
 	}
-	for _, e := range entries {
-		if !e.IsDir() {
-			continue
-		}
-		subEntries, err := os.ReadDir(filepath.Join(agentsDir, e.Name()))
-		if err != nil {
-			continue
-		}
-		for _, se := range subEntries {
-			if se.IsDir() || !strings.HasSuffix(se.Name(), ".md") {
-				continue
-			}
-			path := filepath.Join(agentsDir, e.Name(), se.Name())
-			data, err := os.ReadFile(path)
-			if err != nil {
-				continue
-			}
-			def, ok, _ := tasks.ParseMarkdownAgentDefinition(string(data), se.Name(), "")
-			if !ok || def.Name != agentName {
-				continue
-			}
-			role := def.Role
-			if role == "" {
-				role = def.Name
-			}
-			prompt := fmt.Sprintf("你是 %s，%s。\n\n%s", role, def.Description, def.Prompt)
-			return prompt
-		}
+
+	role := def.Role
+	if role == "" {
+		role = def.Name
 	}
-	return ""
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("你是 %s，%s。\n\n%s", role, def.Description, def.Prompt))
+	if def.WhenToUse != "" {
+		sb.WriteString(fmt.Sprintf("\n\n你的专业范围：%s", def.WhenToUse))
+	}
+	sb.WriteString("\n\n决策规则：\n")
+	sb.WriteString("- 如果用户的问题不在你的专业范围内，你作为通用助理直接回答，不要输出 ACTION\n")
+	sb.WriteString(fmt.Sprintf("- 如果用户的问题在你的专业范围内且需要执行具体操作，在回复末尾输出 <!-- ACTION:{\"mode\":\"agent\",\"role\":\"%s\",\"goal\":\"任务目标\"} -->\n", role))
+	sb.WriteString("ACTION 注释必须放在回复最末尾，用户不会看到这段内容。\n")
+	return sb.String()
 }
 
 // loadTeamLeaderPrompt loads a team's leader config and returns
@@ -292,7 +328,8 @@ func (a *App) loadExpertPrompt(agentName string) string {
 func (a *App) loadTeamLeaderPrompt(teamName string) string {
 	tc, err := team_engine.FindTeam(a.teamsDir, teamName)
 	if err != nil {
-		return ""
+		pod.Log("agent", "team '%s' not found: %v", teamName, err)
+		return fmt.Sprintf("你是 %s 团队的 Leader。请协调团队成员完成用户的编程任务。", teamName)
 	}
 	role := tc.Leader.Role
 	prompt := tc.Leader.Prompt
@@ -322,6 +359,17 @@ func (a *App) loadTeamLeaderPrompt(teamName string) string {
 		}
 		sb.WriteString(strings.Join(names, "、"))
 	}
+	if len(tc.Capabilities) > 0 {
+		sb.WriteString("\n\n团队能力范围：\n")
+		for _, c := range tc.Capabilities {
+			sb.WriteString(fmt.Sprintf("- %s\n", c))
+		}
+	}
+	sb.WriteString("\n决策规则：\n")
+	sb.WriteString("- 如果用户的问题不在团队能力范围内，你作为通用助理直接回答，不要输出 ACTION\n")
+	sb.WriteString("- 如果用户的问题在能力范围内，且只需要单一角色处理，在回复末尾输出 <!-- ACTION:{\"mode\":\"agent\",\"role\":\"角色名\",\"goal\":\"任务目标\"} -->\n")
+	sb.WriteString("- 如果用户的问题在能力范围内，且需要多角色协作，在回复末尾输出 <!-- ACTION:{\"mode\":\"team\",\"goal\":\"任务目标\"} -->\n")
+	sb.WriteString("ACTION 注释必须放在回复最末尾，用户不会看到这段内容。\n")
 	return sb.String()
 }
 
@@ -430,7 +478,15 @@ func (a *App) StartTask(goal, teamName, workDir string) string {
 	a.mu.Unlock()
 
 	go func() {
-		defer func() { a.mu.Lock(); a.running = false; a.mu.Unlock() }()
+
+		defer func() {
+			if r := recover(); r != nil {
+				pod.Log("task", "panic in StartTask: %v", r)
+			}
+			a.mu.Lock()
+			a.running = false
+			a.mu.Unlock()
+		}()
 
 		a.mu.Lock()
 		eng := a.engine
@@ -452,12 +508,14 @@ func (a *App) StartTask(goal, teamName, workDir string) string {
 		}
 
 		// Create session first
-		sessionID := fmt.Sprintf("pod-%s", time.Now().Format("20060102-150405"))
+		sessionID := fmt.Sprintf("pod-%d", time.Now().UnixMilli())
 		now := time.Now()
-		session.SaveSessionMeta(a.sessionsDir, sessionID, session.SessionMeta{
+		if err := session.SaveSessionMeta(a.sessionsDir, sessionID, session.SessionMeta{
 			Title: goal, Kind: "pod-chat", Workspace: taskWorkDir,
 			Agent: "team:" + teamName, Status: "active", StartedAt: now, UpdatedAt: now,
-		})
+		}); err != nil {
+			pod.Log("task", "save session meta: %v", err)
+		}
 		session.EnsureSessionFile(a.sessionsDir, sessionID)
 
 		mt, err := eng.CreateMasterTask(goal, taskWorkDir, sessionID)
@@ -481,13 +539,20 @@ func (a *App) StartExpertTask(goal, agentName, workDir string) string {
 	if strings.TrimSpace(goal) == "" { return "goal 不能为空" }
 	if strings.TrimSpace(agentName) == "" { return "agentName 不能为空" }
 
-	a.mu.Lock()
-	if a.running { a.mu.Unlock(); return "已有任务正在执行" }
-	a.running = true
-	a.mu.Unlock()
-
 	go func() {
-		defer func() { a.mu.Lock(); a.running = false; a.mu.Unlock() }()
+		a.mu.Lock()
+		if a.running { a.mu.Unlock(); return }
+		a.running = true
+		a.mu.Unlock()
+
+		defer func() {
+			if r := recover(); r != nil {
+				pod.Log("task", "panic in StartExpertTask: %v", r)
+			}
+			a.mu.Lock()
+			a.running = false
+			a.mu.Unlock()
+		}()
 
 		a.mu.Lock()
 		eng := a.engine
@@ -513,12 +578,14 @@ func (a *App) StartExpertTask(goal, agentName, workDir string) string {
 		eng.SetTeam(tc)
 
 		// Create session first
-		sessionID := fmt.Sprintf("pod-%s", time.Now().Format("20060102-150405"))
+		sessionID := fmt.Sprintf("pod-%d", time.Now().UnixMilli())
 		now := time.Now()
-		session.SaveSessionMeta(a.sessionsDir, sessionID, session.SessionMeta{
+		if err := session.SaveSessionMeta(a.sessionsDir, sessionID, session.SessionMeta{
 			Title: goal, Kind: "pod-chat", Workspace: taskWorkDir,
 			Agent: "expert:" + agentName, Status: "active", StartedAt: now, UpdatedAt: now,
-		})
+		}); err != nil {
+			pod.Log("task", "save session meta: %v", err)
+		}
 		session.EnsureSessionFile(a.sessionsDir, sessionID)
 
 		mt, err := eng.CreateMasterTask(goal, taskWorkDir, sessionID)
@@ -547,6 +614,137 @@ func (a *App) StartExpertTask(goal, agentName, workDir string) string {
 	return ""
 }
 
+// StartTaskInSession starts a team task within an existing session.
+func (a *App) StartTaskInSession(sessionID, goal, teamName, workDir string) string {
+	if strings.TrimSpace(goal) == "" || strings.TrimSpace(sessionID) == "" {
+		return "goal 和 sessionID 不能为空"
+	}
+
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				pod.Log("task", "panic in StartTaskInSession: %v", r)
+			}
+			a.mu.Lock()
+			a.running = false
+			a.mu.Unlock()
+		}()
+
+		a.mu.Lock()
+		if a.running { a.mu.Unlock(); return }
+		a.running = true
+		a.mu.Unlock()
+
+		a.mu.Lock()
+		eng := a.engine
+		a.mu.Unlock()
+		if eng == nil { a.openEngine(); a.mu.Lock(); eng = a.engine; a.mu.Unlock() }
+		if eng == nil { return }
+
+		taskWorkDir := workDir
+		if taskWorkDir == "" {
+			meta, _ := session.LoadSessionMeta(a.sessionsDir, sessionID)
+			if meta.Workspace != "" {
+				taskWorkDir = meta.Workspace
+			} else {
+				taskWorkDir = filepath.Join(a.workDir, "chats")
+				os.MkdirAll(taskWorkDir, 0755)
+			}
+		}
+
+		if teamName != "" {
+			tc, err := team_engine.FindTeam(a.teamsDir, teamName)
+			if err == nil { eng.SetTeam(tc) }
+		}
+
+		session.EnsureSessionFile(a.sessionsDir, sessionID)
+
+		mt, err := eng.CreateMasterTask(goal, taskWorkDir, sessionID)
+		if err != nil { pod.Log("task", "create master: %v", err); return }
+
+		ctx := context.Background()
+		batches, err := eng.PlanAndRun(ctx, goal, taskWorkDir, mt.ID)
+		pod.Log("task", "done: batches=%d err=%v", len(batches), err)
+		eng.CompleteMasterTask(mt.ID)
+		runtime.EventsEmit(a.ctx, "update", a.GetMasterTasks())
+	}()
+
+	return sessionID
+}
+
+// StartExpertTaskInSession starts a single-agent task within an existing session.
+func (a *App) StartExpertTaskInSession(sessionID, goal, agentName, workDir string) string {
+	if strings.TrimSpace(goal) == "" || strings.TrimSpace(sessionID) == "" || strings.TrimSpace(agentName) == "" {
+		return "参数不能为空"
+	}
+
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				pod.Log("task", "panic in StartExpertTaskInSession: %v", r)
+			}
+			a.mu.Lock()
+			a.running = false
+			a.mu.Unlock()
+		}()
+
+		a.mu.Lock()
+		if a.running { a.mu.Unlock(); return }
+		a.running = true
+		a.mu.Unlock()
+
+		a.mu.Lock()
+		eng := a.engine
+		a.mu.Unlock()
+		if eng == nil { a.openEngine(); a.mu.Lock(); eng = a.engine; a.mu.Unlock() }
+		if eng == nil { return }
+
+		taskWorkDir := workDir
+		if taskWorkDir == "" {
+			meta, _ := session.LoadSessionMeta(a.sessionsDir, sessionID)
+			if meta.Workspace != "" {
+				taskWorkDir = meta.Workspace
+			} else {
+				taskWorkDir = filepath.Join(a.workDir, "chats")
+				os.MkdirAll(taskWorkDir, 0755)
+			}
+		}
+
+		tc := &team_engine.TeamConfig{
+			Label: agentName,
+			Leader: team_engine.TeamLeaderConfig{
+				Role:        agentName,
+				Description: "Single expert agent",
+			},
+			Roles: []string{agentName},
+		}
+		eng.SetTeam(tc)
+
+		session.EnsureSessionFile(a.sessionsDir, sessionID)
+
+		mt, err := eng.CreateMasterTask(goal, taskWorkDir, sessionID)
+		if err != nil { pod.Log("task", "create master: %v", err); return }
+
+		preDecomposed := []team_engine.PlanTask{
+			{
+				Title:       goal,
+				Description: goal,
+				Role:        agentName,
+				BatchID:     "execute",
+				BatchLabel:  "Execution",
+			},
+		}
+
+		ctx := context.Background()
+		batches, err := eng.PlanAndRun(ctx, goal, taskWorkDir, mt.ID, preDecomposed...)
+		pod.Log("task", "expert done: batches=%d err=%v", len(batches), err)
+		eng.CompleteMasterTask(mt.ID)
+		runtime.EventsEmit(a.ctx, "update", a.GetMasterTasks())
+	}()
+
+	return sessionID
+}
+
 // CreateDirectTask creates a master task and stores the initial prompt as first message.
 // deepThink: use deepseek-reasoner model with thinking chain.
 // Returns the task ID, or empty string on error.
@@ -562,7 +760,7 @@ func (a *App) CreateDirectTask(goal, workDir, agent string, deepThink bool) stri
 	// Keep empty if user chose no workspace (don't default to a.workDir)
 
 	// Create a session in ~/.whale/sessions/ (CLI-compatible)
-	sessionID := fmt.Sprintf("pod-%s", time.Now().Format("20060102-150405"))
+	sessionID := fmt.Sprintf("pod-%d", time.Now().UnixMilli())
 
 	// Save session metadata
 	now := time.Now()
@@ -585,13 +783,39 @@ func (a *App) CreateDirectTask(goal, workDir, agent string, deepThink bool) stri
 	return sessionID
 }
 
+// ActionInfo represents a parsed ACTION directive from an AI reply.
+type ActionInfo struct {
+	Mode string `json:"mode"` // "agent" | "team"
+	Role string `json:"role,omitempty"`
+	Goal string `json:"goal"`
+}
+
 // DirectChatResult is returned from DirectChat as JSON.
 type DirectChatResult struct {
-	Reply       string `json:"reply"`
-	Thinking    string `json:"thinking"`
-	DurationMs  int64  `json:"durationMs"`
-	NeedsAction bool   `json:"needsAction"`
-	ActionType  string `json:"actionType,omitempty"` // "plan" or "agent"
+	Reply       string      `json:"reply"`
+	Thinking    string      `json:"thinking"`
+	DurationMs  int64       `json:"durationMs"`
+	NeedsAction bool        `json:"needsAction"`
+	ActionType  string      `json:"actionType,omitempty"` // "plan" or "agent"
+	Action      *ActionInfo `json:"action,omitempty"`
+}
+
+// parseAction extracts an ACTION directive from the reply, removes it,
+// and returns the cleaned reply and the parsed action (if any).
+func parseAction(reply string) (string, *ActionInfo) {
+	re := regexp.MustCompile(`<!-- ACTION:(\{.*?\}) -->`)
+	matches := re.FindStringSubmatch(reply)
+	if len(matches) < 2 {
+		return reply, nil
+	}
+	cleaned := strings.TrimSpace(re.ReplaceAllString(reply, ""))
+	var action ActionInfo
+	if err := json.Unmarshal([]byte(matches[1]), &action); err != nil {
+		pod.Log("action", "parse ACTION JSON: %v", err)
+		return cleaned, nil
+	}
+	pod.Log("action", "detected: mode=%s role=%s goal=%s", action.Mode, action.Role, action.Goal)
+	return cleaned, &action
 }
 
 // DirectChat sends a user message and returns the AI reply with thinking info.
@@ -647,7 +871,10 @@ func (a *App) directChatSession(sessionID, message string, deepThink bool) strin
 	aiReply, thinking := a.callLLM(history, deepThink, agentPrompt)
 	duration := time.Since(start).Milliseconds()
 
-	// Store AI reply
+	// Parse ACTION directive from reply
+	aiReply, action := parseAction(aiReply)
+
+	// Store AI reply (cleaned, without ACTION comment)
 	if aiReply != "" {
 		_, err := a.sessionStore.Create(context.Background(), core.Message{
 			SessionID:  sessionID,
@@ -659,7 +886,6 @@ func (a *App) directChatSession(sessionID, message string, deepThink bool) strin
 		if err != nil {
 			pod.Log("chat", "write ai reply: %v", err)
 		}
-		// Update session meta
 		session.UpdateSessionMeta(a.sessionsDir, sessionID, func(m *session.SessionMeta) {
 			m.TurnCount++
 		})
@@ -669,9 +895,293 @@ func (a *App) directChatSession(sessionID, message string, deepThink bool) strin
 	needsAction, actionType := detectIntent(aiReply)
 	result, _ := json.Marshal(DirectChatResult{
 		Reply: aiReply, Thinking: thinking, DurationMs: duration,
-		NeedsAction: needsAction, ActionType: actionType,
+		NeedsAction: needsAction, ActionType: actionType, Action: action,
 	})
 	return string(result)
+}
+
+// StreamChatChunk is emitted per SSE chunk to the frontend.
+type StreamChatChunk struct {
+	SessionID string `json:"sessionId"`
+	Content   string `json:"content"`
+	Thinking  string `json:"thinking"`
+	Done      bool   `json:"done"`
+	Error     string `json:"error,omitempty"`
+}
+
+// AbortChat cancels an ongoing streaming chat for the given session.
+func (a *App) AbortChat(sessionID string) {
+	a.abortMu.Lock()
+	cancel, ok := a.abortCancels[sessionID]
+	if ok {
+		cancel()
+		delete(a.abortCancels, sessionID)
+	}
+	a.abortMu.Unlock()
+}
+
+// StreamChat starts a streaming chat and pushes chunks via Wails events.
+// It runs the LLM call in a goroutine and returns immediately.
+// Frontend should listen to "chat-chunk" events.
+func (a *App) StreamChat(sessionID, message string, deepThink bool) string {
+	if sessionID == "" || strings.TrimSpace(message) == "" {
+		return ""
+	}
+
+	if !isPodSession(sessionID) || a.sessionStore == nil {
+		return a.directChatLegacy(sessionID, message, deepThink)
+	}
+
+	// Cancel any existing stream for this session
+	a.AbortChat(sessionID)
+
+	// Write user message
+	_, err := a.sessionStore.Create(context.Background(), core.Message{
+		SessionID: sessionID,
+		Role:      core.RoleUser,
+		Text:      message,
+	})
+	if err != nil {
+		pod.Log("chat", "write user msg: %v", err)
+	}
+
+	go func() {
+		// Read full conversation history
+		msgs, _ := a.sessionStore.List(context.Background(), sessionID)
+		var history []chatMsg
+		for _, m := range msgs {
+			from := "human"
+			if m.Role == core.RoleAssistant {
+				from = "agent"
+			}
+			history = append(history, chatMsg{From: from, Content: m.Text})
+		}
+
+		// Load agent-specific system prompt
+		meta, _ := session.LoadSessionMeta(a.sessionsDir, sessionID)
+		agentPrompt := a.loadAgentSystemPrompt(meta.Agent)
+
+		// Create cancellable context
+		ctx, cancel := context.WithCancel(context.Background())
+		a.abortMu.Lock()
+		if a.abortCancels == nil {
+			a.abortCancels = make(map[string]context.CancelFunc)
+		}
+		a.abortCancels[sessionID] = cancel
+		a.abortMu.Unlock()
+
+		defer func() {
+			a.abortMu.Lock()
+			delete(a.abortCancels, sessionID)
+			a.abortMu.Unlock()
+			cancel()
+		}()
+
+		start := time.Now()
+		fullReply, fullThinking, streamErr := a.callLLMStream(ctx, history, deepThink, agentPrompt, sessionID)
+		duration := time.Since(start).Milliseconds()
+
+		// Check if cancelled
+		select {
+		case <-ctx.Done():
+			// Store partial reply if any
+			if fullReply != "" || fullThinking != "" {
+				a.sessionStore.Create(context.Background(), core.Message{
+					SessionID:  sessionID,
+					Role:       core.RoleAssistant,
+					Text:       fullReply + "\n\n*[已停止]*",
+					Reasoning:  fullThinking,
+					DurationMs: duration,
+				})
+				session.UpdateSessionMeta(a.sessionsDir, sessionID, func(m *session.SessionMeta) {
+					m.TurnCount++
+				})
+			}
+			runtime.EventsEmit(a.ctx, "chat-chunk", StreamChatChunk{
+				SessionID: sessionID, Done: true, Error: "cancelled",
+			})
+			runtime.EventsEmit(a.ctx, "update", a.GetMasterTasks())
+			return
+		default:
+		}
+
+		// Emit done event
+		if streamErr != "" {
+			runtime.EventsEmit(a.ctx, "chat-chunk", StreamChatChunk{
+				SessionID: sessionID, Done: true, Error: streamErr,
+			})
+			// Store error as AI reply so user sees it
+			a.sessionStore.Create(context.Background(), core.Message{
+				SessionID:  sessionID,
+				Role:       core.RoleAssistant,
+				Text:       streamErr,
+				DurationMs: duration,
+			})
+		} else if fullReply != "" {
+			// Parse ACTION directive from reply
+			cleanedReply, action := parseAction(fullReply)
+
+			// Store complete AI reply (cleaned, without ACTION comment)
+			a.sessionStore.Create(context.Background(), core.Message{
+				SessionID:  sessionID,
+				Role:       core.RoleAssistant,
+				Text:       cleanedReply,
+				Reasoning:  fullThinking,
+				DurationMs: duration,
+			})
+			session.UpdateSessionMeta(a.sessionsDir, sessionID, func(m *session.SessionMeta) {
+				m.TurnCount++
+			})
+
+			// If action detected, emit it so frontend can trigger task
+			if action != nil {
+				runtime.EventsEmit(a.ctx, "chat-action", map[string]interface{}{
+					"sessionId": sessionID,
+					"mode":      action.Mode,
+					"role":      action.Role,
+					"goal":      action.Goal,
+				})
+			}
+		}
+
+		runtime.EventsEmit(a.ctx, "chat-chunk", StreamChatChunk{
+			SessionID: sessionID, Done: true,
+		})
+		runtime.EventsEmit(a.ctx, "update", a.GetMasterTasks())
+	}()
+
+	return ""
+}
+
+// callLLMStream makes a streaming HTTP request to DeepSeek API and emits
+// "chat-chunk" events for each SSE data line.
+func (a *App) callLLMStream(ctx context.Context, messages []chatMsg, deepThink bool, systemPrompt, sessionID string) (reply string, thinking string, errStr string) {
+	apiKey := a.cachedAPIKey
+	if apiKey == "" {
+		return "", "", "未找到 DeepSeek API Key。请设置 DEEPSEEK_API_KEY 环境变量或在设置中配置"
+	}
+
+	model := "deepseek-chat"
+	if deepThink {
+		model = "deepseek-reasoner"
+	}
+
+	msgs := []map[string]string{
+		{"role": "system", "content": systemPrompt},
+	}
+	for _, m := range messages {
+		role := "user"
+		if m.From == "agent" {
+			role = "assistant"
+		}
+		msgs = append(msgs, map[string]string{"role": role, "content": m.Content})
+	}
+
+	body := map[string]interface{}{
+		"model":       model,
+		"messages":    msgs,
+		"max_tokens":  4096,
+		"temperature": 0.7,
+		"stream":      true,
+	}
+	jsonBody, _ := json.Marshal(body)
+
+	req, err := http.NewRequestWithContext(ctx, "POST", "https://api.deepseek.com/chat/completions", bytes.NewReader(jsonBody))
+	if err != nil {
+		return "", "", fmt.Sprintf("请求失败: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	req.Header.Set("Accept", "text/event-stream")
+
+	resp, err := (&http.Client{Timeout: 0}).Do(req) // No timeout — ctx handles cancellation
+	if err != nil {
+		if ctx.Err() != nil {
+			return reply, thinking, "" // cancelled
+		}
+		return "", "", fmt.Sprintf("请求失败: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != 200 {
+		bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
+		var errResp struct {
+			Error struct{ Message string } `json:"error"`
+		}
+		if json.Unmarshal(bodyBytes, &errResp) == nil && errResp.Error.Message != "" {
+			return "", "", fmt.Sprintf("API 错误 (%d): %s", resp.StatusCode, errResp.Error.Message)
+		}
+		return "", "", fmt.Sprintf("API 错误 (%d): %s", resp.StatusCode, safePrefix(string(bodyBytes), 300))
+	}
+
+	scanner := bufio.NewScanner(resp.Body)
+	// Increase buffer for long lines
+	scanner.Buffer(make([]byte, 0, 64*1024), 1<<20)
+
+	var fullReply, fullThinking strings.Builder
+
+	for scanner.Scan() {
+		// Check cancellation
+		select {
+		case <-ctx.Done():
+			return fullReply.String(), fullThinking.String(), ""
+		default:
+		}
+
+		line := scanner.Text()
+		if line == "" || !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+
+		data := strings.TrimPrefix(line, "data: ")
+		if data == "[DONE]" {
+			break
+		}
+
+		var chunk struct {
+			Choices []struct {
+				Delta struct {
+					Content          string `json:"content"`
+					ReasoningContent string `json:"reasoning_content"`
+				} `json:"delta"`
+			} `json:"choices"`
+		}
+		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
+			continue
+		}
+
+		contentChunk := ""
+		thinkingChunk := ""
+		if len(chunk.Choices) > 0 {
+			contentChunk = chunk.Choices[0].Delta.Content
+			thinkingChunk = chunk.Choices[0].Delta.ReasoningContent
+		}
+
+		if contentChunk != "" {
+			fullReply.WriteString(contentChunk)
+		}
+		if thinkingChunk != "" {
+			fullThinking.WriteString(thinkingChunk)
+		}
+
+		if contentChunk != "" || thinkingChunk != "" {
+			runtime.EventsEmit(a.ctx, "chat-chunk", StreamChatChunk{
+				SessionID: sessionID,
+				Content:   contentChunk,
+				Thinking:  thinkingChunk,
+				Done:      false,
+			})
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		if ctx.Err() != nil {
+			return fullReply.String(), fullThinking.String(), ""
+		}
+		return fullReply.String(), fullThinking.String(), fmt.Sprintf("流式读取错误: %v", err)
+	}
+
+	return fullReply.String(), fullThinking.String(), ""
 }
 
 // directChatLegacy handles chat via team_engine (old MasterTask-based).
@@ -719,9 +1229,14 @@ func (a *App) directChatLegacy(taskID, message string, deepThink bool) string {
 
 func (a *App) storeMessage(taskWorkDir, taskID, from, content string) {
 	msgDir := filepath.Join(taskWorkDir, ".whale", "team_tasks", taskID, "messages")
-	os.MkdirAll(msgDir, 0755)
+	if err := os.MkdirAll(msgDir, 0755); err != nil {
+		pod.Log("chat", "mkdir %s: %v", msgDir, err)
+		return
+	}
 	msgFile := filepath.Join(msgDir, fmt.Sprintf("%d_%s.md", time.Now().UnixNano(), from))
-	os.WriteFile(msgFile, []byte(content), 0644)
+	if err := os.WriteFile(msgFile, []byte(content), 0644); err != nil {
+		pod.Log("chat", "write message %s: %v", msgFile, err)
+	}
 }
 
 type chatMsg struct {
@@ -778,6 +1293,149 @@ func detectIntent(reply string) (needsAction bool, actionType string) {
 	return false, ""
 }
 
+// ---------------------------------------------------------------------------
+// Settings
+// ---------------------------------------------------------------------------
+
+// SettingsData holds all user-configurable settings.
+type SettingsData struct {
+	APIKey      string `json:"apiKey"`
+	Model       string `json:"model"`
+	Temperature float64 `json:"temperature"`
+	MaxTokens   int    `json:"maxTokens"`
+	Theme       string `json:"theme"` // "dark" | "light" | "system"
+}
+
+// GetSettings reads the current settings from disk.
+func (a *App) GetSettings() SettingsData {
+	dataDir := store.DefaultDataDir()
+	settingsPath := filepath.Join(dataDir, "settings.json")
+	credPath := filepath.Join(dataDir, "credentials.json")
+
+	s := SettingsData{
+		Model:       "deepseek-chat",
+		Temperature: 0.7,
+		MaxTokens:   4096,
+		Theme:       "dark",
+	}
+
+	// Read credentials
+	if data, err := os.ReadFile(credPath); err == nil {
+		var creds struct {
+			DeepSeekAPIKey string `json:"deepseek_api_key"`
+		}
+		if json.Unmarshal(data, &creds) == nil {
+			s.APIKey = creds.DeepSeekAPIKey
+		}
+	}
+
+	// Read settings (overrides defaults)
+	if data, err := os.ReadFile(settingsPath); err == nil {
+		var stored SettingsData
+		if json.Unmarshal(data, &stored) == nil {
+			if stored.Model != "" {
+				s.Model = stored.Model
+			}
+			if stored.Temperature > 0 {
+				s.Temperature = stored.Temperature
+			}
+			if stored.MaxTokens > 0 {
+				s.MaxTokens = stored.MaxTokens
+			}
+			if stored.Theme != "" {
+				s.Theme = stored.Theme
+			}
+			// Don't override API key from settings.json (keep credentials.json as source of truth)
+		}
+	}
+
+	return s
+}
+
+// SaveSettings writes settings to disk and applies them immediately.
+func (a *App) SaveSettings(s SettingsData) string {
+	dataDir := store.DefaultDataDir()
+	settingsPath := filepath.Join(dataDir, "settings.json")
+	credPath := filepath.Join(dataDir, "credentials.json")
+
+	// Validate
+	if s.Temperature < 0 || s.Temperature > 2 {
+		return "Temperature 必须在 0-2 之间"
+	}
+	if s.MaxTokens < 100 || s.MaxTokens > 32000 {
+		return "MaxTokens 必须在 100-32000 之间"
+	}
+	validThemes := map[string]bool{"dark": true, "light": true, "system": true}
+	if !validThemes[s.Theme] {
+		return "主题必须是 dark、light 或 system"
+	}
+
+	// Save API key to credentials.json
+	if s.APIKey != "" {
+		credData, _ := json.MarshalIndent(map[string]string{
+			"deepseek_api_key": s.APIKey,
+		}, "", "  ")
+		if err := os.WriteFile(credPath, credData, 0600); err != nil {
+			return fmt.Sprintf("保存 API Key 失败: %v", err)
+		}
+		// Update cached key
+		a.cachedAPIKey = s.APIKey
+	}
+
+	// Save settings (without API key for security)
+	settingsData, _ := json.MarshalIndent(SettingsData{
+		Model:       s.Model,
+		Temperature: s.Temperature,
+		MaxTokens:   s.MaxTokens,
+		Theme:       s.Theme,
+	}, "", "  ")
+	if err := os.WriteFile(settingsPath, settingsData, 0644); err != nil {
+		return fmt.Sprintf("保存设置失败: %v", err)
+	}
+
+	pod.Log("settings", "saved model=%s temp=%.1f tokens=%d theme=%s", s.Model, s.Temperature, s.MaxTokens, s.Theme)
+	runtime.EventsEmit(a.ctx, "settings-updated", s)
+	return ""
+}
+
+// TestConnection tests the DeepSeek API connection with the given key.
+func (a *App) TestConnection(apiKey string) string {
+	if strings.TrimSpace(apiKey) == "" {
+		return "API Key 不能为空"
+	}
+
+	body := map[string]interface{}{
+		"model":       "deepseek-chat",
+		"messages":    []map[string]string{{"role": "user", "content": "hi"}},
+		"max_tokens":  1,
+		"temperature": 0,
+	}
+	jsonBody, _ := json.Marshal(body)
+
+	req, err := http.NewRequest("POST", "https://api.deepseek.com/chat/completions", bytes.NewReader(jsonBody))
+	if err != nil {
+		return fmt.Sprintf("请求失败: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+
+	resp, err := (&http.Client{Timeout: 15 * time.Second}).Do(req)
+	if err != nil {
+		return fmt.Sprintf("连接失败: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == 200 {
+		return "" // success
+	}
+	if resp.StatusCode == 401 {
+		return "API Key 无效 (401 Unauthorized)"
+	}
+
+	bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
+	return fmt.Sprintf("API 返回 %d: %s", resp.StatusCode, safePrefix(string(bodyBytes), 200))
+}
+
 func resolveAPIKey() string {
 	if v := strings.TrimSpace(os.Getenv("DEEPSEEK_API_KEY")); v != "" {
 		return v
@@ -798,7 +1456,7 @@ func resolveAPIKey() string {
 }
 
 func (a *App) callLLM(messages []chatMsg, deepThink bool, systemPrompt string) (reply string, thinking string) {
-	apiKey := resolveAPIKey()
+	apiKey := a.cachedAPIKey
 	if apiKey == "" {
 		return "未找到 DeepSeek API Key。请设置 DEEPSEEK_API_KEY 环境变量或在 ~/.whale/credentials.json 中配置", ""
 	}
@@ -840,7 +1498,11 @@ func (a *App) callLLM(messages []chatMsg, deepThink bool, systemPrompt string) (
 	}
 	defer resp.Body.Close()
 
-	respBody, _ := io.ReadAll(resp.Body)
+	// Limit response body to 1 MB to prevent memory exhaustion.
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return fmt.Sprintf("读取响应失败: %v", err), ""
+	}
 
 	var result struct {
 		Choices []struct {
@@ -854,7 +1516,9 @@ func (a *App) callLLM(messages []chatMsg, deepThink bool, systemPrompt string) (
 		} `json:"error"`
 	}
 	if err := json.Unmarshal(respBody, &result); err != nil {
-		return fmt.Sprintf("解析失败: %v", err), ""
+		pod.Log("llm", "unmarshal response (len=%d): %v — first 200 chars: %s",
+			len(respBody), err, safePrefix(string(respBody), 200))
+		return fmt.Sprintf("解析响应失败: %v", err), ""
 	}
 	if result.Error.Message != "" {
 		return fmt.Sprintf("API 错误: %s", result.Error.Message), ""
@@ -863,6 +1527,14 @@ func (a *App) callLLM(messages []chatMsg, deepThink bool, systemPrompt string) (
 		return "未收到回复", ""
 	}
 	return result.Choices[0].Message.Content, result.Choices[0].Message.ReasoningContent
+}
+
+// safePrefix returns up to n characters of s, safe for logging.
+func safePrefix(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "…"
 }
 
 // GetMasterTasks returns sessions from ~/.whale/sessions/.
@@ -904,11 +1576,16 @@ func (a *App) GetMasterTasks() []pod.MasterTaskJSON {
 					if taskCount > 0 && doneCount < taskCount { status = "running" }
 				}
 
+				createdAt := s.Meta.StartedAt
+				if createdAt.IsZero() {
+					createdAt = s.ModTime
+				}
 				result = append(result, pod.MasterTaskJSON{
 					ID: s.ID, Goal: goal,
 					Agent: s.Meta.Agent,
+					SessionPath: filepath.Join(a.sessionsDir, s.ID + ".jsonl"),
 					WorkspacePath: wp, WorkspaceLabel: filepath.Base(wp),
-					Status: status, CreatedAt: s.Meta.StartedAt.Format(time.RFC3339),
+					Status: status, CreatedAt: createdAt.Format(time.RFC3339),
 					TaskCount: taskCount, DoneCount: doneCount,
 					WorkspaceOnline: true,
 				})
@@ -954,10 +1631,15 @@ func (a *App) ListSessionsByAgent(agent string, offset, limit int) []pod.MasterT
 		if s.Meta.Status == "active" {
 			status = "running"
 		}
+		createdAt := s.Meta.StartedAt
+		if createdAt.IsZero() {
+			createdAt = s.ModTime
+		}
 		result = append(result, pod.MasterTaskJSON{
 			ID: s.ID, Goal: goal, Agent: sa,
+			SessionPath: filepath.Join(a.sessionsDir, s.ID + ".jsonl"),
 			WorkspacePath: wp, WorkspaceLabel: filepath.Base(wp),
-			Status: status, CreatedAt: s.Meta.StartedAt.Format(time.RFC3339),
+			Status: status, CreatedAt: createdAt.Format(time.RFC3339),
 		})
 		if len(result) >= limit {
 			break
@@ -1080,9 +1762,15 @@ func (a *App) GetLeaderPlan() []pod.AgentDialogueJSON { return readLeaderPlan(a.
 // SendFeedback writes a human message to the task's messages/ directory.
 func (a *App) SendFeedback(taskID, message string) string {
 	msgDir := filepath.Join(a.workDir, ".whale", "team_tasks", taskID, "messages")
-	os.MkdirAll(msgDir, 0755)
+	if err := os.MkdirAll(msgDir, 0755); err != nil {
+		pod.Log("feedback", "mkdir %s: %v", msgDir, err)
+		return err.Error()
+	}
 	msgFile := filepath.Join(msgDir, fmt.Sprintf("%d.md", time.Now().UnixNano()))
-	os.WriteFile(msgFile, []byte(message), 0644)
+	if err := os.WriteFile(msgFile, []byte(message), 0644); err != nil {
+		pod.Log("feedback", "write %s: %v", msgFile, err)
+		return err.Error()
+	}
 	return ""
 }
 
@@ -1112,6 +1800,148 @@ func (a *App) DeleteSession(sessionID string) string {
 
 	runtime.EventsEmit(a.ctx, "update", a.GetMasterTasks())
 	return ""
+}
+
+// DeleteAllSessions deletes all sessions (pod + task) for the specified agent.
+func (a *App) DeleteAllSessions(agent string) string {
+	sessions, err := session.ListSessions(a.sessionsDir, 0)
+	if err != nil {
+		return err.Error()
+	}
+	for _, s := range sessions {
+		if s.Meta.Kind == "subagent" {
+			continue
+		}
+		if agent == "" && s.Meta.Agent != "" {
+			continue
+		}
+		if agent != "" && s.Meta.Agent != agent {
+			continue
+		}
+		a.DeleteSession(s.ID)
+	}
+	return ""
+}
+
+// ClearEmptySessions deletes sessions that have no chat messages for the specified agent.
+func (a *App) ClearEmptySessions(agent string) string {
+	sessions, err := session.ListSessions(a.sessionsDir, 0)
+	if err != nil {
+		return err.Error()
+	}
+	for _, s := range sessions {
+		if s.Meta.Kind == "subagent" {
+			continue
+		}
+		if agent == "" && s.Meta.Agent != "" {
+			continue
+		}
+		if agent != "" && s.Meta.Agent != agent {
+			continue
+		}
+		// Check if session has any messages
+		if a.sessionStore != nil {
+			msgs, err := a.sessionStore.List(context.Background(), s.ID)
+			if err == nil && len(msgs) == 0 {
+				a.DeleteSession(s.ID)
+			}
+		}
+	}
+	return ""
+}
+
+// ExecuteActionResult is returned by ExecuteAction.
+type ExecuteActionResult struct {
+	Success bool   `json:"success"`
+	Output  string `json:"output"`
+	Error   string `json:"error,omitempty"`
+}
+
+// ExecuteAction executes a user-approved action (create file / run command).
+// actionType: "create_file" | "run_command"
+// payload: JSON with {path, content} for files or {command, workDir} for commands.
+func (a *App) ExecuteAction(sessionID, actionType, payloadJSON string) ExecuteActionResult {
+	if sessionID == "" {
+		return ExecuteActionResult{Success: false, Error: "sessionID 不能为空"}
+	}
+
+	// Determine workspace directory from session
+	workspace := a.workDir
+	if meta, err := session.LoadSessionMeta(a.sessionsDir, sessionID); err == nil && meta.Workspace != "" {
+		workspace = meta.Workspace
+	}
+
+	var payload map[string]interface{}
+	if err := json.Unmarshal([]byte(payloadJSON), &payload); err != nil {
+		return ExecuteActionResult{Success: false, Error: fmt.Sprintf("无效的 payload: %v", err)}
+	}
+
+	switch actionType {
+	case "create_file":
+		path, _ := payload["path"].(string)
+		content, _ := payload["content"].(string)
+		if path == "" {
+			return ExecuteActionResult{Success: false, Error: "文件路径不能为空"}
+		}
+
+		// Ensure path is relative to workspace
+		fullPath := filepath.Join(workspace, path)
+		dir := filepath.Dir(fullPath)
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			return ExecuteActionResult{Success: false, Error: fmt.Sprintf("创建目录失败: %v", err)}
+		}
+
+		if err := os.WriteFile(fullPath, []byte(content), 0644); err != nil {
+			return ExecuteActionResult{Success: false, Error: fmt.Sprintf("写入文件失败: %v", err)}
+		}
+
+		pod.Log("action", "created file: %s (%d bytes)", fullPath, len(content))
+		return ExecuteActionResult{Success: true, Output: fmt.Sprintf("文件已创建: %s", path)}
+
+	case "run_command":
+		command, _ := payload["command"].(string)
+		cmdWorkDir, _ := payload["workDir"].(string)
+		if command == "" {
+			return ExecuteActionResult{Success: false, Error: "命令不能为空"}
+		}
+		if cmdWorkDir == "" {
+			cmdWorkDir = workspace
+		} else if !filepath.IsAbs(cmdWorkDir) {
+			cmdWorkDir = filepath.Join(workspace, cmdWorkDir)
+		}
+
+		cmd := exec.Command("cmd", "/C", command)
+		cmd.Dir = cmdWorkDir
+		outBytes, err := cmd.CombinedOutput()
+		output := string(outBytes)
+		if err != nil {
+			return ExecuteActionResult{
+				Success: true,
+				Output:  output,
+				Error:   err.Error(),
+			}
+		}
+
+		pod.Log("action", "ran command in %s: %s", cmdWorkDir, command)
+		return ExecuteActionResult{Success: true, Output: output}
+
+	default:
+		return ExecuteActionResult{Success: false, Error: fmt.Sprintf("不支持的操作类型: %s", actionType)}
+	}
+}
+
+// ReadFileContent reads a file's content for diff/confirmation preview.
+func (a *App) ReadFileContent(sessionID, relativePath string) string {
+	workspace := a.workDir
+	if meta, err := session.LoadSessionMeta(a.sessionsDir, sessionID); err == nil && meta.Workspace != "" {
+		workspace = meta.Workspace
+	}
+	fullPath := filepath.Join(workspace, relativePath)
+	data, err := os.ReadFile(fullPath)
+	if err != nil {
+		return ""
+	}
+	return string(data)
 }
 
 // RenameMasterTask renames a master task's goal/title.
@@ -1469,7 +2299,7 @@ func readDialogue(workDir, taskID string) []pod.AgentDialogueJSON {
 func readLeaderPlan(workDir string) []pod.AgentDialogueJSON {
 	leaderDir := filepath.Join(workDir, ".whale", "team_tasks", "logs", "leader")
 	var dialogue []pod.AgentDialogueJSON
-	for round := 1; round <= 9; round++ {
+	for round := 1; round <= 99; round++ {
 		for _, prefix := range []string{"decompose", "review"} {
 			data, _ := os.ReadFile(filepath.Join(leaderDir, fmt.Sprintf("%s_%03d.md", prefix, round)))
 			if len(data) > 0 {
@@ -1517,6 +2347,12 @@ func updateMetaState(workDir, taskID, state string) {
 	var meta map[string]interface{}
 	if json.Unmarshal(data, &meta) != nil { return }
 	meta["state"] = state
-	newData, _ := json.MarshalIndent(meta, "", "  ")
-	os.WriteFile(metaPath, newData, 0644)
+	newData, err := json.MarshalIndent(meta, "", "  ")
+	if err != nil {
+		pod.Log("task", "marshal meta %s: %v", metaPath, err)
+		return
+	}
+	if err := os.WriteFile(metaPath, newData, 0644); err != nil {
+		pod.Log("task", "write meta %s: %v", metaPath, err)
+	}
 }

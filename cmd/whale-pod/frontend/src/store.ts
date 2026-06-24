@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { MasterTask, Subtask, DialogueEntry, ChatMessage, TaskEvent, TeamInfo, AgentInfo, SummonedItem, TeamChatMessage, TaskConfirmation } from './types';
+import type { MasterTask, Subtask, DialogueEntry, ChatMessage, TaskEvent, TeamInfo, AgentInfo, SummonedItem, TeamChatMessage, TaskConfirmation, StreamChunk } from './types';
 import { api } from './wails';
 
 const PINNED_KEY = 'whale_pinned_task_ids';
@@ -80,6 +80,12 @@ interface PodState {
   selAgentId: string | null;
   openTabs: Record<string, string[]>;
 
+  // Streaming state
+  isStreaming: boolean;
+  streamingContent: string;
+  streamingThinking: string;
+  abortStreaming: () => void;
+
   init: () => Promise<void>;
   loadMasterTasks: () => Promise<void>;
   loadSubtasks: (mtId: string) => Promise<void>;
@@ -98,6 +104,7 @@ interface PodState {
   selectAgent: (agentId: string, agentName: string, agentType: 'expert' | 'team' | 'whale') => void;
   addTab: (sessionId: string) => void;
   removeTab: (sessionId: string) => void;
+  bringTabToFront: (tabId: string) => void;
   getAgentKey: (agent: string) => string;
   getCurrentTabs: () => string[];
   summonAndOpen: (item: SummonedItem) => Promise<void>;
@@ -105,6 +112,9 @@ interface PodState {
   runSubtask: (taskId: string) => Promise<void>;
   cancelSubtask: (taskId: string) => Promise<void>;
   handleTaskEvent: (event: TaskEvent) => void;
+  handleStreamChunk: (chunk: StreamChunk) => void;
+  regenerateLast: (deepThink?: boolean) => Promise<void>;
+  deleteMessage: (index: number) => Promise<void>;
   openWorkspace: (dir: string) => Promise<void>;
   removeWorkspace: (dir: string) => Promise<void>;
 }
@@ -138,7 +148,16 @@ export const useStore = create<PodState>((set, get) => ({
   confirmations: [],
   targetRole: '',
 
+  // Streaming state defaults
+  isStreaming: false,
+  streamingContent: '',
+  streamingThinking: '',
+
   init: async () => {
+    // Guard against double-init (StrictMode / HMR / multiple calls)
+    if ((get() as any)._initDone) return;
+    (get() as any)._initDone = true;
+
     const dir = await api.getWorkDir() || '';
     const teams = (await api.listTeams()) || [];
     const teamDetails = (await api.listTeamDetails()) || [];
@@ -147,6 +166,17 @@ export const useStore = create<PodState>((set, get) => ({
     const openWorkspaces = loadWorkspaces();
     set({ workDir: dir, openWorkspaces, teams, teamDetails, agentDetails, summonedItems: summoned });
     await get().loadMasterTasks();
+
+    // Listen for streaming chat chunks — only once
+    const wails = (window as any).runtime;
+    if (wails?.EventsOn) {
+      wails.EventsOn('chat-chunk', (chunk: StreamChunk) => {
+        get().handleStreamChunk(chunk);
+      });
+      wails.EventsOn('chat-action', (data: { sessionId: string; mode: string; role?: string; goal: string }) => {
+        get().handleChatAction(data);
+      });
+    }
   },
 
   loadMasterTasks: async () => {
@@ -156,9 +186,12 @@ export const useStore = create<PodState>((set, get) => ({
         let tasks = await api.getMasterTasks();
         if (!tasks || tasks.length === 0) {
           await new Promise(r => setTimeout(r, 500));
+          // Re-check: another loadMasterTasks call may have set tasks in between.
           tasks = await api.getMasterTasks();
         }
         set({ masterTasks: tasks || [] });
+      } catch (err) {
+        console.error('loadMasterTasks failed:', err);
       } finally {
         _loadMasterTasksPromise = null;
       }
@@ -228,31 +261,97 @@ export const useStore = create<PodState>((set, get) => ({
       set({ openTabs: next });
     }
     setTimeout(() => get().loadMasterTasks(), 1000);
-    // Get initial AI reply
-    const raw = await api.directChat(taskId, goal, deepThink);
-    if (raw) {
-      try {
-        const result = JSON.parse(raw);
-        set(s => ({ directMessages: [...s.directMessages, { from: 'agent', content: result.reply || raw, time: '', thinking: result.thinking, durationMs: result.durationMs, needsAction: result.needsAction, actionType: result.actionType }] }));
-      } catch {
-        set(s => ({ directMessages: [...s.directMessages, { from: 'agent', content: raw, time: '' }] }));
-      }
-    }
+    // Start streaming for the initial AI reply
+    (get() as any)._streamStart = Date.now();
+    set({ isStreaming: true, streamingContent: '', streamingThinking: '' });
+    await api.streamChat(taskId, goal, deepThink);
   },
 
   sendDirectChat: async (message: string, deepThink?: boolean) => {
     const taskId = get().directChatTaskId;
     if (!taskId) return;
+    // Add user message immediately
     set(s => ({ directMessages: [...s.directMessages, { from: 'human', content: message, time: '' }] }));
-    const raw = await api.directChat(taskId, message, deepThink);
-    if (raw) {
-      try {
-        const result = JSON.parse(raw);
-        set(s => ({ directMessages: [...s.directMessages, { from: 'agent', content: result.reply || raw, time: '', thinking: result.thinking, durationMs: result.durationMs, needsAction: result.needsAction, actionType: result.actionType }] }));
-      } catch {
-        set(s => ({ directMessages: [...s.directMessages, { from: 'agent', content: raw, time: '' }] }));
-      }
+    // Start streaming
+    (get() as any)._streamStart = Date.now();
+    set({ isStreaming: true, streamingContent: '', streamingThinking: '' });
+    await api.streamChat(taskId, message, deepThink);
+  },
+
+  abortStreaming: () => {
+    const taskId = get().directChatTaskId;
+    if (!taskId) return;
+    api.abortChat(taskId);
+  },
+
+  handleStreamChunk: (chunk: StreamChunk) => {
+    const { directChatTaskId, isStreaming, directMessages } = get();
+    if (chunk.sessionId !== directChatTaskId) return;
+
+    // Guard: ignore chunks after stream has been finalized for this session
+    const doneKey = `_stream_done_${chunk.sessionId}`;
+    if ((get() as any)[doneKey]) return;
+
+    if (chunk.error === 'cancelled') {
+      set({ isStreaming: false });
+      (get() as any)[doneKey] = true;
+      get().loadMasterTasks();
+      return;
     }
+
+    if (chunk.done) {
+      (get() as any)[doneKey] = true;
+      // Streaming complete — add final agent message to directMessages
+      const { streamingContent, streamingThinking } = get();
+      if (streamingContent || streamingThinking) {
+        const start = (get() as any)._streamStart || Date.now();
+        const durationMs = Date.now() - start;
+        const agentMsg: ChatMessage = {
+          from: 'agent',
+          content: streamingContent,
+          time: '',
+          thinking: streamingThinking || undefined,
+          durationMs,
+        };
+        set(s => ({
+          directMessages: [...s.directMessages, agentMsg],
+          isStreaming: false,
+          streamingContent: '',
+          streamingThinking: '',
+        }));
+      } else {
+        set({ isStreaming: false });
+      }
+      // Reload session list to update preview
+      setTimeout(() => get().loadMasterTasks(), 300);
+      return;
+    }
+
+    // Accumulate streaming content
+    if (chunk.content || chunk.thinking) {
+      set(s => ({
+        streamingContent: s.streamingContent + chunk.content,
+        streamingThinking: s.streamingThinking + chunk.thinking,
+      }));
+    }
+  },
+
+  handleChatAction: async (data: { sessionId: string; mode: string; role?: string; goal: string }) => {
+    const { sessionId, mode, role, goal } = data;
+    const selAgentId = get().selAgentId || '';
+    const workDir = '';
+
+    if (mode === 'team') {
+      const teamName = selAgentId.startsWith('team:') ? selAgentId.slice(5) : '';
+      if (!teamName) { console.warn('[handleChatAction] team mode but no teamName from selAgentId:', selAgentId); return; }
+      await api.startTaskInSession(sessionId, goal, teamName, workDir);
+    } else if (mode === 'agent') {
+      const agentName = role || (selAgentId.startsWith('expert:') ? selAgentId.slice(7) : '');
+      if (!agentName) { console.warn('[handleChatAction] agent mode but no agentName, role:', role, 'selAgentId:', selAgentId); return; }
+      await api.startExpertTaskInSession(sessionId, goal, agentName, workDir);
+    }
+
+    setTimeout(() => get().loadMasterTasks(), 500);
   },
 
   sendFeedback: async (msg: string) => {
@@ -372,6 +471,18 @@ export const useStore = create<PodState>((set, get) => ({
     }
   },
 
+  bringTabToFront: (tabId: string) => {
+    const { openTabs, selAgentId } = get();
+    const key = selAgentId || '';
+    const agentTabs = openTabs[key] || [];
+    const idx = agentTabs.indexOf(tabId);
+    if (idx <= 0) return; // already at front or not found
+    const reordered = [tabId, ...agentTabs.filter(id => id !== tabId)];
+    const next = { ...openTabs, [key]: reordered };
+    persistTabs(next);
+    set({ openTabs: next });
+  },
+
   summonAndOpen: async (item: SummonedItem) => {
     // 召唤（不重复）
     const current = get().summonedItems;
@@ -426,5 +537,26 @@ export const useStore = create<PodState>((set, get) => ({
     persistWorkspaces(updated);
     set({ openWorkspaces: updated });
     await get().loadMasterTasks();
+  },
+
+  regenerateLast: async (deepThink?: boolean) => {
+    const { directMessages, directChatTaskId, isStreaming } = get();
+    if (isStreaming || !directChatTaskId || directMessages.length < 2) return;
+    // Remove last AI message
+    const msgs = directMessages.slice(0, -1);
+    // Get the last user message
+    const lastUserMsg = [...msgs].reverse().find(m => m.from === 'human');
+    if (!lastUserMsg) return;
+    set({ directMessages: msgs });
+    // Re-send the last user message
+    await get().sendDirectChat(lastUserMsg.content, deepThink);
+  },
+
+  deleteMessage: async (index: number) => {
+    const { directMessages, isStreaming } = get();
+    if (isStreaming || index < 0 || index >= directMessages.length) return;
+    const msgs = [...directMessages];
+    msgs.splice(index, 1);
+    set({ directMessages: msgs });
   },
 }));

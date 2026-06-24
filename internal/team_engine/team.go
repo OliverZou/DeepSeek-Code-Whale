@@ -12,10 +12,11 @@ import (
 // TeamConfig defines a named team that can be assigned to execute a goal.
 // Teams are loaded from .whale/teams/{name}.yaml or {name}/team.yaml
 type TeamConfig struct {
-	Label    string                    `yaml:"label"`
-	Category string                    `yaml:"category,omitempty"`
-	Leader   TeamLeaderConfig          `yaml:"leader"`
-	Roles    []string                  `yaml:"roles"`
+	Label        string                    `yaml:"label"`
+	Category     string                    `yaml:"category,omitempty"`
+	Capabilities []string                  `yaml:"capabilities,omitempty"`
+	Leader       TeamLeaderConfig          `yaml:"leader"`
+	Roles        []string                  `yaml:"roles"`
 	Config    *TeamRuntimeConfig       `yaml:"-"` // loaded from config.yaml
 	Pipeline  *PipelineFile            `yaml:"-"` // loaded from pipeline.yaml
 	MemoryDir    string `yaml:"-"` // memory directory path

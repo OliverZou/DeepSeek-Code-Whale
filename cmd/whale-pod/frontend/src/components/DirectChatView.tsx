@@ -1,15 +1,26 @@
 import { useState, useRef, useEffect } from 'react';
 import { useStore } from '../store';
 import { api } from '../wails';
-import { marked } from 'marked';
+import ChatContent from './ChatContent';
 
 export default function DirectChatView() {
-  const { directMessages, directChatTaskId, sendDirectChat, selMasterTaskId, selAgentId, summonedItems, startDirectChat, masterTasks } = useStore();
+  const { directMessages, directChatTaskId, sendDirectChat, selMasterTaskId, selAgentId, summonedItems, startDirectChat, masterTasks, isStreaming, streamingContent, streamingThinking, abortStreaming, regenerateLast, deleteMessage } = useStore();
   const [input, setInput] = useState('');
   const [focused, setFocused] = useState(false);
   const [sending, setSending] = useState(false);
   const [deepThink, setDeepThink] = useState(false);
-  const [chatMode, setChatMode] = useState<'chat' | 'plan' | 'agent'>('chat');
+  const [streamThinkingExpanded, setStreamThinkingExpanded] = useState(false);
+  const [hoveredMsg, setHoveredMsg] = useState<number | null>(null);
+  const [quotedMsg, setQuotedMsg] = useState<{ content: string } | null>(null);
+  const [chatMode, setChatMode] = useState<'chat' | 'plan' | 'agent'>(() => {
+    try { return (localStorage.getItem('whale_chat_mode') as 'chat' | 'plan' | 'agent') || 'chat'; }
+    catch { return 'chat'; }
+  });
+
+  const updateChatMode = (mode: 'chat' | 'plan' | 'agent') => {
+    setChatMode(mode);
+    try { localStorage.setItem('whale_chat_mode', mode); } catch { /* ignore */ }
+  };
   const [expandedThinking, setExpandedThinking] = useState<Set<number>>(new Set());
   const msgsRef = useRef<HTMLDivElement>(null);
   const taRef = useRef<HTMLTextAreaElement>(null);
@@ -34,9 +45,9 @@ export default function DirectChatView() {
     if (msgsRef.current) {
       msgsRef.current.scrollTop = msgsRef.current.scrollHeight;
     }
-  }, [directMessages]);
+  }, [directMessages, streamingContent, streamingThinking]);
 
-  // Load messages when task changed
+  // Load messages when task changed (with race-condition guard).
   const taskId = directChatTaskId || selMasterTaskId;
 
   const workspacePath = (() => {
@@ -47,17 +58,26 @@ export default function DirectChatView() {
 
   useEffect(() => {
     if (!taskId) return;
+    let cancelled = false;
     useStore.setState({ directMessages: [] });
     api.getChatMessages(taskId).then(msgs => {
-      useStore.setState({ directMessages: msgs || [] });
+      if (!cancelled) useStore.setState({ directMessages: msgs || [] });
     });
+    return () => { cancelled = true; };
   }, [taskId]);
 
   const handleSend = async () => {
-    const msg = input.trim();
+    let msg = input.trim();
     if (!msg || sending) return;
     setInput('');
     setSending(true);
+
+    // Prepend quoted content as markdown blockquote
+    if (quotedMsg) {
+      const blockquote = quotedMsg.content.split('\n').map(l => `> ${l}`).join('\n');
+      msg = blockquote + '\n\n' + msg;
+      setQuotedMsg(null);
+    }
 
     if (isNewChat) {
       await startDirectChat(msg, undefined, selAgentId || undefined, deepThink);
@@ -86,7 +106,10 @@ export default function DirectChatView() {
         {directMessages.map((m, i) => (
           <div
             key={i}
+            onMouseEnter={() => setHoveredMsg(i)}
+            onMouseLeave={() => { if (hoveredMsg === i) setHoveredMsg(null); }}
             style={{
+              position: 'relative',
               display: 'flex', flexDirection: 'column',
               alignItems: m.from === 'human' ? 'flex-end' : 'flex-start',
               marginBottom: 16,
@@ -94,7 +117,7 @@ export default function DirectChatView() {
           >
             {m.from !== 'human' && (
               <div style={{ fontSize: 13, color: '#888', marginBottom: 4, marginLeft: 4 }}>
-                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, width: '100%' }}>
                   {agentType === 'whale' ? (
                     <img src="/whale.png" width="24" height="24" alt="" style={{ borderRadius: 4 }} />
                   ) : (
@@ -135,7 +158,64 @@ export default function DirectChatView() {
                       )}
                     </span>
                   )}
+                  {/* Hover actions — copy + quote on every AI message, regenerate/delete on last */}
+                  {hoveredMsg === i && !isStreaming && (
+                    <span style={{ display: 'inline-flex', gap: 2, marginLeft: 4 }}>
+                      <button
+                        onClick={(e) => { e.stopPropagation(); navigator.clipboard.writeText(m.content); }}
+                        title="复制"
+                        style={{
+                          padding: '1px 5px', border: 'none', background: 'transparent',
+                          color: '#999', fontSize: 10, cursor: 'pointer',
+                        }}
+                      ><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ marginRight: 2, flexShrink: 0 }}><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg> 复制</button>
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setQuotedMsg({ content: m.content });
+                        }}
+                        title="引用到输入框"
+                        style={{
+                          padding: '1px 5px', border: 'none', background: 'transparent',
+                          color: '#999', fontSize: 10, cursor: 'pointer',
+                        }}
+                      ><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ marginRight: 2, flexShrink: 0 }}><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg> 引用</button>
+                      {i === directMessages.length - 1 && (
+                        <>
+                          <button
+                            onClick={(e) => { e.stopPropagation(); regenerateLast(deepThink); }}
+                            title="重新生成"
+                            style={{
+                              padding: '1px 5px', border: 'none', background: 'transparent',
+                              color: '#999', fontSize: 10, cursor: 'pointer',
+                            }}
+                          ><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ marginRight: 2, flexShrink: 0 }}><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg> 重新生成</button>
+                          <button
+                            onClick={(e) => { e.stopPropagation(); deleteMessage(i); }}
+                            title="删除"
+                            style={{
+                              padding: '1px 5px', border: 'none', background: 'transparent',
+                              color: '#999', fontSize: 10, cursor: 'pointer',
+                            }}
+                          ><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ marginRight: 2, flexShrink: 0 }}><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg> 删除</button>
+                        </>
+                      )}
+                    </span>
+                  )}
                 </span>
+              </div>
+            )}
+            {/* Hover actions for user messages — copy only */}
+            {m.from === 'human' && hoveredMsg === i && !isStreaming && (
+              <div style={{ position: 'absolute', top: -22, right: 0 }}>
+                <button
+                  onClick={(e) => { e.stopPropagation(); navigator.clipboard.writeText(m.content); }}
+                  title="复制"
+                  style={{
+                    padding: '1px 5px', border: 'none', background: 'transparent',
+                    color: '#999', fontSize: 10, cursor: 'pointer',
+                  }}
+                ><svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ marginRight: 2, flexShrink: 0 }}><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg> 复制</button>
               </div>
             )}
             {/* thinking content */}
@@ -161,12 +241,92 @@ export default function DirectChatView() {
                 borderBottomRightRadius: m.from === 'human' ? 4 : 14,
                 borderBottomLeftRadius: m.from === 'human' ? 14 : 4,
               }}
-              dangerouslySetInnerHTML={{ __html: marked.parse(m.content) as string }}
-            />
+            >
+              <ChatContent content={m.content} />
+            </div>
           </div>
         ))}
-        {sending && (
+        {sending && !isStreaming && (
           <div style={{ color: '#666', fontSize: 12, padding: 8 }}>AI 思考中…</div>
+        )}
+        {/* Streaming bubble */}
+        {isStreaming && (
+          <div style={{
+            display: 'flex', flexDirection: 'column',
+            alignItems: 'flex-start',
+            marginBottom: 16,
+          }}>
+            <div style={{ fontSize: 13, color: '#888', marginBottom: 4, marginLeft: 4 }}>
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                {agentType === 'whale' ? (
+                  <img src="/whale.png" width="24" height="24" alt="" style={{ borderRadius: 4 }} />
+                ) : (
+                  <div style={{
+                    width: 24, height: 24, borderRadius: '50%', flexShrink: 0,
+                    background: agentType === 'team' ? 'linear-gradient(135deg, #9C27B0, #2196F3)' : 'linear-gradient(135deg, #4CAF50, #00BCD4)',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    color: '#fff', fontSize: 11, fontWeight: 700,
+                  }}>{agentLabel[0]}</div>
+                )}
+                {agentLabel}
+                <span style={{ color: '#555', fontSize: 11, fontWeight: 400 }}>
+                  <span className="typing-dots">输出中</span>
+                </span>
+              </span>
+            </div>
+            {/* streaming thinking */}
+            {streamingThinking && (
+              <div style={{ marginLeft: 34, marginBottom: 4, width: '80%' }}>
+                <div
+                  onClick={() => setStreamThinkingExpanded(!streamThinkingExpanded)}
+                  style={{
+                    display: 'inline-flex', alignItems: 'center', gap: 4,
+                    cursor: 'pointer', color: '#555', fontSize: 11,
+                    padding: '4px 8px', borderRadius: 6,
+                    background: 'rgba(0,0,0,0.2)',
+                  }}
+                >
+                  <span>🧠 思考中…</span>
+                  <svg width="8" height="5" viewBox="0 0 8 5" style={{
+                    transition: 'transform 0.15s',
+                    transform: streamThinkingExpanded ? 'rotate(0deg)' : 'rotate(-90deg)',
+                  }}>
+                    <path d="M0 0l4 5 4-5" fill="none" stroke="#999" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+                  </svg>
+                </div>
+                {streamThinkingExpanded && (
+                  <div style={{
+                    marginTop: 4, padding: '8px 12px',
+                    background: 'rgba(0,0,0,0.25)', borderRadius: 8,
+                    fontSize: 12, color: '#777', lineHeight: 1.5,
+                  }}>
+                    {streamingThinking}
+                  </div>
+                )}
+              </div>
+            )}
+            {/* streaming content */}
+            {streamingContent && (
+              <div
+                className="chat-md agent"
+                style={{
+                  maxWidth: '80%', padding: '10px 16px', borderRadius: 14,
+                  fontSize: 14, lineHeight: 1.6,
+                  wordBreak: 'break-word',
+                  background: '#1e1e1e', color: '#e0e0e0',
+                  border: '1px solid #333',
+                  borderBottomLeftRadius: 4,
+                }}
+              >
+                <ChatContent content={streamingContent} />
+              </div>
+            )}
+            {!streamingContent && !streamingThinking && (
+              <div style={{ color: '#666', fontSize: 12, padding: 8, marginLeft: 34 }}>
+                <span className="typing-dots">思考中</span>
+              </div>
+            )}
+          </div>
         )}
         {/* action confirmation */}
         {directMessages.length > 0 && (() => {
@@ -183,7 +343,7 @@ export default function DirectChatView() {
                 display: 'flex', justifyContent: 'flex-start', padding: '0 0 12px',
               }}>
                 <button
-                  onClick={() => setChatMode(targetMode)}
+                  onClick={() => updateChatMode(targetMode)}
                   style={{
                     marginLeft: 34, padding: '8px 18px', borderRadius: 10,
                     border: '1px solid #4CAF50', background: 'rgba(76,175,80,0.12)',
@@ -198,7 +358,7 @@ export default function DirectChatView() {
       </div>
 
       {/* input */}
-      <div style={{ padding: '0 10% 20px' }}>
+      <div style={{ paddingTop: 0, paddingBottom: 8, paddingLeft: '10%', paddingRight: '10%' }}>
         <div style={{
           position: 'relative',
           border: `1px solid ${focused ? '#4CAF50' : '#333'}`,
@@ -206,6 +366,31 @@ export default function DirectChatView() {
           transition: 'border-color 0.2s',
           boxShadow: focused ? '0 0 0 2px rgba(76,175,80,0.12)' : 'none',
         }}>
+          {/* quoted message preview */}
+          {quotedMsg && (
+            <div style={{
+              margin: '8px 10px 0 10px', padding: '6px 10px',
+              borderLeft: '3px solid #4CAF50', borderRadius: 4,
+              background: 'rgba(76,175,80,0.05)',
+              display: 'flex', alignItems: 'flex-start', gap: 8,
+            }}>
+              <span style={{
+                flex: 1, fontSize: 12, color: '#999', lineHeight: 1.5,
+                overflow: 'hidden', display: '-webkit-box',
+                WebkitLineClamp: 3, WebkitBoxOrient: 'vertical',
+                wordBreak: 'break-word',
+              }}>{quotedMsg.content}</span>
+              <button
+                onClick={() => setQuotedMsg(null)}
+                style={{
+                  flexShrink: 0, width: 18, height: 18, borderRadius: 4,
+                  border: 'none', background: 'transparent',
+                  color: '#666', fontSize: 12, cursor: 'pointer',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                }}
+              >✕</button>
+            </div>
+          )}
           <textarea
             ref={taRef}
             value={input}
@@ -261,7 +446,7 @@ export default function DirectChatView() {
               ]).map(([m, d]) => (
                 <div
                   key={m}
-                  onClick={() => setChatMode(m as 'chat' | 'plan' | 'agent')}
+                  onClick={() => updateChatMode(m as 'chat' | 'plan' | 'agent')}
                   title={m === 'chat' ? '纯聊天' : m === 'plan' ? '规划模式' : '操作模式'}
                   style={{
                     padding: '2px 4px', cursor: 'pointer',
@@ -276,31 +461,54 @@ export default function DirectChatView() {
               ))}
             </div>
 
-            {/* Enter hint + send button */}
-            <span style={{ fontSize: 10, color: '#555' }}>
-              {charCount > 0 ? `${charCount}字` : 'Enter'}
-            </span>
-            <button
-              onClick={handleSend}
-              disabled={!charCount || sending}
-              style={{
-                width: 28, height: 28, borderRadius: 8, border: 'none',
-                background: (charCount && !sending) ? '#4CAF50' : '#333',
-                cursor: (charCount && !sending) ? 'pointer' : 'default',
-                display: 'flex', alignItems: 'center', justifyContent: 'center',
-                opacity: (charCount && !sending) ? 1 : 0.4,
-                transition: 'all .2s', flexShrink: 0,
-              }}
-            >
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                <line x1="12" y1="5" x2="12" y2="19" />
-                <polyline points="5 12 12 5 19 12" />
-              </svg>
-            </button>
+            {/* Enter hint + send/stop button */}
+            {isStreaming ? (
+              <>
+                <span style={{ fontSize: 10, color: '#e74c3c' }}>生成中</span>
+                <button
+                  onClick={() => { abortStreaming(); setSending(false); }}
+                  style={{
+                    width: 28, height: 28, borderRadius: 8, border: 'none',
+                    background: '#e74c3c',
+                    cursor: 'pointer',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    flexShrink: 0,
+                  }}
+                  title="停止生成"
+                >
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="white">
+                    <rect x="3" y="3" width="18" height="18" rx="3" />
+                  </svg>
+                </button>
+              </>
+            ) : (
+              <>
+                <span style={{ fontSize: 10, color: '#555' }}>
+                  {charCount > 0 ? `${charCount}字` : 'Enter'}
+                </span>
+                <button
+                  onClick={handleSend}
+                  disabled={!charCount || sending}
+                  style={{
+                    width: 28, height: 28, borderRadius: 8, border: 'none',
+                    background: (charCount && !sending) ? '#4CAF50' : '#333',
+                    cursor: (charCount && !sending) ? 'pointer' : 'default',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    opacity: (charCount && !sending) ? 1 : 0.4,
+                    transition: 'all .2s', flexShrink: 0,
+                  }}
+                >
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                    <line x1="12" y1="5" x2="12" y2="19" />
+                    <polyline points="5 12 12 5 19 12" />
+                  </svg>
+                </button>
+              </>
+            )}
           </div>
         </div>
         {/* workspace path — bottom-left, outside input box, aligned with text */}
-        <div style={{ height: 33, display: 'flex', alignItems: 'center', gap: 5, paddingLeft: 14, opacity: workspacePath ? 1 : 0 }}>
+        <div style={{ height: workspacePath ? 33 : 0, display: 'flex', alignItems: 'center', gap: 5, paddingLeft: 14, marginTop: workspacePath ? 8 : 0, opacity: workspacePath ? 1 : 0, overflow: 'hidden', transition: 'height 0.2s, margin 0.2s, opacity 0.2s' }}>
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#666" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
             <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
           </svg>

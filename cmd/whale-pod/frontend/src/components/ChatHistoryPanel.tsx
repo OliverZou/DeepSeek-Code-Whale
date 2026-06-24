@@ -33,8 +33,11 @@ export default function ChatHistoryPanel({ open, onClose }: { open: boolean; onC
         onClose();
       }
     };
-    setTimeout(() => document.addEventListener('mousedown', handler), 100);
-    return () => document.removeEventListener('mousedown', handler);
+    const timer = setTimeout(() => document.addEventListener('mousedown', handler), 100);
+    return () => {
+      clearTimeout(timer);
+      document.removeEventListener('mousedown', handler);
+    };
   }, [open, onClose]);
 
   const loadMore = async (fromOffset: number) => {
@@ -65,6 +68,24 @@ export default function ChatHistoryPanel({ open, onClose }: { open: boolean; onC
     if (!confirm(`删除对话「${session.goal || session.id}」？`)) return;
     await api.deleteSession(session.id);
     setSessions(prev => prev.filter(s => s.id !== session.id));
+    useStore.getState().loadMasterTasks();
+  };
+
+  const handleDeleteAll = async () => {
+    if (!confirm(`确定删除「${selAgentId || 'Whale'}」的全部对话记录？此操作不可恢复。`)) return;
+    await api.deleteAllSessions(agent);
+    setSessions([]);
+    setHasMore(false);
+    useStore.getState().loadMasterTasks();
+  };
+
+  const handleClearEmpty = async () => {
+    await api.clearEmptySessions(agent);
+    // Reload list
+    const result = await api.listSessionsByAgent(agent, 0, PAGE_SIZE);
+    setSessions(result || []);
+    setHasMore((result || []).length >= PAGE_SIZE);
+    setOffset((result || []).length);
     useStore.getState().loadMasterTasks();
   };
 
@@ -101,10 +122,35 @@ export default function ChatHistoryPanel({ open, onClose }: { open: boolean; onC
         flexShrink: 0,
       }}>
         <span style={{ fontSize: 13, color: '#aaa', fontWeight: 600 }}>对话历史</span>
-        <span
-          onClick={onClose}
-          style={{ cursor: 'pointer', color: '#666', fontSize: 16, lineHeight: 1 }}
-        >✕</span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <span
+            onClick={handleClearEmpty}
+            title="清理空对话"
+            style={{ cursor: 'pointer', color: '#666', display: 'flex', alignItems: 'center', padding: 2 }}
+            onMouseEnter={e => e.currentTarget.style.color = '#ccc'}
+            onMouseLeave={e => e.currentTarget.style.color = '#666'}
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/>
+              <line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/>
+            </svg>
+          </span>
+          <span
+            onClick={handleDeleteAll}
+            title="全部删除"
+            style={{ cursor: 'pointer', color: '#666', display: 'flex', alignItems: 'center', padding: 2 }}
+            onMouseEnter={e => e.currentTarget.style.color = '#f44336'}
+            onMouseLeave={e => e.currentTarget.style.color = '#666'}
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+            </svg>
+          </span>
+          <span
+            onClick={onClose}
+            style={{ cursor: 'pointer', color: '#666', fontSize: 16, lineHeight: 1 }}
+          >✕</span>
+        </div>
       </div>
 
       <div style={{ flex: 1, overflowY: 'auto' }}>
@@ -117,6 +163,7 @@ export default function ChatHistoryPanel({ open, onClose }: { open: boolean; onC
           <div
             key={s.id}
             onClick={() => handleSelect(s)}
+            title={s.session_path || undefined}
             style={{
               padding: '10px 14px', cursor: 'pointer',
               borderBottom: '1px solid rgba(255,255,255,0.03)',

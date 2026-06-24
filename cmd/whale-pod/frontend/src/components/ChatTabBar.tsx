@@ -86,6 +86,7 @@ export default function ChatTabBar() {
   const masterTasks = useStore(s => s.masterTasks);
   const selectMasterTask = useStore(s => s.selectMasterTask);
   const removeTab = useStore(s => s.removeTab);
+  const bringTabToFront = useStore(s => s.bringTabToFront);
 
   const currentTabs = openTabs[selAgentId || ''] || [];
 
@@ -185,7 +186,7 @@ export default function ChatTabBar() {
                   return (
                     <div
                       key={tabId}
-                      onClick={() => { selectMasterTask(tabId); setOverflowOpen(false); }}
+                      onClick={() => { bringTabToFront(tabId); selectMasterTask(tabId); setOverflowOpen(false); }}
                       style={{
                         padding: '5px 10px', cursor: 'pointer',
                         fontSize: 12, color: active ? '#4CAF50' : '#bbb',

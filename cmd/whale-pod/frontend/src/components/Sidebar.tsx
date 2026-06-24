@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import { useStore } from '../store';
 import { api } from '../wails';
 import type { SummonedItem, MasterTask } from '../types';
@@ -93,41 +93,16 @@ export default function Sidebar() {
   const [search, setSearch] = useState('');
   const [lastMsgs, setLastMsgs] = useState<Record<string, string>>({});
 
-  // 异步加载各 agent 最后一个对话的最后一条消息
-  useEffect(() => {
-    const load = async () => {
-      const result: Record<string, string> = {};
-      for (const item of allAgents) {
-        const agentKey = item.type === 'whale' ? '' : item.type + ':' + item.name;
-        const tasks = masterTasks.filter(t => (t.agent || '') === agentKey);
-        const lastTask = tasks.length > 0 ? tasks[tasks.length - 1] : null;
-        if (!lastTask) continue;
-        try {
-          const msgs = await api.getChatMessages(lastTask.id);
-          if (msgs && msgs.length > 0) {
-            result[agentKey] = msgs[msgs.length - 1].content;
-          }
-        } catch { /* ignore */ }
-      }
-      setLastMsgs(result);
-    };
-    load();
-  }, [masterTasks, summonedItems]);
-
-  const allAgents: (SummonedItem | typeof whaleItem)[] = (() => {
+  const allAgents: (SummonedItem | typeof whaleItem)[] = useMemo(() => {
     const seen = new Set<string>();
     const result: (SummonedItem | typeof whaleItem)[] = [];
     for (const item of summonedItems) {
       const key = item.type + ':' + item.name;
       if (!seen.has(key)) { seen.add(key); result.push(item); }
     }
-    let hasWhaleChats = false;
     for (const t of masterTasks) {
       const a = t.agent || '';
-      if (!a) {
-        hasWhaleChats = true;
-        continue;
-      }
+      if (!a) continue;
       const [type, ...rest] = a.split(':');
       const name = rest.join(':');
       const key = type + ':' + name;
@@ -143,7 +118,39 @@ export default function Sidebar() {
     }
     if (!seen.has('whale:')) result.push(whaleItem);
     return result;
-  })();
+  }, [summonedItems, masterTasks]);
+
+  // 异步加载各 agent 最后一个对话的最后一条消息（防抖 + 取消）
+  const lastMsgAbortRef = useRef<AbortController | null>(null);
+  useEffect(() => {
+    // Cancel any in-flight requests.
+    lastMsgAbortRef.current?.abort();
+    const controller = new AbortController();
+    lastMsgAbortRef.current = controller;
+
+    const timer = setTimeout(async () => {
+      const result: Record<string, string> = {};
+      for (const item of allAgents) {
+        if (controller.signal.aborted) break;
+        const agentKey = item.type === 'whale' ? '' : item.type + ':' + item.name;
+        const tasks = masterTasks.filter(t => (t.agent || '') === agentKey);
+        const lastTask = tasks.length > 0 ? tasks[tasks.length - 1] : null;
+        if (!lastTask) continue;
+        try {
+          const msgs = await api.getChatMessages(lastTask.id);
+          if (!controller.signal.aborted && msgs && msgs.length > 0) {
+            result[agentKey] = msgs[msgs.length - 1].content;
+          }
+        } catch { /* ignore */ }
+      }
+      if (!controller.signal.aborted) setLastMsgs(result);
+    }, 300); // 300ms debounce
+
+    return () => {
+      clearTimeout(timer);
+      controller.abort();
+    };
+  }, [masterTasks, summonedItems, allAgents]);
 
   const q = search.trim().toLowerCase();
   const filtered = q
@@ -166,6 +173,11 @@ export default function Sidebar() {
 
   const handleSummon = () => {
     useStore.setState({ activeFunction: 'expert' });
+  };
+
+  const handleToggleSettings = () => {
+    // fire a custom event that App.tsx listens to
+    window.dispatchEvent(new CustomEvent('toggle-settings'));
   };
 
   return (
@@ -253,12 +265,12 @@ export default function Sidebar() {
 
       <div style={{
         borderTop: '1px solid rgba(255,255,255,0.06)', padding: '8px 10px',
-        flexShrink: 0,
+        flexShrink: 0, display: 'flex', gap: 6,
       }}>
         <button
           onClick={handleSummon}
           style={{
-            width: '100%', padding: '8px 0', borderRadius: 8, border: '1px solid rgba(255,255,255,0.15)',
+            flex: 1, padding: '8px 0', borderRadius: 8, border: '1px solid rgba(255,255,255,0.15)',
             background: 'transparent', color: '#888', fontSize: 12, cursor: 'pointer',
             display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
             transition: 'background 0.15s, color 0.15s',
@@ -270,6 +282,23 @@ export default function Sidebar() {
             <circle cx="12" cy="12" r="10" /><line x1="12" y1="8" x2="12" y2="16" /><line x1="8" y1="12" x2="16" y2="12" />
           </svg>
           召唤专家
+        </button>
+        <button
+          onClick={handleToggleSettings}
+          title="设置 (Ctrl+,)"
+          style={{
+            width: 36, height: 36, borderRadius: 8, border: '1px solid rgba(255,255,255,0.12)',
+            background: 'transparent', color: '#888', fontSize: 16, cursor: 'pointer',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            flexShrink: 0, transition: 'all 0.15s',
+          }}
+          onMouseEnter={e => { e.currentTarget.style.background = 'rgba(255,255,255,0.08)'; e.currentTarget.style.color = '#ccc'; }}
+          onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = '#888'; }}
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <circle cx="12" cy="12" r="3"/>
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+          </svg>
         </button>
       </div>
     </div>

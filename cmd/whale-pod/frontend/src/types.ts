@@ -3,6 +3,7 @@ export interface MasterTask {
   id: string;
   goal: string;
   agent?: string;
+  session_path?: string;
   workspace_id: string;
   workspace_path: string;
   workspace_label: string;
@@ -38,6 +39,13 @@ export interface DialogueEntry {
   content: string;
 }
 
+// Matches Go ActionInfo
+export interface ActionInfo {
+  mode: string; // "agent" | "team"
+  role?: string;
+  goal: string;
+}
+
 // Matches Go ChatMessageJSON
 export interface ChatMessage {
   time: string;
@@ -47,6 +55,7 @@ export interface ChatMessage {
   durationMs?: number;
   needsAction?: boolean;
   actionType?: string;
+  action?: ActionInfo;
   to?: string;
 }
 
@@ -88,12 +97,43 @@ export interface SummonedItem {
   description?: string;
 }
 
+// Tool call card — extracted from AI reply markdown
+export interface ToolCall {
+  id: string;
+  type: 'read_file' | 'write_file' | 'run_command' | 'search' | 'unknown';
+  label: string;        // short label e.g. "读取 src/main.go"
+  detail: string;       // file path or command
+  content: string;      // code/content block
+  language: string;     // code language
+  filePath?: string;     // extracted file path (for write/read)
+  startLine: number;    // position in original text
+  endLine: number;
+}
+
+// Matches Go StreamChatChunk
+export interface StreamChunk {
+  sessionId: string;
+  content: string;
+  thinking: string;
+  done: boolean;
+  error?: string;
+}
+
 // Matches Go TeamChatMessage
 export interface TeamChatMessage {
   from: string;
   to: string;
   content: string;
   timestamp: string;
+}
+
+// Matches Go SettingsData
+export interface SettingsData {
+  apiKey: string;
+  model: string;
+  temperature: number;
+  maxTokens: number;
+  theme: string;
 }
 
 // Matches Go TaskConfirmation

@@ -26,6 +26,7 @@ type MasterTaskJSON struct {
 	ID              string `json:"id"`
 	Goal            string `json:"goal"`
 	Agent           string `json:"agent,omitempty"`
+	SessionPath     string `json:"session_path,omitempty"`
 	WorkspaceID     string `json:"workspace_id"`
 	WorkspacePath   string `json:"workspace_path"`
 	WorkspaceLabel  string `json:"workspace_label"`

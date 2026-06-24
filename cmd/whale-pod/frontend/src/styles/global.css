@@ -175,3 +175,38 @@ body { font-family: system-ui, sans-serif; background: var(--bg); color: var(--t
   0%, 100% { opacity: 1; }
   50% { opacity: 0.3; }
 }
+
+/* Typing dots animation */
+.typing-dots { display: inline-flex; align-items: center; gap: 2px; }
+.typing-dots::after {
+  display: inline-block;
+  width: 18px;
+  text-align: left;
+  overflow: hidden;
+  white-space: nowrap;
+  animation: dotExpand 1.4s steps(4, end) infinite;
+  content: '...';
+}
+@keyframes dotExpand {
+  0% { width: 0; }
+  25% { width: 5px; }
+  50% { width: 10px; }
+  75% { width: 18px; }
+  100% { width: 18px; }
+}
+
+/* ── Light theme ── */
+[data-theme="light"] {
+  --bg: #f5f5f5;
+  --sidebar-bg: #eaeaea;
+  --panel-bg: #fff;
+  --border: #ddd;
+  --text: #222;
+  --muted: #999;
+  --active: rgba(0,0,0,0.04);
+  --accent: #2563eb;
+  --green: #16a34a;
+  --red: #dc2626;
+  --amber: #d97706;
+  --purple: #7c3aed;
+}

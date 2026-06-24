@@ -1,5 +1,41 @@
 export namespace main {
 	
+	export class ExecuteActionResult {
+	    success: boolean;
+	    output: string;
+	    error?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ExecuteActionResult(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.success = source["success"];
+	        this.output = source["output"];
+	        this.error = source["error"];
+	    }
+	}
+	export class SettingsData {
+	    apiKey: string;
+	    model: string;
+	    temperature: number;
+	    maxTokens: number;
+	    theme: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new SettingsData(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.apiKey = source["apiKey"];
+	        this.model = source["model"];
+	        this.temperature = source["temperature"];
+	        this.maxTokens = source["maxTokens"];
+	        this.theme = source["theme"];
+	    }
+	}
 	export class TaskConfirmation {
 	    task_id: string;
 	    task_title: string;
@@ -107,6 +143,7 @@ export namespace pod {
 	    id: string;
 	    goal: string;
 	    agent?: string;
+	    session_path?: string;
 	    workspace_id: string;
 	    workspace_path: string;
 	    workspace_label: string;
@@ -127,6 +164,7 @@ export namespace pod {
 	        this.id = source["id"];
 	        this.goal = source["goal"];
 	        this.agent = source["agent"];
+	        this.session_path = source["session_path"];
 	        this.workspace_id = source["workspace_id"];
 	        this.workspace_path = source["workspace_path"];
 	        this.workspace_label = source["workspace_label"];

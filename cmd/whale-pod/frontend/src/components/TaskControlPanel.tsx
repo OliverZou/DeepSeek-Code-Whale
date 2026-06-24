@@ -52,7 +52,7 @@ function ConfirmationCard({ conf }: { conf: TaskConfirmation }) {
   );
 }
 
-function ChatBubble({ msg, roles }: { msg: TeamChatMessage; roles: string[] }) {
+function ChatBubble({ msg }: { msg: TeamChatMessage }) {
   const isHuman = msg.from === 'human';
   return (
     <div style={{
@@ -258,7 +258,7 @@ export default function TaskControlPanel() {
           {messages.length === 0 && confs.length === 0 && (
             <div style={{ color: '#666', textAlign: 'center', padding: 40 }}>暂无对话，在下方输入消息开始</div>
           )}
-          {messages.map((m, i) => <ChatBubble key={i} msg={m} roles={roles} />)}
+          {messages.map((m, i) => <ChatBubble key={i} msg={m} />)}
           {confs.map(c => <ConfirmationCard key={c.task_id} conf={c} />)}
         </div>
         <ChatInput masterTaskId={selMasterTaskId} roles={roles} />
