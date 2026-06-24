@@ -4,6 +4,7 @@ import { api } from './wails';
 
 const PINNED_KEY = 'whale_pinned_task_ids';
 const OLD_PINNED_KEY = 'whale-pod-pinned-tasks';
+const TABS_KEY = 'whale_open_tabs';
 const WORKSPACES_KEY = 'whale-pod-open-workspaces';
 
 function loadPinnedIds(): string[] {
@@ -26,6 +27,17 @@ let _loadMasterTasksPromise: Promise<void> | null = null;
 
 export function persistPinnedIds(ids: string[]) {
   try { localStorage.setItem(PINNED_KEY, JSON.stringify(ids)); } catch { /* ignore */ }
+}
+
+function loadTabs(): Record<string, string[]> {
+  try {
+    const raw = localStorage.getItem(TABS_KEY);
+    return raw ? JSON.parse(raw) : {};
+  } catch { return {}; }
+}
+
+function persistTabs(tabs: Record<string, string[]>) {
+  try { localStorage.setItem(TABS_KEY, JSON.stringify(tabs)); } catch { /* ignore */ }
 }
 
 function loadWorkspaces(): string[] {
@@ -65,6 +77,8 @@ interface PodState {
   confirmations: TaskConfirmation[];
   targetRole: string;
   sidebarCollapsed: boolean;
+  selAgentId: string | null;
+  openTabs: Record<string, string[]>;
 
   init: () => Promise<void>;
   loadMasterTasks: () => Promise<void>;
@@ -81,6 +95,11 @@ interface PodState {
   loadConfirmations: () => Promise<void>;
   summonItem: (item: SummonedItem) => void;
   dismissItem: (name: string, type: string) => void;
+  selectAgent: (agentId: string, agentName: string, agentType: 'expert' | 'team' | 'whale') => void;
+  addTab: (sessionId: string) => void;
+  removeTab: (sessionId: string) => void;
+  getAgentKey: (agent: string) => string;
+  getCurrentTabs: () => string[];
   summonAndOpen: (item: SummonedItem) => Promise<void>;
   toggleSidebar: () => void;
   runSubtask: (taskId: string) => Promise<void>;
@@ -110,6 +129,8 @@ export const useStore = create<PodState>((set, get) => ({
   summonedItems: [] as SummonedItem[],
   preselectedExpert: '',
   sidebarCollapsed: false,
+  selAgentId: null,
+  openTabs: loadTabs(),
   pinnedTaskIds: loadPinnedIds(),
   directChatTaskId: null,
   directMessages: [],
@@ -198,6 +219,14 @@ export const useStore = create<PodState>((set, get) => ({
     const taskId = await api.createDirectTask(goal, workDir, agent, deepThink);
     if (!taskId) return;
     set({ directChatTaskId: taskId, selMasterTaskId: taskId, activeFunction: 'chat', directMessages: [{ from: 'human', content: goal, time: '' }] });
+    const { openTabs, selAgentId } = get();
+    const key = selAgentId || '';
+    const agentTabs = openTabs[key] || [];
+    if (!agentTabs.includes(taskId)) {
+      const next = { ...openTabs, [key]: [...agentTabs, taskId] };
+      persistTabs(next);
+      set({ openTabs: next });
+    }
     setTimeout(() => get().loadMasterTasks(), 1000);
     // Get initial AI reply
     const raw = await api.directChat(taskId, goal, deepThink);
@@ -288,6 +317,59 @@ export const useStore = create<PodState>((set, get) => ({
     const next = get().summonedItems.filter(s => !(s.name === name && s.type === type));
     set({ summonedItems: next });
     api.saveSummonedItems(next);
+  },
+
+  selectAgent: async (agentId: string, agentName: string, agentType: 'expert' | 'team' | 'whale') => {
+    const agentKey = agentType === 'whale' ? '' : agentType + ':' + agentName;
+    set({ selAgentId: agentKey, activeFunction: null, directMessages: [] });
+    const tasks = get().masterTasks.filter(t => (t.agent || '') === agentKey);
+    const allTabs = { ...get().openTabs };
+    const agentTabs = allTabs[agentKey] || [];
+    if (tasks.length > 0) {
+      const firstId = tasks[0].id;
+      if (!agentTabs.includes(firstId)) {
+        allTabs[agentKey] = [...agentTabs, firstId];
+        persistTabs(allTabs);
+        set({ openTabs: allTabs });
+      }
+      await get().selectMasterTask(firstId);
+    } else {
+      set({ selMasterTaskId: null, activeFunction: 'chat', directChatTaskId: null });
+    }
+  },
+
+  getAgentKey: (agent: string) => agent,
+
+  getCurrentTabs: () => {
+    const { openTabs, selAgentId } = get();
+    return openTabs[selAgentId || ''] || [];
+  },
+
+  addTab: (sessionId: string) => {
+    const { openTabs, selAgentId } = get();
+    const key = selAgentId || '';
+    const agentTabs = openTabs[key] || [];
+    if (!agentTabs.includes(sessionId)) {
+      const next = { ...openTabs, [key]: [...agentTabs, sessionId] };
+      persistTabs(next);
+      set({ openTabs: next });
+    }
+  },
+
+  removeTab: (sessionId: string) => {
+    const { openTabs, selAgentId, selMasterTaskId } = get();
+    const key = selAgentId || '';
+    const agentTabs = (openTabs[key] || []).filter(id => id !== sessionId);
+    const next = { ...openTabs, [key]: agentTabs };
+    persistTabs(next);
+    set({ openTabs: next });
+    if (selMasterTaskId === sessionId) {
+      if (agentTabs.length > 0) {
+        get().selectMasterTask(agentTabs[agentTabs.length - 1]);
+      } else {
+        set({ selMasterTaskId: null, activeFunction: 'chat', directChatTaskId: null });
+      }
+    }
   },
 
   summonAndOpen: async (item: SummonedItem) => {

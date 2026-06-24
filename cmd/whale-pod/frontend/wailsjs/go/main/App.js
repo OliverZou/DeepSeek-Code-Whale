@@ -66,6 +66,10 @@ export function ListAgents() {
   return window['go']['main']['App']['ListAgents']();
 }
 
+export function ListSessionsByAgent(arg1, arg2, arg3) {
+  return window['go']['main']['App']['ListSessionsByAgent'](arg1, arg2, arg3);
+}
+
 export function ListTeamDetails() {
   return window['go']['main']['App']['ListTeamDetails']();
 }

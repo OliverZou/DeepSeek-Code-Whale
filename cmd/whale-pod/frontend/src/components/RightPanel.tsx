@@ -1,11 +1,13 @@
+import { useState } from 'react';
 import { useStore } from '../store';
 import { api } from '../wails';
 import CreateTaskView from './CreateTaskView';
 import ExpertPanel from './ExpertPanel';
-import TaskObserverView from './TaskObserverView';
-import AgentChatView from './AgentChatView';
+import TaskObserverView from './AgentChatView';
 import DirectChatView from './DirectChatView';
 import TaskControlPanel from './TaskControlPanel';
+import ChatHistoryPanel from './ChatHistoryPanel';
+import ChatTabBar from './ChatTabBar';
 
 const sidebarToggleIcon = (
   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -21,42 +23,101 @@ function SidebarToggle() {
     <span
       onClick={e => { e.stopPropagation(); toggleSidebar(); }}
       title="显示侧栏"
-      style={{ cursor: 'pointer', opacity: 0.4, display: 'flex', alignItems: 'center', padding: '0 8px' }}
+      style={{ cursor: 'pointer', opacity: 0.4, display: 'flex', alignItems: 'center', padding: '0 8px', flexShrink: 0 }}
     >
       {sidebarToggleIcon}
     </span>
   );
 }
 
-function ChatTitle({ mt }: { mt?: { goal: string; workspace_path: string } | null }) {
-  if (!mt) return null;
-  const wsName = mt.workspace_path ? mt.workspace_path.split(/[/\\]/).pop() : '';
+function HistoryButton({ onClick }: { onClick: () => void }) {
+  const [hover, setHover] = useState(false);
   return (
-    <>
-      {wsName && <span style={{ color: '#888', fontWeight: 400 }}>{wsName}</span>}
-      {wsName && <span style={{ color: '#444', margin: '0 6px' }}>/</span>}
-      <span style={{ color: '#ccc' }}>{mt.goal}</span>
-    </>
+    <div
+      onClick={onClick}
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+      title="对话历史"
+      style={{
+        display: 'flex', alignItems: 'center', gap: 5,
+        padding: '6px 12px', cursor: 'pointer',
+        borderRadius: 8,
+        background: hover ? 'rgba(76,175,80,0.15)' : 'transparent',
+        border: hover ? '1px solid rgba(76,175,80,0.3)' : '1px solid transparent',
+        transition: 'all 0.15s',
+      }}
+    >
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none"         stroke={hover ? '#4CAF50' : '#666'} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <circle cx="12" cy="12" r="10" /><polyline points="12 6 12 12 16 14" />
+      </svg>
+      <span style={{ fontSize: 12,         color: hover ? '#4CAF50' : '#666', whiteSpace: 'nowrap' }}>历史</span>
+    </div>
+  );
+}
+
+function NewChatButton({ onClick }: { onClick: () => void }) {
+  const [hover, setHover] = useState(false);
+  return (
+    <div
+      onClick={onClick}
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+      title="新会话"
+      style={{
+        display: 'flex', alignItems: 'center', gap: 5,
+        padding: '6px 12px', cursor: 'pointer',
+        borderRadius: 8,
+        background: hover ? 'rgba(76,175,80,0.15)' : 'transparent',
+        border: hover ? '1px solid rgba(76,175,80,0.3)' : '1px solid transparent',
+        transition: 'all 0.15s',
+      }}
+    >
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none"         stroke={hover ? '#4CAF50' : '#666'} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" />
+      </svg>
+      <span style={{ fontSize: 12,         color: hover ? '#4CAF50' : '#666', whiteSpace: 'nowrap' }}>新会话</span>
+    </div>
+  );
+}
+
+function FloatingButtons({ onHistory, onNewChat }: { onHistory: () => void; onNewChat: () => void }) {
+  return (
+    <div style={{
+      position: 'absolute', top: 8, left: 10, zIndex: 40,
+      display: 'flex', alignItems: 'center', gap: 8,
+    }}>
+      <HistoryButton onClick={onHistory} />
+      <NewChatButton onClick={onNewChat} />
+    </div>
   );
 }
 
 export default function RightPanel() {
-  const { activeFunction, selMasterTaskId, selSubtaskId, masterTasks, directChatTaskId, sidebarCollapsed } =
+  const { activeFunction, selMasterTaskId, selSubtaskId, masterTasks, sidebarCollapsed, selAgentId } =
     useStore();
+  const [historyOpen, setHistoryOpen] = useState(false);
 
   const mt = masterTasks.find(t => t.id === selMasterTaskId);
-  const directMt = directChatTaskId ? masterTasks.find(t => t.id === directChatTaskId) : null;
+
+  const handleNewChat = () => {
+    useStore.setState({ selMasterTaskId: null, directChatTaskId: null, activeFunction: 'chat', directMessages: [] });
+  };
 
   // Direct chat
   if (activeFunction === 'chat') {
-    const currentMt = selMasterTaskId ? mt : directMt;
     return (
-      <div id="right-panel">
-        <div className="panel-titlebar" onDoubleClick={() => api.windowMaximize()}>
+      <div id="right-panel" style={{ position: 'relative' }}>
+        <div className="panel-titlebar" onDoubleClick={() => api.windowMaximize()} style={{ paddingRight: 110 }}>
           {sidebarCollapsed && <SidebarToggle />}
-          <ChatTitle mt={currentMt} />
+          <div style={{ display: 'flex', alignItems: 'stretch', gap: 0, flex: 1, minWidth: 0, height: '100%' }}>
+            <ChatTabBar />
+          </div>
         </div>
-        <DirectChatView key={selMasterTaskId || 'new'} />
+        <div style={{ position: 'relative', flex: 1, overflow: 'hidden' }}>
+          <FloatingButtons onHistory={() => setHistoryOpen(!historyOpen)} onNewChat={handleNewChat} />
+          <ChatHistoryPanel open={historyOpen} onClose={() => setHistoryOpen(false)} />
+          <DirectChatView key={selMasterTaskId || selAgentId || 'new'} />
+        </div>
       </div>
     );
   }
@@ -65,7 +126,7 @@ export default function RightPanel() {
   if (activeFunction === 'expert') {
     return (
       <div id="right-panel">
-        <div className="panel-titlebar" onDoubleClick={() => api.windowMaximize()}>
+        <div className="panel-titlebar" onDoubleClick={() => api.windowMaximize()} style={{ paddingRight: 110 }}>
           {sidebarCollapsed && <SidebarToggle />}
         </div>
         <ExpertPanel />
@@ -77,7 +138,7 @@ export default function RightPanel() {
   if (activeFunction === 'create') {
     return (
       <div id="right-panel">
-        <div className="panel-titlebar" onDoubleClick={() => api.windowMaximize()}>
+        <div className="panel-titlebar" onDoubleClick={() => api.windowMaximize()} style={{ paddingRight: 110 }}>
           {sidebarCollapsed && <SidebarToggle />}
         </div>
         <CreateTaskView />
@@ -85,28 +146,40 @@ export default function RightPanel() {
     );
   }
 
-  // Direct chat task (no subtasks) — load chat messages
+  // Direct chat task (no subtasks)
   if (mt && mt.task_count === 0) {
     return (
-      <div id="right-panel">
-        <div className="panel-titlebar" onDoubleClick={() => api.windowMaximize()}>
+      <div id="right-panel" style={{ position: 'relative' }}>
+        <div className="panel-titlebar" onDoubleClick={() => api.windowMaximize()} style={{ paddingRight: 110 }}>
           {sidebarCollapsed && <SidebarToggle />}
-          <ChatTitle mt={mt} />
+          <div style={{ display: 'flex', alignItems: 'stretch', gap: 0, flex: 1, minWidth: 0, height: '100%' }}>
+            <ChatTabBar />
+          </div>
         </div>
-        <DirectChatView key={mt.id} />
+        <div style={{ position: 'relative', flex: 1, overflow: 'hidden' }}>
+          <FloatingButtons onHistory={() => setHistoryOpen(!historyOpen)} onNewChat={handleNewChat} />
+          <ChatHistoryPanel open={historyOpen} onClose={() => setHistoryOpen(false)} />
+          <DirectChatView key={mt.id} />
+        </div>
       </div>
     );
   }
 
-  // Team task with subtasks — use TaskControlPanel
+  // Team task with subtasks
   if (mt && mt.task_count > 0) {
     return (
-      <div id="right-panel">
-        <div className="panel-titlebar" onDoubleClick={() => api.windowMaximize()}>
+      <div id="right-panel" style={{ position: 'relative' }}>
+        <div className="panel-titlebar" onDoubleClick={() => api.windowMaximize()} style={{ paddingRight: 110 }}>
           {sidebarCollapsed && <SidebarToggle />}
-          <ChatTitle mt={mt} />
+          <div style={{ display: 'flex', alignItems: 'stretch', gap: 0, flex: 1, minWidth: 0, height: '100%' }}>
+            <ChatTabBar />
+          </div>
         </div>
-        <TaskControlPanel />
+        <div style={{ position: 'relative', flex: 1, overflow: 'hidden' }}>
+          <FloatingButtons onHistory={() => setHistoryOpen(!historyOpen)} onNewChat={handleNewChat} />
+          <ChatHistoryPanel open={historyOpen} onClose={() => setHistoryOpen(false)} />
+          <TaskControlPanel />
+        </div>
       </div>
     );
   }
@@ -114,7 +187,7 @@ export default function RightPanel() {
   // Default empty
   return (
     <div id="right-panel">
-      <div className="panel-titlebar" onDoubleClick={() => api.windowMaximize()}>
+      <div className="panel-titlebar" onDoubleClick={() => api.windowMaximize()} style={{ paddingRight: 110 }}>
         {sidebarCollapsed && <SidebarToggle />}
       </div>
       <div className="empty-state">

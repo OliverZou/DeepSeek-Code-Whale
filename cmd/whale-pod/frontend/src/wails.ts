@@ -32,6 +32,7 @@ export const api = {
   getTaskConfirmation: (taskId: string): Promise<TaskConfirmation | null> => go()?.GetTaskConfirmation(taskId) ?? null,
   confirmTask: (taskId: string, approved: boolean, feedback: string): Promise<string> => go()?.ConfirmTask(taskId, approved, feedback) ?? '',
   getConfirmationsForMaster: (masterTaskId: string): Promise<TaskConfirmation[]> => go()?.GetConfirmationsForMaster(masterTaskId) ?? [],
+  listSessionsByAgent: (agent: string, offset: number, limit: number): Promise<MasterTask[]> => go()?.ListSessionsByAgent(agent, offset, limit) ?? [],
   openTerminal: (): Promise<string> => go()?.OpenTerminal() ?? '',
   windowMinimize: () => go()?.WindowMinimize(),
   windowMaximize: () => go()?.WindowMaximize(),

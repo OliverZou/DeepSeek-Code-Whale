@@ -33,19 +33,29 @@ func ListSessions(sessionsDir string, limit int) ([]SessionSummary, error) {
 		id      string
 		modTime time.Time
 	}
+	seen := make(map[string]bool)
 	candidates := make([]entryInfo, 0, len(entries))
 	for _, e := range entries {
-		if e.IsDir() || !core.IsSessionJSONLName(e.Name()) {
-			continue
-		}
-		id := strings.TrimSuffix(e.Name(), ".jsonl")
-		if id == "" || isSubagentSessionID(id) {
-			continue
-		}
+		name := e.Name()
 		info, err := e.Info()
 		if err != nil {
 			continue
 		}
+		var id string
+		if strings.HasSuffix(name, ".jsonl") && !core.IsSessionJSONLName(name) {
+			continue
+		}
+		if strings.HasSuffix(name, ".jsonl") {
+			id = strings.TrimSuffix(name, ".jsonl")
+		} else if strings.HasSuffix(name, ".meta.json") {
+			id = strings.TrimSuffix(name, ".meta.json")
+		} else {
+			continue
+		}
+		if id == "" || isSubagentSessionID(id) || seen[id] {
+			continue
+		}
+		seen[id] = true
 		candidates = append(candidates, entryInfo{id: id, modTime: info.ModTime()})
 	}
 
@@ -149,6 +159,14 @@ func singleLine(text string) string {
 func FindSessionPathByID(sessionsDir, sessionID string) string {
 	id := core.SanitizeSessionID(sessionID)
 	return filepath.Join(sessionsDir, id+".jsonl")
+}
+
+func EnsureSessionFile(sessionsDir, sessionID string) {
+	path := FindSessionPathByID(sessionsDir, sessionID)
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		os.MkdirAll(filepath.Dir(path), 0o755)
+		os.WriteFile(path, []byte{}, 0o600)
+	}
 }
 
 func isSubagentSessionID(id string) bool {

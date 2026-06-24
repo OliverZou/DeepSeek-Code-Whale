@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from 'react';
 import { useStore } from '../store';
 import { api } from '../wails';
 import type { TeamChatMessage, TaskConfirmation, Subtask } from '../types';
+import DagView from './DagView';
 
 function ConfirmationCard({ conf }: { conf: TaskConfirmation }) {
   const [feedback, setFeedback] = useState('');
@@ -226,6 +227,7 @@ function TaskProgressPanel() {
 export default function TaskControlPanel() {
   const { selMasterTaskId, teamChatMessages, confirmations, subtasks } = useStore();
   const chatRef = useRef<HTMLDivElement>(null);
+  const [rightView, setRightView] = useState<'list' | 'dag'>('dag');
   const messages = teamChatMessages || [];
   const confs = confirmations || [];
 
@@ -263,8 +265,33 @@ export default function TaskControlPanel() {
       </div>
 
       {/* 右侧：任务进度面板 (30%) */}
-      <div style={{ flex: 3, background: '#141414' }}>
-        <TaskProgressPanel />
+      <div style={{ flex: 3, display: 'flex', flexDirection: 'column', background: '#141414' }}>
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: 0,
+          borderBottom: '1px solid #222', flexShrink: 0,
+        }}>
+          <span
+            onClick={() => setRightView('dag')}
+            style={{
+              padding: '6px 12px', cursor: 'pointer', fontSize: 11,
+              color: rightView === 'dag' ? '#4CAF50' : '#666',
+              borderBottom: rightView === 'dag' ? '2px solid #4CAF50' : '2px solid transparent',
+              transition: 'all 0.12s',
+            }}
+          >DAG</span>
+          <span
+            onClick={() => setRightView('list')}
+            style={{
+              padding: '6px 12px', cursor: 'pointer', fontSize: 11,
+              color: rightView === 'list' ? '#4CAF50' : '#666',
+              borderBottom: rightView === 'list' ? '2px solid #4CAF50' : '2px solid transparent',
+              transition: 'all 0.12s',
+            }}
+          >列表</span>
+        </div>
+        <div style={{ flex: 1, overflow: 'hidden' }}>
+          {rightView === 'dag' ? <DagView /> : <TaskProgressPanel />}
+        </div>
       </div>
     </div>
   );

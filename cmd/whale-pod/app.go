@@ -219,6 +219,112 @@ func (a *App) loadAgentNameResolver() *agentNameResolver {
 	return &agentNameResolver{roleMap: m}
 }
 
+// loadAgentSystemPrompt returns the system prompt for a given agent identifier.
+// Agent format: "" or "whale:" = Whale, "expert:name" = expert, "team:name" = team.
+func (a *App) loadAgentSystemPrompt(agentID string) string {
+	defaultPrompt := "你是 Whale Pod，一个强大的 AI 编程助手。回复时遵循以下规则：\n\n" +
+		"1. 简洁直接地回答问题\n" +
+		"2. 如果需要执行具体操作（创建文件、修改代码、运行命令等），用清晰的编号列表描述每个操作步骤\n" +
+		"3. 在列出操作后，明确询问用户\"需要我执行以上操作吗？\"，等待用户确认后再行动\n" +
+		"4. 如果只是建议或讨论，只需给出方案说明，不需要列出操作步骤"
+
+	if agentID == "" || agentID == "whale:" {
+		return defaultPrompt
+	}
+
+	parts := strings.SplitN(agentID, ":", 2)
+	if len(parts) != 2 {
+		return defaultPrompt
+	}
+	agentType, agentName := parts[0], parts[1]
+
+	switch agentType {
+	case "expert":
+		return a.loadExpertPrompt(agentName)
+	case "team":
+		return a.loadTeamLeaderPrompt(agentName)
+	}
+	return defaultPrompt
+}
+
+// loadExpertPrompt loads an expert agent's markdown definition and returns
+// a system prompt based on its role and personality.
+func (a *App) loadExpertPrompt(agentName string) string {
+	agentsDir := filepath.Join(filepath.Dir(a.teamsDir), "agents")
+	entries, err := os.ReadDir(agentsDir)
+	if err != nil {
+		return ""
+	}
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		subEntries, err := os.ReadDir(filepath.Join(agentsDir, e.Name()))
+		if err != nil {
+			continue
+		}
+		for _, se := range subEntries {
+			if se.IsDir() || !strings.HasSuffix(se.Name(), ".md") {
+				continue
+			}
+			path := filepath.Join(agentsDir, e.Name(), se.Name())
+			data, err := os.ReadFile(path)
+			if err != nil {
+				continue
+			}
+			def, ok, _ := tasks.ParseMarkdownAgentDefinition(string(data), se.Name(), "")
+			if !ok || def.Name != agentName {
+				continue
+			}
+			role := def.Role
+			if role == "" {
+				role = def.Name
+			}
+			prompt := fmt.Sprintf("你是 %s，%s。\n\n%s", role, def.Description, def.Prompt)
+			return prompt
+		}
+	}
+	return ""
+}
+
+// loadTeamLeaderPrompt loads a team's leader config and returns
+// a system prompt for the team leader.
+func (a *App) loadTeamLeaderPrompt(teamName string) string {
+	tc, err := team_engine.FindTeam(a.teamsDir, teamName)
+	if err != nil {
+		return ""
+	}
+	role := tc.Leader.Role
+	prompt := tc.Leader.Prompt
+	if prompt == "" {
+		prompt = tc.Leader.Description
+	}
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("你是 %s。%s", role, prompt))
+	if len(tc.Leader.Rules) > 0 {
+		sb.WriteString("\n\n团队规则：\n")
+		for i, r := range tc.Leader.Rules {
+			sb.WriteString(fmt.Sprintf("%d. %s\n", i+1, r))
+		}
+	}
+	if len(tc.Roles) > 0 {
+		sb.WriteString("\n团队成员：")
+		resolver := a.loadAgentNameResolver()
+		var names []string
+		for _, r := range tc.Roles {
+			if resolver != nil {
+				if label := resolver.AgentRole(r); label != "" {
+					names = append(names, label)
+					continue
+				}
+			}
+			names = append(names, r)
+		}
+		sb.WriteString(strings.Join(names, "、"))
+	}
+	return sb.String()
+}
+
 func (a *App) ListTeamDetails() []pod.TeamDetailJSON {
 	teamsDir := a.teamsDir
 	entries, err := os.ReadDir(teamsDir)
@@ -352,6 +458,7 @@ func (a *App) StartTask(goal, teamName, workDir string) string {
 			Title: goal, Kind: "pod-chat", Workspace: taskWorkDir,
 			Agent: "team:" + teamName, Status: "active", StartedAt: now, UpdatedAt: now,
 		})
+		session.EnsureSessionFile(a.sessionsDir, sessionID)
 
 		mt, err := eng.CreateMasterTask(goal, taskWorkDir, sessionID)
 		if err != nil { pod.Log("task", "create master: %v", err); return }
@@ -412,6 +519,7 @@ func (a *App) StartExpertTask(goal, agentName, workDir string) string {
 			Title: goal, Kind: "pod-chat", Workspace: taskWorkDir,
 			Agent: "expert:" + agentName, Status: "active", StartedAt: now, UpdatedAt: now,
 		})
+		session.EnsureSessionFile(a.sessionsDir, sessionID)
 
 		mt, err := eng.CreateMasterTask(goal, taskWorkDir, sessionID)
 		if err != nil { pod.Log("task", "create master: %v", err); return }
@@ -530,9 +638,13 @@ func (a *App) directChatSession(sessionID, message string, deepThink bool) strin
 		history = append(history, chatMsg{From: from, Content: m.Text})
 	}
 
+	// Load agent-specific system prompt
+	meta, _ := session.LoadSessionMeta(a.sessionsDir, sessionID)
+	agentPrompt := a.loadAgentSystemPrompt(meta.Agent)
+
 	// Call LLM
 	start := time.Now()
-	aiReply, thinking := a.callLLM(history, deepThink)
+	aiReply, thinking := a.callLLM(history, deepThink, agentPrompt)
 	duration := time.Since(start).Milliseconds()
 
 	// Store AI reply
@@ -588,7 +700,7 @@ func (a *App) directChatLegacy(taskID, message string, deepThink bool) string {
 	history := a.readTaskMessages(taskWorkDir, taskID)
 
 	start := time.Now()
-	aiReply, thinking := a.callLLM(history, deepThink)
+	aiReply, thinking := a.callLLM(history, deepThink, a.loadAgentSystemPrompt(""))
 	duration := time.Since(start).Milliseconds()
 
 	if aiReply != "" {
@@ -685,7 +797,7 @@ func resolveAPIKey() string {
 	return strings.TrimSpace(creds.DeepSeekAPIKey)
 }
 
-func (a *App) callLLM(messages []chatMsg, deepThink bool) (reply string, thinking string) {
+func (a *App) callLLM(messages []chatMsg, deepThink bool, systemPrompt string) (reply string, thinking string) {
 	apiKey := resolveAPIKey()
 	if apiKey == "" {
 		return "未找到 DeepSeek API Key。请设置 DEEPSEEK_API_KEY 环境变量或在 ~/.whale/credentials.json 中配置", ""
@@ -695,12 +807,6 @@ func (a *App) callLLM(messages []chatMsg, deepThink bool) (reply string, thinkin
 	if deepThink {
 		model = "deepseek-reasoner"
 	}
-
-	systemPrompt := "你是 Whale Pod，一个强大的 AI 编程助手。回复时遵循以下规则：\n\n" +
-		"1. 简洁直接地回答问题\n" +
-		"2. 如果需要执行具体操作（创建文件、修改代码、运行命令等），用清晰的编号列表描述每个操作步骤\n" +
-		"3. 在列出操作后，明确询问用户\"需要我执行以上操作吗？\"，等待用户确认后再行动\n" +
-		"4. 如果只是建议或讨论，只需给出方案说明，不需要列出操作步骤"
 
 	msgs := []map[string]string{
 		{"role": "system", "content": systemPrompt},
@@ -810,6 +916,53 @@ func (a *App) GetMasterTasks() []pod.MasterTaskJSON {
 		}
 	}
 
+	return result
+}
+
+// ListSessionsByAgent returns sessions filtered by agent, with pagination.
+func (a *App) ListSessionsByAgent(agent string, offset, limit int) []pod.MasterTaskJSON {
+	var result []pod.MasterTaskJSON
+	if a.sessionStore == nil {
+		return result
+	}
+	sessions, err := session.ListSessions(a.sessionsDir, offset+limit)
+	if err != nil {
+		return result
+	}
+	count := 0
+	for _, s := range sessions {
+		if s.Meta.Kind == "subagent" {
+			continue
+		}
+		sa := s.Meta.Agent
+		if agent == "" && sa != "" {
+			continue
+		}
+		if agent != "" && sa != agent {
+			continue
+		}
+		count++
+		if count <= offset {
+			continue
+		}
+		goal := s.Meta.Title
+		if goal == "" {
+			goal = s.Conversation
+		}
+		wp := s.Meta.Workspace
+		status := "done"
+		if s.Meta.Status == "active" {
+			status = "running"
+		}
+		result = append(result, pod.MasterTaskJSON{
+			ID: s.ID, Goal: goal, Agent: sa,
+			WorkspacePath: wp, WorkspaceLabel: filepath.Base(wp),
+			Status: status, CreatedAt: s.Meta.StartedAt.Format(time.RFC3339),
+		})
+		if len(result) >= limit {
+			break
+		}
+	}
 	return result
 }
 

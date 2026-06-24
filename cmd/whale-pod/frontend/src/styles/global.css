@@ -33,8 +33,8 @@ body { font-family: system-ui, sans-serif; background: var(--bg); color: var(--t
   --wails-draggable: drag;
   display: flex;
   align-items: center;
-  height: 32px;
-  padding: 0 12px;
+  height: 38px;
+  padding: 0 8px;
   font-size: 13px;
   font-weight: 600;
   color: var(--text);

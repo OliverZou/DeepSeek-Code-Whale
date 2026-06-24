@@ -13,8 +13,6 @@ export default function CreateTaskView() {
   const [chatMode, setChatMode] = useState<'chat' | 'plan' | 'agent'>('chat');
   const [expert, setExpert] = useState('');
   const taRef = useRef<HTMLTextAreaElement>(null);
-
-  // 预选专家（从召唤按钮来）
   useEffect(() => {
     if (!preselectedExpert) return;
     // 找到对应的 summon 条目
@@ -26,13 +24,11 @@ export default function CreateTaskView() {
     useStore.setState({ preselectedExpert: '' });
   }, []);
 
-  const expertSelected = expert !== '';
-
   const workspaceOptions = [
     ...(dir ? [{ value: dir, label: dir.split('\\').pop() || dir }] : []),
     ...openWorkspaces.filter(d => d !== dir).map((d: string) => ({ value: d, label: d.split('\\').pop() || d })),
     { value: '__pick__', label: '选择文件夹…', special: true },
-    ...(expertSelected ? [] : [{ value: '', label: '不用工作空间', special: true }] as const),
+    { value: '', label: '不用工作空间', special: true },
   ];
 
   const expertOptions = [
@@ -65,17 +61,9 @@ export default function CreateTaskView() {
   const handleSubmit = async (text?: string) => {
     const g = (text || goal).trim();
     if (!g) return;
-    if (expertSelected && !dir) return; // 专家/团队必须选工作空间
     setLoading(true);
-    if (expert.startsWith('team:')) {
-      const teamName = expert.slice(5);
-      await api.startTask(g, teamName, dir || '');
-    } else if (expert.startsWith('expert:')) {
-      const agentName = expert.slice(7);
-      await api.startExpertTask(g, agentName, dir || '');
-    } else {
-      await startDirectChat(g, dir || undefined, expert || undefined, deepThink);
-    }
+    // 所有 agent 统一走聊天，任务以后再启动
+    await startDirectChat(g, dir || undefined, expert || undefined, deepThink);
     setGoal('');
     setLoading(false);
   };
@@ -105,15 +93,8 @@ export default function CreateTaskView() {
 
         {/* workspace selector */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 4, marginBottom: 8, paddingLeft: 14 }}>
-          <span style={{ fontSize: 12, color: '#888', whiteSpace: 'nowrap' }}>
-            运行于{expertSelected && <span style={{ color: '#ff4444', marginLeft: 1 }}>*</span>}
-          </span>
-          <MinimalSelect
-            value={dir}
-            options={workspaceOptions}
-            onChange={handleWorkspace}
-            placeholder={expertSelected && !dir ? '请选择工作空间…' : undefined}
-          />
+          <span style={{ fontSize: 12, color: '#888', whiteSpace: 'nowrap' }}>运行于</span>
+          <MinimalSelect value={dir} options={workspaceOptions} onChange={handleWorkspace} />
         </div>
 
         {/* input area */}
@@ -197,17 +178,17 @@ export default function CreateTaskView() {
 
             {/* Enter hint + send button */}
             <span style={{ fontSize: 10, color: '#555' }}>
-              {expertSelected && !dir ? '需选工作空间' : charCount > 0 ? `${charCount}字` : 'Enter'}
+              {charCount > 0 ? `${charCount}字` : 'Enter'}
             </span>
             <button
               onClick={() => handleSubmit()}
-              disabled={!charCount || loading || (expertSelected && !dir)}
+              disabled={!charCount || loading}
               style={{
                 width: 28, height: 28, borderRadius: 8, border: 'none',
-                background: (charCount && !loading && !(expertSelected && !dir)) ? '#4CAF50' : '#333',
-                cursor: (charCount && !loading && !(expertSelected && !dir)) ? 'pointer' : 'default',
+                background: (charCount && !loading) ? '#4CAF50' : '#333',
+                cursor: (charCount && !loading) ? 'pointer' : 'default',
                 display: 'flex', alignItems: 'center', justifyContent: 'center',
-                opacity: (charCount && !loading && !(expertSelected && !dir)) ? 1 : 0.4,
+                opacity: (charCount && !loading) ? 1 : 0.4,
                 transition: 'all .2s', flexShrink: 0,
               }}
             >

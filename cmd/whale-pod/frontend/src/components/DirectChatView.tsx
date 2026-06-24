@@ -2,33 +2,31 @@ import { useState, useRef, useEffect } from 'react';
 import { useStore } from '../store';
 import { api } from '../wails';
 import { marked } from 'marked';
-import MinimalSelect from './MinimalSelect';
 
 export default function DirectChatView() {
-  const { directMessages, directChatTaskId, sendDirectChat, selMasterTaskId, summonedItems } = useStore();
+  const { directMessages, directChatTaskId, sendDirectChat, selMasterTaskId, selAgentId, summonedItems, startDirectChat, masterTasks } = useStore();
   const [input, setInput] = useState('');
   const [focused, setFocused] = useState(false);
   const [sending, setSending] = useState(false);
   const [deepThink, setDeepThink] = useState(false);
   const [chatMode, setChatMode] = useState<'chat' | 'plan' | 'agent'>('chat');
   const [expandedThinking, setExpandedThinking] = useState<Set<number>>(new Set());
-  const [expert, setExpert] = useState('');
   const msgsRef = useRef<HTMLDivElement>(null);
   const taRef = useRef<HTMLTextAreaElement>(null);
 
-  const expertOptions = [
-    { value: '', label: '🐋 Whale' },
-    ...summonedItems.map(t => ({ value: t.name, label: t.label || t.name })),
-    { value: '__summon__', label: '召唤其他专家…', special: true },
-  ];
+  const isNewChat = !selMasterTaskId && !directChatTaskId;
 
-  const handleExpert = (v: string) => {
-    if (v === '__summon__') {
-      useStore.setState({ activeFunction: 'expert' });
-      return;
-    }
-    setExpert(v);
-  };
+  const agentLabel = (() => {
+    if (!selAgentId || selAgentId === 'whale:') return 'Whale';
+    const item = summonedItems.find(s => s.type + ':' + s.name === selAgentId);
+    return item?.label || selAgentId;
+  })();
+
+  const agentType = (() => {
+    if (!selAgentId || selAgentId === 'whale:') return 'whale' as const;
+    const item = summonedItems.find(s => s.type + ':' + s.name === selAgentId);
+    return item?.type || 'expert' as const;
+  })();
 
   const charCount = input.trim().length;
 
@@ -40,6 +38,13 @@ export default function DirectChatView() {
 
   // Load messages when task changed
   const taskId = directChatTaskId || selMasterTaskId;
+
+  const workspacePath = (() => {
+    if (!taskId) return '';
+    const mt = masterTasks.find(t => t.id === taskId);
+    return mt?.workspace_path || '';
+  })();
+
   useEffect(() => {
     if (!taskId) return;
     useStore.setState({ directMessages: [] });
@@ -53,7 +58,12 @@ export default function DirectChatView() {
     if (!msg || sending) return;
     setInput('');
     setSending(true);
-    await sendDirectChat(msg, deepThink);
+
+    if (isNewChat) {
+      await startDirectChat(msg, undefined, selAgentId || undefined, deepThink);
+    } else {
+      await sendDirectChat(msg, deepThink);
+    }
     setSending(false);
   };
 
@@ -67,9 +77,11 @@ export default function DirectChatView() {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', background: '#141414' }}>
       {/* messages */}
-      <div ref={msgsRef} style={{ flex: 1, overflowY: 'auto', padding: '16px 10%' }}>
+      <div ref={msgsRef} style={{ flex: 1, overflowY: 'auto', padding: '16px 10% 8px' }}>
         {directMessages.length === 0 && (
-          <div style={{ textAlign: 'center', color: '#666', marginTop: 40 }}>开始新对话</div>
+          <div style={{ textAlign: 'center', color: '#666', marginTop: 40 }}>
+            {isNewChat ? `向 ${agentLabel} 发起对话` : '开始新对话'}
+          </div>
         )}
         {directMessages.map((m, i) => (
           <div
@@ -83,8 +95,17 @@ export default function DirectChatView() {
             {m.from !== 'human' && (
               <div style={{ fontSize: 13, color: '#888', marginBottom: 4, marginLeft: 4 }}>
                 <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-                  <img src="/whale.png" width="24" height="24" alt="" style={{ borderRadius: 4 }} />
-                  Whale Pod
+                  {agentType === 'whale' ? (
+                    <img src="/whale.png" width="24" height="24" alt="" style={{ borderRadius: 4 }} />
+                  ) : (
+                    <div style={{
+                      width: 24, height: 24, borderRadius: '50%', flexShrink: 0,
+                      background: agentType === 'team' ? 'linear-gradient(135deg, #9C27B0, #2196F3)' : 'linear-gradient(135deg, #4CAF50, #00BCD4)',
+                      display: 'flex', alignItems: 'center', justifyContent: 'center',
+                      color: '#fff', fontSize: 11, fontWeight: 700,
+                    }}>{agentLabel[0]}</div>
+                  )}
+                  {agentLabel}
                   {m.durationMs != null && (
                     <span
                       onClick={() => {
@@ -192,9 +213,9 @@ export default function DirectChatView() {
             onFocus={() => setFocused(true)}
             onBlur={() => setFocused(false)}
             onKeyDown={keyDown}
-            placeholder="输入消息… Enter 发送"
+            placeholder={isNewChat ? `输入问题或任务，Enter 开始和 ${agentLabel} 对话…` : '输入消息… Enter 发送'}
             style={{
-              width: '100%', minHeight: 112, maxHeight: 280,
+              width: '100%', minHeight: 136, maxHeight: 280,
               background: 'transparent', border: 'none', outline: 'none',
               color: '#e0e0e0', fontSize: 14, lineHeight: 1.6,
               padding: '12px 46px 12px 14px', resize: 'none',
@@ -207,8 +228,8 @@ export default function DirectChatView() {
             position: 'absolute', bottom: 6, left: 10, right: 10,
             display: 'flex', alignItems: 'center', gap: 4,
           }}>
-            {/* expert selector — left */}
-            <MinimalSelect value={expert} options={expertOptions} onChange={handleExpert} style={{ zIndex: 1 }} />
+            {/* agent label — left */}
+            <span style={{ fontSize: 12, color: '#888', whiteSpace: 'nowrap' }}>{isNewChat ? `新对话 · ${agentLabel}` : `和 ${agentLabel} 对话`}</span>
 
             {/* spacer */}
             <div style={{ flex: 1 }} />
@@ -277,6 +298,13 @@ export default function DirectChatView() {
               </svg>
             </button>
           </div>
+        </div>
+        {/* workspace path — bottom-left, outside input box, aligned with text */}
+        <div style={{ height: 33, display: 'flex', alignItems: 'center', gap: 5, paddingLeft: 14, opacity: workspacePath ? 1 : 0 }}>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#666" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
+            <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
+          </svg>
+          {workspacePath && <span style={{ fontSize: 13, color: '#777', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={workspacePath}>{workspacePath}</span>}
         </div>
       </div>
     </div>
