@@ -1127,6 +1127,8 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 			e.mu.Unlock()
 		}
 		result := e.Runner.RunWithContext(taskCtx, prompt, agentWorkdir, toolsStr, taskTimeout, liveOutput, onPID, onStdin)
+		// Clean up nested .whale created by whale exec in the agent sandbox.
+		_ = os.RemoveAll(filepath.Join(agentWorkdir, ".whale"))
 		e.mu.Lock()
 		delete(e.activeCancels, taskID)
 		delete(e.activeAgents, taskID)
