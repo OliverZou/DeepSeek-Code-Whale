@@ -148,8 +148,19 @@ Subcommands:
 			}
 			defer eng.Close()
 
+			// Optional team configuration.
+			if teamName, _ := cmd.Flags().GetString("team"); teamName != "" {
+				roots := team_engine.DefaultTeamRoots(workdir)
+				tc, err := team_engine.FindTeamInRoots(roots, teamName)
+				if err != nil {
+					return fmt.Errorf("load team %q: %w", teamName, err)
+				}
+				eng.SetTeam(tc)
+				fmt.Printf("👥 Team: %s (%d roles)\n", tc.Label, len(tc.Roles))
+			}
+
 			fmt.Printf("📋 Planning goal: %s\n", goal)
-			masterTask, mtErr := eng.CreateMasterTask(goal, workdir)
+			masterTask, mtErr := eng.CreateMasterTask(goal, workdir, "")
 			if mtErr != nil {
 				return fmt.Errorf("create master task: %w", mtErr)
 			}
@@ -177,6 +188,7 @@ Subcommands:
 		},
 	}
 	planCmd.Flags().String("goal", "", "The goal to decompose into subtasks")
+	planCmd.Flags().String("team", "", "Team name to use for decomposition")
 
 	// --- status subcommand ---
 	statusCmd := &cobra.Command{

@@ -221,18 +221,23 @@ func (ar *AgentRunner) Run(prompt, workdir, tools string, timeout time.Duration,
 	return ar.RunWithContext(context.Background(), prompt, workdir, tools, timeout, nil, nil, nil, model...)
 }
 
-// RunVerifier is a convenience wrapper for running a verifier subagent
-// with stricter limits (shorter timeout, read-only tools).
-func (ar *AgentRunner) RunVerifier(prompt, workdir string, timeout time.Duration, model ...string) *RunResult {
-	toolNames := ProfileToToolNames(ProfileReadOnly)
+// RunVerifier is a convenience wrapper for running a verifier subagent.
+// When profile is empty, defaults to ProfileVerify (read + shell) so the
+// verifier can actually run tests/linters instead of being limited to
+// read-only operations.
+func (ar *AgentRunner) RunVerifier(prompt, workdir string, timeout time.Duration, profile ToolProfile, model ...string) *RunResult {
+	if profile == "" {
+		profile = ProfileVerify
+	}
+	toolNames := ProfileToToolNames(profile)
 	req := SubagentRequest{
-		Task:     prompt,
-		Role:     "verifier",
-		Tools:    toolNames,
-		Workdir:  workdir,
-		Timeout:  timeout,
-		MaxIters: 10,
-		MaxCalls: 30,
+		Task:      prompt,
+		Role:      "verifier",
+		Tools:     toolNames,
+		Workdir:   workdir,
+		Timeout:   timeout,
+		MaxIters:  15,
+		MaxCalls:  50,
 	}
 	if len(model) > 0 && model[0] != "" {
 		req.Model = model[0]

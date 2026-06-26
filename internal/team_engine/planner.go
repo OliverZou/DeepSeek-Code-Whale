@@ -53,23 +53,24 @@ GOAL:
 
 RULES:
 
-0. ASSESS BEFORE DECOMPOSING — Simple goals that one worker can complete in a single pass do NOT need the full chain. If the goal is narrow in scope (e.g. "add a login button", "fix a typo", "write a README"), output just ONE task with ONE batch. Do NOT over-decompose. Reserve the full chain for goals that genuinely span multiple roles and phases.
+0. ⚠️ MOST IMPORTANT — ASSESS BEFORE DECOMPOSING ⚠️
+   Simple goals that one worker can complete in a single pass do NOT need the full chain. Having multiple team members available does NOT mean you must use them all. Pick ONLY the most relevant role(s) — if 1 role is enough, use 1 role.
 
-1. DEVELOPMENT CHAIN — Every standard project MUST go through these phases in order. Each phase feeds the next. Workers see ONLY the output of the previous phase, never the original goal:
+   - Trivial (narrow scope, one deliverable)  → 1 task, 1 batch
+   - Moderate (2-3 distinct concerns)         → 2-3 tasks, 1-2 batches
+   - Complex (cross-role, multi-phase)        → full chain
+
+   Examples: "调研 X 趋势" = researcher only. "写一个 add.go 函数" = developer only. Only use the full chain when the goal genuinely requires multiple roles and phases. OVER-DECOMPOSITION IS A BUG.
+
+1. DEVELOPMENT CHAIN (complex software projects only) — If a goal genuinely spans roles and phases:
 
      Requirements → Architecture → API Design → Coding → Verification
 
-   - Requirements: structured spec the architect works from (not guesswork)
-   - Architecture: system design, module layout, tech decisions
-   - API Design: interface contracts the coders implement
-   - Coding: implements the spec, no extra features
-   - Verification: checks code ↔ spec ↔ requirements
-
-   Produce EXACTLY ONE subtask per role per phase. If a phase needs multiple documents, assign ONE role and let the Worker self-split.
+   Each phase feeds the next. Workers see ONLY the output of the previous phase, never the original goal. Produce EXACTLY ONE subtask per role per phase. If a phase needs multiple documents, assign ONE role and let the Worker self-split.
 
 2. ONE TASK PER ROLE — Never give the same role multiple tasks in one phase. A subtask is a unit of responsibility, not a unit of size. If the work is too large, the Worker will self-split into smaller pieces.
 
-3. NO SEPARATE REVIEW TASKS — Do NOT create subtasks for "审查", "验证", "review", "verification". Every task already has a built-in Verifier that checks its output automatically. The Verification phase means Verifier runs for each task — not a separate task.
+3. NO SEPARATE REVIEW TASKS — Do NOT create subtasks for "审查", "验证", "review", "verification". Every task already has a built-in Checker that checks its output automatically. The Verification phase means Checker runs for each task — not a separate task.
 
 4. ORDER BY DEPENDENCY — Upstream phases before downstream. Foundation before implementation.
 

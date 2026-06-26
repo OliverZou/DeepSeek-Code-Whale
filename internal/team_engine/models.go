@@ -18,6 +18,8 @@ const (
 	TaskStateAssigned  TaskState = "assigned"
 	TaskStateProducing TaskState = "producing"
 	TaskStateProduced  TaskState = "produced"
+	TaskStateChecking  TaskState = "checking"
+	TaskStateChecked   TaskState = "checked"
 	TaskStateVerifying TaskState = "verifying"
 	TaskStateVerified  TaskState = "verified"
 	TaskStateFailed               TaskState = "failed"
@@ -219,13 +221,15 @@ var ValidTransitions = map[TaskState][]TaskState{
 	TaskStatePending:   {TaskStateAssigned, TaskStateSuspended, TaskStateFailed},
 	TaskStateAssigned:  {TaskStateProducing, TaskStateSuspended, TaskStateFailed},
 	TaskStateProducing: {TaskStateProduced, TaskStateSuspended, TaskStateFailed},
-	TaskStateProduced:  {TaskStateVerifying, TaskStateDone, TaskStateAssigned, TaskStateSuspended, TaskStateFailed},
+	TaskStateProduced:  {TaskStateChecking, TaskStateDone, TaskStateAssigned, TaskStateSuspended, TaskStateFailed},
+	TaskStateChecking:  {TaskStateChecked, TaskStateSuspended, TaskStateFailed},
+	TaskStateChecked:   {TaskStateVerifying, TaskStateDone, TaskStateSuspended, TaskStateFailed},
 	TaskStateVerifying: {TaskStateVerified, TaskStateProducing, TaskStateSuspended, TaskStateAssigned, TaskStateFailed},
 	TaskStateVerified:  {TaskStateDone, TaskStateSuspended, TaskStateAssigned, TaskStateFailed},
 	TaskStateSuspended:            {TaskStatePending, TaskStatePendingConfirmation},
 	TaskStatePendingConfirmation:  {TaskStateProducing, TaskStateSuspended},
-	TaskStateFailed:               {}, // terminal
-	TaskStateDone:                 {}, // terminal
+	TaskStateFailed:               {},
+	TaskStateDone:                 {},
 }
 
 // ResetForResume transitions stuck tasks back to a runnable state so
@@ -236,15 +240,15 @@ func ResetForResume(state TaskState) TaskState {
 		return TaskStatePending
 	}
 	if state == TaskStateDone {
-		return TaskStateDone // keep done — task already completed successfully
+		return TaskStateDone
 	}
-	if state == TaskStateVerified {
-		return TaskStateDone // verifier passed, just needs done confirmation
+	if state == TaskStateVerified || state == TaskStateChecked {
+		return TaskStateDone
 	}
 	if state.IsTerminal() {
 		return TaskStatePending
 	}
-	return TaskStateAssigned // assigned/produced/verified/etc → assigned
+	return TaskStateAssigned
 }
 
 // CanTransition reports whether a transition from oldState to newState is
@@ -272,6 +276,17 @@ var ContentRoles = map[AgentRole]bool{
 // rather than code/artifacts.
 func (r AgentRole) IsContentRole() bool {
 	return ContentRoles[r]
+}
+
+// CodeRoles lists roles that produce code (as opposed to natural-language content).
+var CodeRoles = map[AgentRole]bool{
+	RoleDeveloper: true,
+	RoleTester:    true,
+}
+
+// IsCodeRole reports whether this role produces code that can be built/tested/linted.
+func (r AgentRole) IsCodeRole() bool {
+	return CodeRoles[r]
 }
 
 // LabelOrID returns the batch label if set, otherwise the batch ID.
@@ -338,7 +353,7 @@ const (
 	EventStateChanged TaskEventType = iota
 	// EventWorkerOutput — Worker 产出了一段输出（流式）
 	EventWorkerOutput
-	// EventVerifierResult — Verifier 得出了结论（PASS/FAIL）
+	// EventVerifierResult — Checker/Verifier 得出了结论（PASS/FAIL）
 	EventVerifierResult
 	// EventTaskDone — 任务最终完成（done 或 failed）
 	EventTaskDone
@@ -369,6 +384,8 @@ func AllStates() []TaskState {
 		TaskStateAssigned,
 		TaskStateProducing,
 		TaskStateProduced,
+		TaskStateChecking,
+		TaskStateChecked,
 		TaskStateVerifying,
 		TaskStateVerified,
 		TaskStateFailed,

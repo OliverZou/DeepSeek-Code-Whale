@@ -426,20 +426,8 @@ func filepathJoin(elem ...string) string {
 // Task creation & lifecycle
 // ---------------------------------------------------------------------------
 
-// CreateMasterTask creates or reuses a master task record.
-// If a master task with the same goal and workspace already exists,
-// it is returned instead of creating a duplicate.
+// CreateMasterTask creates a new master task record.
 func (e *TeamEngine) CreateMasterTask(goal, workspacePath, sessionID string) (*MasterTask, error) {
-	// Reuse existing master task if goal + workspace match.
-	if existing, _ := e.Store.ListMasterTasks(); len(existing) > 0 {
-		for _, mt := range existing {
-			if mt.Goal == goal && mt.WorkspacePath == workspacePath {
-				Log("task", "reuse master task %s for goal %q", mt.ID[:8], goal)
-				return mt, nil
-			}
-		}
-	}
-
 	agent := ""
 	if e.team != nil {
 		if len(e.team.Roles) == 1 {

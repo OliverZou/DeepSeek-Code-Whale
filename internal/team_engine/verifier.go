@@ -10,28 +10,32 @@ import (
 	"time"
 )
 
-// Verifier provides adversarial checking of Worker output.
+// Verifier is an LLM agent that performs semantic verification of a task's
+// output.  It runs AFTER the deterministic Checker passes and has shell_run
+// access so it can execute tests and inspect actual code behaviour.
 //
-// The Verifier wraps an AgentRunner and uses a structured prompt to
-// critically examine a Worker's output against the original task
-// requirements, using a Whale subagent instead of an external CLI.
+// The Verifier checks: requirements coverage, logic correctness, security,
+// professional quality, and whether the output meets the original task intent.
 type Verifier struct {
 	runner       *AgentRunner
 	whiteboard   *Whiteboard
-	timeout      time.Duration // subagent timeout (from config)
-	model        string        // LLM model name; "" = Whale default
-	customPrompt string        // team-configured verifier prompt (from team.yaml)
+	router       *Router
+	timeout      time.Duration
+	model        string
+	customPrompt string
 }
 
-// NewVerifier creates a Verifier that uses the given runner and whiteboard.
-// timeout is the subagent timeout (0 = use RunVerifier's default 120s).
-func NewVerifier(wb *Whiteboard, runner *AgentRunner, timeout time.Duration, model ...string) *Verifier {
+// NewVerifier creates a Verifier that spawns an LLM agent for semantic
+// verification.  The router is used to resolve tool profiles (ProfileVerify
+// by default) and timeouts.
+func NewVerifier(wb *Whiteboard, runner *AgentRunner, router *Router, timeout time.Duration, model ...string) *Verifier {
 	if timeout <= 0 {
-		timeout = 120 * time.Second
+		timeout = 300 * time.Second
 	}
 	v := &Verifier{
 		runner:     runner,
 		whiteboard: wb,
+		router:     router,
 		timeout:    timeout,
 	}
 	if len(model) > 0 {
@@ -40,63 +44,200 @@ func NewVerifier(wb *Whiteboard, runner *AgentRunner, timeout time.Duration, mod
 	return v
 }
 
-// WithCustomPrompt sets a team-configured verifier prompt that is prepended
-// to the default verification prompt.  Use "" to clear.
+// WithCustomPrompt sets a prefix prompt for the verifier (e.g. role context).
 func (v *Verifier) WithCustomPrompt(p string) *Verifier {
 	v.customPrompt = p
 	return v
 }
 
 // ---------------------------------------------------------------------------
-// Prompt generation
+// Verify — LLM-based semantic verification
 // ---------------------------------------------------------------------------
 
-// BuildVerifierPrompt generates the adversarial check prompt for code tasks
-// (developer, tester, reviewer).
-func BuildVerifierPrompt(task *Task, workerOutput string) string {
-	return fmt.Sprintf(`
-You are a Verifier Agent. Your job is to critically examine the Worker's output
-and determine if it meets all requirements.
+// Verify spawns an LLM agent to semantically verify the task's Worker output.
+// The agent has shell_run access (ProfileVerify) so it can execute tests,
+// run linters, and inspect actual code behaviour.
+//
+// Returns (passed, retry, feedback, err).  passed=true means the output
+// meets all requirements semantically.
+func (v *Verifier) Verify(task *Task) (passed bool, retry bool, feedback string, err error) {
+	workerOutput, err := v.whiteboard.ReadOutput(task.ID)
+	if err != nil {
+		return false, false, "", fmt.Errorf("read worker output: %w", err)
+	}
+	// Read the full inbox so the Verifier sees upstream outputs, templates,
+	// and team memory — not just the one-line task description.
+	inbox, _ := v.whiteboard.ReadInput(task.ID)
+
+	workdir := task.Workdir
+	if workdir == "" {
+		workdir = "."
+	}
+
+	// Build the Verifier prompt.
+	var prompt string
+	if v.customPrompt != "" {
+		prompt = v.customPrompt + "\n\n---\n\n"
+	}
+	if task.Role.IsContentRole() {
+		prompt += BuildVerifierContentPrompt(task, workerOutput, inbox)
+	} else {
+		prompt += BuildVerifierSemanticPrompt(task, workerOutput, inbox)
+	}
+
+	// If the Worker output is short, the real deliverable is on disk.
+	if len(workerOutput) < 500 {
+		prompt += fmt.Sprintf(`
+
+NOTE: The worker output above is very short (%d chars).  The actual
+deliverable was likely written to files in the workspace.  Use list_dir
+and read_file to explore the working directory (%s) — look for recently
+created or modified .md, .go, .py, or other project files.  Check
+those files against the requirements, not the empty output above.
+`, len(workerOutput), workdir)
+	}
+
+	// Resolve tool profile and timeout via router.
+	profile := v.router.ResolveProfile(task.Role, task.Description, true)
+	timeout := time.Duration(v.router.ResolveTimeout(task.Role, true)) * time.Second
+	model := v.model
+
+	// Spawn the Verifier LLM agent.
+	result := v.runner.RunVerifier(prompt, workdir, timeout, profile, model)
+
+	output := result.Stdout
+
+	// Lazy verdict detection: if the Verifier didn't actually run tools, retry.
+	if v.isLazyVerdict(output) {
+		hardenedPrompt := "YOUR PREVIOUS RESPONSE WAS REJECTED — it lacked tool evidence. " +
+			"You MUST run at least 2 tools (read_file + shell_run or grep) and report " +
+			"their ACTUAL output. A bare PASS/FAIL without tool output will be rejected again.\n\n" +
+			prompt
+		result2 := v.runner.RunVerifier(hardenedPrompt, workdir, timeout, profile, model)
+		output = result2.Stdout
+	}
+
+	// Write verifier result to whiteboard.
+	if err := v.whiteboard.WriteVerifier(task.ID, output); err != nil {
+		return false, false, output, fmt.Errorf("write verifier result: %w", err)
+	}
+
+	// Parse verdict.
+	passed, retry = parseVerdict(output)
+
+	return passed, retry, output, nil
+}
+
+// ---------------------------------------------------------------------------
+// Lazy verdict detection
+// ---------------------------------------------------------------------------
+
+func (v *Verifier) isLazyVerdict(output string) bool {
+	trimmed := strings.TrimSpace(output)
+	if len(trimmed) < 100 {
+		return true
+	}
+	upper := strings.ToUpper(trimmed)
+	if !strings.Contains(upper, "TOOLS USED:") {
+		return true
+	}
+	re := regexp.MustCompile(`TOOLS USED:.*(read_file|list_dir|shell_run|grep|search_files|web_search|web_fetch|fetch)`)
+	if !re.MatchString(trimmed) {
+		return true
+	}
+	return false
+}
+
+// ---------------------------------------------------------------------------
+// Verdict parsing
+// ---------------------------------------------------------------------------
+
+func parseVerdict(output string) (passed bool, retry bool) {
+	// Handle "VERDICT: PASS", "**VERDICT: ✅ PASS**", "VERDICT:  PASS", etc.
+	verdictMatch := regexp.MustCompile(`(?i)VERDICT:\s*\*{0,2}[\s\p{S}\p{P}]*?(PASS|FAIL|RETRY)`).FindStringSubmatch(output)
+	if len(verdictMatch) >= 2 {
+		switch verdictMatch[1] {
+		case "PASS":
+			return true, false
+		case "RETRY":
+			return false, true
+		default:
+			return false, false
+		}
+	}
+	// Fallback: search for PASS/FAIL/RETRY after VERDICT, skipping
+	// up to 30 chars of formatting (emoji, bold markers, spaces).
+	upper := strings.ToUpper(output)
+	if idx := strings.Index(upper, "VERDICT"); idx >= 0 {
+		tail := upper[idx:]
+		if len(tail) > 50 {
+			tail = tail[:50]
+		}
+		if strings.Contains(tail, "PASS") {
+			return true, false
+		}
+		if strings.Contains(tail, "RETRY") {
+			return false, true
+		}
+	}
+	return false, false
+}
+
+// ---------------------------------------------------------------------------
+// Prompts — semantic focus (checker already verified build/lint/files)
+// ---------------------------------------------------------------------------
+
+// BuildVerifierSemanticPrompt creates a prompt for the Verifier LLM agent.
+// The deterministic Checker has already verified build/lint/file-existence,
+// so the Verifier focuses on SEMANTIC concerns.
+func BuildVerifierSemanticPrompt(task *Task, workerOutput, inbox string) string {
+	// Include the full inbox if available — it contains upstream outputs,
+	// templates, team memory, and other context the Worker was given.
+	var inboxSection string
+	if inbox != "" {
+		inboxSection = fmt.Sprintf("\n\nFULL TASK INBOX (what the Worker was given):\n%s", inbox)
+	}
+
+	return fmt.Sprintf(`You are a Semantic Verifier. The deterministic Checker has already verified:
+- Output files exist
+- Code compiles / builds
+- Format / lint checks pass
+- All referenced files exist
+
+Your job is to check DEEPER, SEMANTIC concerns that mechanical checks cannot catch.  Read
+the FULL TASK INBOX below — it contains upstream outputs, templates, and team memory that
+the Worker was expected to read and follow.  Verify that the Worker's output satisfies ALL
+of it, not just the one-line task description.
 
 ORIGINAL TASK:
-%s
+%s%s
 
 WORKER OUTPUT:
 %s
 
-CHECKLIST:
-1. Does the output fulfil ALL requirements from the original task?
-2. Are there any bugs, errors, or omissions?
-3. Is the code/artifact complete and production-ready?
-4. Are there any security concerns?
-5. Does it follow project conventions?
+SEMANTIC CHECKLIST:
+1. INBOX REQUIREMENTS: Read the inbox carefully. Does the output satisfy every requirement
+   stated there? Note any upstream outputs the Worker was told to read — did they actually
+   read and incorporate them?
+2. LOGIC CORRECTNESS: Is the logic correct? Are edge cases handled?
+3. SECURITY: Any vulnerabilities? (injection, auth bypass, leaked secrets, unsafe patterns)
+4. PROFESSIONAL QUALITY: Is this production-ready? Error handling? Documentation? Tests?
+5. CONSISTENCY: Does the output contradict itself, the inbox templates, or established conventions?
 %s
 
-CRITICAL — INDEPENDENT VERIFICATION:
-1. The Worker often MISREPORTS its own results. Workers say "failed" when
-   code is actually correct, or "done" when code is broken. NEVER trust
-   their self-assessment. You are the INDEPENDENT JUDGE.
-2. You MUST execute at least 2 different tools (read_file + one of
-   shell_run / grep / list_dir) before giving ANY verdict.  Verify the
-   actual files on disk — do not echo the Worker's conclusions.
-3. If your TOOLS USED list is empty, or if your EVIDENCE just repeats the
-   Worker's words, your verdict is INVALID and will be rejected automatically.
-
 IMPORTANT — TOOL-GROUNDED VERIFICATION:
-Your verdict MUST be based on actual external tool execution, NOT on your own reasoning.
-- For code tasks: use shell_run to execute tests (go test, pytest, etc.), linter, or build
-- For format checks: run formatter or style checker via shell_run
-- For security: run scanners or grep for known patterns
-- Report ACTUAL command output as evidence, not your opinion.
+- Use shell_run to execute tests (go test, pytest, npm test, cargo test)
+- Use shell_run to run the actual code and verify its behaviour
+- Use grep / search_files to find patterns (security issues, missing error handling)
+- Use read_file to inspect actual code, not just the Worker's summary
+- Report ACTUAL command output as evidence — NOT your opinion
 
 OUTPUT FORMAT:
 TOOLS USED: [list all commands you ran, e.g. "shell_run: go test ./..."]
-VERDICT: PASS|FAIL
+VERDICT: PASS|FAIL|RETRY
 EVIDENCE: [actual tool output excerpts]
 ISSUES:
-- [list specific issues, or "none" if PASS]
-SUGGESTIONS:
-- [optional improvement suggestions]
+- [list specific issues found, or "none" if all pass]
 
 ## FINDINGS (structured JSON array)
 ---json
@@ -104,66 +245,45 @@ SUGGESTIONS:
   {"id": "unique-key", "title": "one-line summary", "severity": "critical|major|minor", "evidence": "specific reason"}
 ]
 ---
-Use stable IDs for cross-round comparison (e.g. "missing-section-3" not "issue-1").
-`, task.Description, workerOutput, buildFocusSection(task.VerifierFocus))
+Use stable IDs for cross-round comparison (e.g. "missing-requirement-3" not "issue-1").
+`, task.Description, inboxSection, workerOutput, buildFocusSection(task.VerifierFocus))
 }
 
-// BuildContentVerifierPrompt generates a verification prompt for
-// content-oriented tasks (researcher, writer, formatter, evaluator).
-func BuildContentVerifierPrompt(task *Task, workerOutput string) string {
-	return fmt.Sprintf(`
-You are a Content Verifier. Critically examine this output against the
-original task. Be skeptical — challenge weak claims, unverifiable data,
-and logical inconsistencies.
+// BuildVerifierContentPrompt creates a Verifier prompt for content roles
+// (researcher, writer, formatter, evaluator, synthesizer).
+func BuildVerifierContentPrompt(task *Task, workerOutput, inbox string) string {
+	var inboxSection string
+	if inbox != "" {
+		inboxSection = fmt.Sprintf("\n\nFULL TASK INBOX (what the Worker was given):\n%s", inbox)
+	}
 
-CRITICAL — INDEPENDENT VERIFICATION:
-1. The Worker often MISREPORTS its own results. Workers say "failed" when
-   output is actually correct, or "done" when output is broken. NEVER trust
-   their self-assessment. You are the INDEPENDENT JUDGE.
-2. You MUST execute at least 2 different tools (read_file + one of
-   list_dir / grep / web_search) before giving ANY verdict.  Verify the
-   actual files and facts on disk — do not echo the Worker's conclusions.
-3. If your TOOLS USED list is empty, or if your EVIDENCE just repeats the
-   Worker's words, your verdict is INVALID and will be rejected automatically.
-
-IMPORTANT — INCREMENTAL PROGRESS:
-Large documents (requirements, architecture, analysis reports) often
-cannot be completed in a single pass.  The Worker writes to files on disk.
-Use list_dir and read_file to check the actual file content.
-If the files show meaningful progress (sections completed, content growing),
-and the Worker's output describes continuing the work, respond with:
-  VERDICT: RETRY
-  SPECIFIC NEXT STEPS: (list 2-3 concrete sections to add, max 100 words each)
-Use RETRY instead of FAIL when progress is being made but the task is
-not yet complete.  Use FAIL only for empty output, circular loops, or
-content that contradicts the original task.
+	return fmt.Sprintf(`You are a Content Verifier. The deterministic Checker has already verified
+output files exist. Your job is SEMANTIC verification of the content.  Read
+the FULL TASK INBOX — it contains upstream outputs, templates, and context that
+the Worker was expected to read and follow.
 
 ORIGINAL TASK:
-%s
+%s%s
 
 OUTPUT TO VERIFY:
 %s
 
-CHECKLIST:
-1. SUBSTANCE: Does the output contain concrete facts, data, or analysis?
-   Or is it mostly filler (plans to do later, vague promises, "I will...")?
-2. SOURCES: Are specific sources cited (URLs, dates, named publications)?
-   Flag any unsourced claims that should be verifiable.
-3. CONTRADICTIONS: Do any statements contradict each other or the original task?
-4. PLAUSIBILITY: Are any claims obviously impossible? (future dates, impossible
-   numbers, physically/logically contradictory statements)
-5. COMPLETENESS: Does it address ALL requirements from the original task?
-   If incomplete but making progress, use RETRY with specific next steps.
+CONTENT CHECKLIST:
+1. SUBSTANCE: Concrete facts, data, or analysis? Or mostly filler?
+2. INBOX REQUIREMENTS: Read the inbox carefully. Does the output satisfy every
+   requirement stated there? Did the Worker incorporate upstream outputs?
+3. SOURCES: Are specific sources cited (URLs, dates, publications)?
+4. CONTRADICTIONS: Do any statements contradict each other or the task?
+5. PLAUSIBILITY: Are any claims obviously impossible?
+6. COMPLETENESS: Does it address ALL requirements from the inbox?
 %s
 
-TOOL-GROUNDED: Use list_dir and read_file to check files on disk, then
-web_search or fetch to verify factual claims.  Your verdict must be
-based on actual external verification, not subjective judgment.
+TOOL-GROUNDED: Use read_file + list_dir to check files, web_search/fetch to
+verify factual claims. Your verdict must be based on external verification.
 
 OUTPUT FORMAT:
 TOOLS USED: [list tools you ran]
 VERDICT: PASS|RETRY|FAIL
-SUBSTANCE: [substantial|thin|empty]
 EVIDENCE: [verification evidence from tools]
 ISSUES:
 - [list specific issues, or "none" if PASS]
@@ -174,12 +294,34 @@ ISSUES:
   {"id": "unique-key", "title": "one-line summary", "severity": "critical|major|minor", "evidence": "specific reason"}
 ]
 ---
-Use stable IDs for cross-round comparison (e.g. "missing-section-3" not "issue-1").
-`, task.Description, workerOutput, buildFocusSection(task.VerifierFocus))
+`, task.Description, inboxSection, workerOutput, buildFocusSection(task.VerifierFocus))
 }
 
-// buildFocusSection generates an emphasis block for specified verification
-// focus areas.  Returns empty string when no focus is specified.
+// ---------------------------------------------------------------------------
+// Backward-compatible stubs (keep old API surface)
+// ---------------------------------------------------------------------------
+
+// Deprecated: Checker.Check with runner is replaced by deterministic Checker.
+// NewChecker(wb, timeout) no longer needs a runner.
+// Use NewChecker(wb, timeout) for deterministic checking.
+// Use NewVerifier(wb, runner, router, timeout, model...) for LLM verification.
+
+// Deprecated: BuildVerifierPrompt kept for external callers.
+// Use BuildVerifierSemanticPrompt instead.
+func BuildVerifierPrompt(task *Task, workerOutput string) string {
+	return BuildVerifierSemanticPrompt(task, workerOutput, "")
+}
+
+// Deprecated: BuildContentVerifierPrompt kept for external callers.
+// Use BuildVerifierContentPrompt instead.
+func BuildContentVerifierPrompt(task *Task, workerOutput string) string {
+	return BuildVerifierContentPrompt(task, workerOutput, "")
+}
+
+// ---------------------------------------------------------------------------
+// Shared helpers (moved from old checker.go)
+// ---------------------------------------------------------------------------
+
 func buildFocusSection(focus string) string {
 	if focus == "" {
 		return ""
@@ -209,111 +351,6 @@ func buildFocusSection(focus string) string {
 	return b.String()
 }
 
-// Verify runs the Verifier subagent against the Worker's output.
-//
-// It reads the Worker output from the whiteboard, constructs the
-// verification prompt, executes the Verifier subagent, and parses the
-// VERDICT: PASS|FAIL line.
-//
-// Returns (passed, feedback).
-func (v *Verifier) Verify(task *Task) (passed bool, retry bool, feedback string, err error) {
-	workerOutput, err := v.whiteboard.ReadOutput(task.ID)
-	if err != nil {
-		return false, false, "", fmt.Errorf("read worker output: %w", err)
-	}
-
-	// Prepend team-configured verifier prompt if set.
-	var prompt string
-	if v.customPrompt != "" {
-		prompt = v.customPrompt + "\n\n---\n\n"
-	}
-	// Choose the right verification prompt based on task role.
-	if task.Role.IsContentRole() {
-		prompt += BuildContentVerifierPrompt(task, workerOutput)
-	} else {
-		prompt += BuildVerifierPrompt(task, workerOutput)
-	}
-	// When the worker output is very short, the actual deliverable is
-	// likely in workspace files written via tool calls.  Tell the
-	// verifier to explore the workspace instead of judging the empty
-	// output.md.
-	if len(workerOutput) < 500 {
-		wd := task.Workdir
-		if wd == "" {
-			wd = "."
-		}
-		prompt += fmt.Sprintf(`
-
-	NOTE: The worker output above is very short (%d chars).  The actual
-	deliverable was likely written to files in the workspace.  Use list_dir
-	and read_file to explore the working directory (%s) — look for recently
-	created or modified .md, .rs, .go, .py, or other project files.  Check
-	those files against the requirements, not the empty output above.
-	`, len(workerOutput), wd)
-	}
-
-	workdir := task.Workdir
-	if workdir == "" {
-		workdir = "."
-	}
-
-	result := v.runner.RunVerifier(prompt, workdir, v.timeout, v.model)
-
-	output := result.Stdout
-
-	// Guard: if the verifier produced a lazy verdict (no tools, no evidence,
-	// bare PASS/FAIL), re-run once with a hardened prompt that explicitly
-	// demands tool usage.  This prevents the model from echoing the Worker's
-	// self-assessment without independent verification.
-	if v.isLazyVerdict(output) {
-		hardenedPrompt := "YOUR PREVIOUS RESPONSE WAS REJECTED — it lacked tool evidence. " +
-			"You MUST run at least 2 tools (read_file + shell_run or grep) and report " +
-			"their ACTUAL output. A bare PASS/FAIL without tool output will be rejected again.\n\n" +
-			prompt
-		result2 := v.runner.RunVerifier(hardenedPrompt, workdir, v.timeout, v.model)
-		output = result2.Stdout
-	}
-
-	// Persist the verifier result to the whiteboard.
-	if err := v.whiteboard.WriteVerifier(task.ID, output); err != nil {
-		return false, false, output, fmt.Errorf("write verifier result: %w", err)
-	}
-
-	// Parse the VERDICT line (case-insensitive).  Supports PASS, FAIL, RETRY.
-	verdictMatch := regexp.MustCompile(`(?i)VERDICT:\s*\*{0,2}\s*(PASS|FAIL|RETRY)`).FindStringSubmatch(output)
-	upper := strings.ToUpper(output)
-	if len(verdictMatch) >= 2 {
-		switch verdictMatch[1] {
-		case "PASS":
-			passed = true
-		case "RETRY":
-			retry = true
-		}
-	}
-	// Full-text fallback.
-	if !passed && !retry {
-		passed = strings.Contains(upper, "VERDICT: PASS") || strings.Contains(upper, "VERDICT:  PASS")
-		if !passed {
-			retry = strings.Contains(upper, "VERDICT: RETRY")
-		}
-	}
-	// No clear verdict → treat as FAIL to be safe.
-
-	// File-reference check: verify that all files referenced in output.md
-	// actually exist.  Missing referenced files → FAIL.
-	if passed && !retry {
-		missingFiles := findMissingRefs(workerOutput, workdir)
-		if len(missingFiles) > 0 {
-			passed = false
-			output += fmt.Sprintf("\n\nVERDICT: FAIL — 引用的文件不存在:\n- %s", strings.Join(missingFiles, "\n- "))
-		}
-	}
-
-	return passed, retry, output, nil
-}
-
-// findMissingRefs parses markdown links from output and returns paths of
-// referenced files that don't exist on disk.
 func findMissingRefs(output, workdir string) []string {
 	re := regexp.MustCompile(`\[([^\]]*)\]\(([^)]+)\)`)
 	matches := re.FindAllStringSubmatch(output, -1)
@@ -337,35 +374,7 @@ func findMissingRefs(output, workdir string) []string {
 	return missing
 }
 
-// isLazyVerdict detects verifier responses that lack independent tool evidence.
-// A "lazy" verdict is one where the LLM echoed the Worker's self-assessment
-// without running any tools — typically very short and missing the TOOLS USED
-// section required by the prompt.
-func (v *Verifier) isLazyVerdict(output string) bool {
-	trimmed := strings.TrimSpace(output)
-	// Too short to contain tool evidence — the required format alone
-	// (TOOLS USED + VERDICT + EVIDENCE + ISSUES + FINDINGS) is >100 chars.
-	if len(trimmed) < 100 {
-		return true
-	}
-	// The prompt mandates a "TOOLS USED:" section.  Missing it is a strong
-	// signal that the model skipped verification.
-	upper := strings.ToUpper(trimmed)
-	if !strings.Contains(upper, "TOOLS USED:") {
-		return true
-	}
-	// Must mention at least one recognizable tool name.
-	re := regexp.MustCompile(`TOOLS USED:.*(read_file|list_dir|shell_run|grep|search_files|web_search|web_fetch|fetch)`)
-	if !re.MatchString(trimmed) {
-		return true
-	}
-	return false
-}
-
-// ParseFindings extracts structured Finding objects from verifier output.
 func ParseFindings(output string) []Finding {
-	// Find the FINDINGS section and extract the JSON array from it,
-	// using the same balanced-bracket + repair logic as the decompose path.
 	idx := strings.Index(output, "## FINDINGS")
 	if idx < 0 {
 		idx = strings.Index(output, "FINDINGS")
@@ -378,7 +387,6 @@ func ParseFindings(output string) []Finding {
 	if jsonStr == "" {
 		return nil
 	}
-	// Try parsing; if truncated, repair and retry.
 	var findings []Finding
 	if err := json.Unmarshal([]byte(jsonStr), &findings); err != nil {
 		repaired := repairJSON(jsonStr)
@@ -391,4 +399,19 @@ func ParseFindings(output string) []Finding {
 		}
 	}
 	return findings
+}
+
+// ExtractSection extracts a named markdown section (## Title) from content.
+func ExtractSection(content, sectionTitle string) string {
+	heading := "## " + sectionTitle
+	idx := strings.Index(content, heading)
+	if idx < 0 {
+		return ""
+	}
+	body := content[idx+len(heading):]
+	nextSection := regexp.MustCompile(`\n## `).FindStringIndex(body)
+	if nextSection != nil {
+		body = body[:nextSection[0]]
+	}
+	return strings.TrimSpace(body)
 }

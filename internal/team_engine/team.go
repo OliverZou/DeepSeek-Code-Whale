@@ -9,49 +9,36 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// RoutingEntry maps intent keywords to roles and execution mode.
+type RoutingEntry struct {
+	Intent string   `yaml:"intent"` // keywords separated by |
+	Roles  []string `yaml:"roles"`
+	Mode   string   `yaml:"mode"` // "agent" or "team"
+}
+
 // TeamConfig defines a named team that can be assigned to execute a goal.
 // Teams are loaded from .whale/teams/{name}.yaml or {name}/team.yaml
 type TeamConfig struct {
 	Label        string                    `yaml:"label"`
 	Category     string                    `yaml:"category,omitempty"`
 	Capabilities []string                  `yaml:"capabilities,omitempty"`
+	Routing      []RoutingEntry            `yaml:"routing,omitempty"`
 	Leader       TeamLeaderConfig          `yaml:"leader"`
 	Roles        []string                  `yaml:"roles"`
 	Config    *TeamRuntimeConfig       `yaml:"-"` // loaded from config.yaml
-	Pipeline  *PipelineFile            `yaml:"-"` // loaded from pipeline.yaml
+
 	MemoryDir    string `yaml:"-"` // memory directory path
 	TemplatesDir string `yaml:"-"` // templates directory path
+	TeamDir      string `yaml:"-"` // team directory path (for loading team-local agents)
 	// Resolved agent info populated by ResolveRoles().
-	// Maps agent name → display role title (e.g. "backend-engineer" → "后端工程师").
+	// Maps role ref (from team.yaml roles[]) → resolved values.
 	RoleTitles    map[string]string `yaml:"-"`
 	RoleDescs     map[string]string `yaml:"-"`
-	RoleUseAgents map[string]string `yaml:"-"` // agent name → agent name (identity, for compat)
+	RoleUseAgents map[string]string `yaml:"-"` // role ref → agent name
+	RoleCapabilities map[string]string `yaml:"-"`
+	RoleOutputSpecs  map[string]string `yaml:"-"`
 }
 
-// PipelineFile represents the advisory pipeline templates for a team.
-type PipelineFile struct {
-	Pipelines map[string]PipelineDef `yaml:"pipelines"`
-	Default   string                 `yaml:"default"`
-}
-
-// PipelineDef is one pipeline template (e.g. "new-feature", "bugfix").
-type PipelineDef struct {
-	Description string         `yaml:"description"`
-	Trigger     string         `yaml:"trigger"`
-	Stages      []PipelineStage `yaml:"stages"`
-}
-
-// PipelineStage is one stage in a pipeline template.
-type PipelineStage struct {
-	ID         string   `yaml:"id"`
-	Label      string   `yaml:"label"`
-	Roles      []string `yaml:"roles"`
-	DependsOn  []string `yaml:"depends_on"`
-	Parallel   bool     `yaml:"parallel"`
-	VerifyBy   []string `yaml:"verify_by"`
-	Output     string   `yaml:"output"`
-	Next       []string `yaml:"next"`
-}
 
 // TeamRuntimeConfig is loaded from the team directory's config.yaml.
 type TeamRuntimeConfig struct {
@@ -112,45 +99,104 @@ type TeamRoleConfig struct {
 type AgentInfoProvider interface {
 	AgentRole(name string) string // returns display title, e.g. "后端工程师"
 	AgentDesc(name string) string // returns description
+	AgentCapabilities(name string) string // returns "核心能力" section from agent MD
+	AgentOutputSpec(name string) string   // returns "输出规范" section from agent MD
 }
 
 // ResolveRoles populates RoleTitles and RoleDescs from an AgentInfoProvider.
-func (tc *TeamConfig) ResolveRoles(p AgentInfoProvider) {
+// When an ExpertRegistry is provided, roles like "软件工程/后端工程师" are
+// resolved through the expert layer: display name comes from the expert
+// definition, and the agent name is resolved from expert.agent.
+func (tc *TeamConfig) ResolveRoles(p AgentInfoProvider, experts ...*ExpertRegistry) {
+	var reg *ExpertRegistry
+	if len(experts) > 0 && experts[0] != nil {
+		reg = experts[0]
+	}
+
 	tc.RoleTitles = make(map[string]string, len(tc.Roles))
 	tc.RoleDescs = make(map[string]string, len(tc.Roles))
 	tc.RoleUseAgents = make(map[string]string, len(tc.Roles))
-	for _, name := range tc.Roles {
-		tc.RoleUseAgents[name] = name
-		if p != nil {
-			if r := p.AgentRole(name); r != "" {
-				tc.RoleTitles[name] = r
+	tc.RoleCapabilities = make(map[string]string, len(tc.Roles))
+	tc.RoleOutputSpecs = make(map[string]string, len(tc.Roles))
+
+	for _, ref := range tc.Roles {
+		agentName := ref
+		displayName := ref
+
+		if reg != nil {
+			exp := reg.Resolve(ref)
+			if exp != nil {
+				displayName = exp.Name
+				if exp.Agent != "" {
+					agentName = exp.Agent
+				}
 			}
-			if d := p.AgentDesc(name); d != "" {
-				tc.RoleDescs[name] = d
+		}
+
+		tc.RoleUseAgents[ref] = agentName
+		tc.RoleTitles[ref] = displayName
+
+		if p != nil {
+			if r := p.AgentRole(agentName); r != "" && displayName == ref {
+				tc.RoleTitles[ref] = r
+			}
+			if d := p.AgentDesc(agentName); d != "" {
+				tc.RoleDescs[ref] = d
+			}
+			if c := p.AgentCapabilities(agentName); c != "" {
+				tc.RoleCapabilities[ref] = c
+			}
+			if o := p.AgentOutputSpec(agentName); o != "" {
+				tc.RoleOutputSpecs[ref] = o
 			}
 		}
 	}
 }
 
-// RoleDisplayName returns the human-readable title for an agent name.
-// Falls back to the agent name itself if no title is resolved.
-func (tc *TeamConfig) RoleDisplayName(agentName string) string {
+// RoleDisplayName returns the human-readable title for a role ref.
+// Falls back to the role ref itself if no title is resolved.
+func (tc *TeamConfig) RoleDisplayName(ref string) string {
 	if tc.RoleTitles != nil {
-		if t, ok := tc.RoleTitles[agentName]; ok && t != "" {
+		if t, ok := tc.RoleTitles[ref]; ok && t != "" {
 			return t
 		}
 	}
-	return agentName
+	return ref
 }
 
-// RoleDisplayDesc returns the description for an agent name.
-func (tc *TeamConfig) RoleDisplayDesc(agentName string) string {
+// RoleDisplayDesc returns the description for a role ref.
+func (tc *TeamConfig) RoleDisplayDesc(ref string) string {
 	if tc.RoleDescs != nil {
-		if d, ok := tc.RoleDescs[agentName]; ok && d != "" {
+		if d, ok := tc.RoleDescs[ref]; ok && d != "" {
 			return d
 		}
 	}
-	return agentName
+	return ref
+}
+
+// RoleAgentName returns the underlying agent name for a role ref.
+// When experts are used, this resolves "软件工程/后端工程师" → "backend-engineer".
+func (tc *TeamConfig) RoleAgentName(ref string) string {
+	if tc.RoleUseAgents != nil {
+		if a, ok := tc.RoleUseAgents[ref]; ok && a != "" {
+			return a
+		}
+	}
+	return ref
+}
+
+// LoadTeamAgentPrompt reads a team-local agent MD file from the team's agents/ directory.
+// Returns ("", false) if no team-local agent exists.
+func (tc *TeamConfig) LoadTeamAgentPrompt(agentName string) (string, bool) {
+	if tc.TeamDir == "" {
+		return "", false
+	}
+	path := filepath.Join(tc.TeamDir, "agents", agentName+".md")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", false
+	}
+	return string(data), true
 }
 
 // LoadTeamConfig reads and parses a single team YAML file.
@@ -205,7 +251,7 @@ func FindTeam(teamsDir, name string) (*TeamConfig, error) {
 		tc, err := LoadTeamConfig(dirPath)
 		if err == nil {
 			tc.Config = loadRuntimeConfig(filepath.Join(teamsDir, name, "config.yaml"))
-			tc.Pipeline = loadPipelineFile(filepath.Join(teamsDir, name, "pipeline.yaml"))
+			tc.TeamDir = filepath.Join(teamsDir, name)
 			tc.MemoryDir = filepath.Join(teamsDir, name, "memory")
 			tc.TemplatesDir = filepath.Join(teamsDir, name, "templates")
 			return tc, nil
@@ -229,18 +275,6 @@ func loadRuntimeConfig(path string) *TeamRuntimeConfig {
 	return &cfg
 }
 
-// loadPipelineFile reads pipeline.yaml if it exists; returns nil otherwise.
-func loadPipelineFile(path string) *PipelineFile {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil
-	}
-	var pf PipelineFile
-	if err := yaml.Unmarshal(data, &pf); err != nil {
-		return nil
-	}
-	return &pf
-}
 
 // DefaultTeamRoots returns the team discovery roots for a workspace.
 // Workspace .whale/teams is listed first so it takes priority over global.
@@ -289,12 +323,8 @@ func LoadAllTeamsFromRoots(roots []string) ([]*TeamConfig, error) {
 		var tc *TeamConfig
 		var name string
 		if e.IsDir() {
-			// Directory-based team: name/team.yaml
 			tc, _ = LoadTeamConfig(filepath.Join(dir, e.Name(), "team.yaml"))
 			name = e.Name()
-			if tc != nil {
-				tc.Pipeline = loadPipelineFile(filepath.Join(dir, e.Name(), "pipeline.yaml"))
-			}
 		} else if strings.HasSuffix(e.Name(), ".yaml") {
 			// Flat file: name.yaml
 			tc, _ = LoadTeamConfig(filepath.Join(dir, e.Name()))
@@ -334,11 +364,56 @@ func (tc *TeamConfig) BuildLeaderPrompt(basePrompt string) string {
 	if len(tc.Roles) > 0 {
 		sb.WriteString("\n\n## Available Team Roles\n")
 		sb.WriteString("Rule 5 (ROLE ASSIGNMENT): You MUST assign EVERY subtask using EXACTLY ONE of the role names below. Do NOT invent new role names and do NOT use generic names like \"developer\", \"tester\", or \"researcher\".\n\n")
-		for _, name := range tc.Roles {
-			title := tc.RoleDisplayName(name)
-			desc := tc.RoleDisplayDesc(name)
-			sb.WriteString(fmt.Sprintf("- **%s**: %s\n", title, desc))
+		for _, ref := range tc.Roles {
+			title := tc.RoleDisplayName(ref)
+			desc := tc.RoleDisplayDesc(ref)
+			agentName := tc.RoleAgentName(ref)
+			if desc == ref || desc == agentName {
+				desc = ""
+			}
+			if desc != "" {
+				sb.WriteString(fmt.Sprintf("- **%s** (agent: %s): %s\n", title, agentName, desc))
+			} else {
+				sb.WriteString(fmt.Sprintf("- **%s** (agent: %s)\n", title, agentName))
+			}
 		}
+	}
+
+	if len(tc.Roles) > 0 && tc.RoleCapabilities != nil {
+		sb.WriteString("\n## 团队成员能力清单\n\n")
+		sb.WriteString("| 专家 | 角色 | 核心能力 | 输出规范 |\n")
+		sb.WriteString("|------|------|---------|---------|\n")
+		for _, ref := range tc.Roles {
+			title := tc.RoleDisplayName(ref)
+			agentName := tc.RoleAgentName(ref)
+			capabilities := tc.RoleCapabilities[ref]
+			outputSpec := tc.RoleOutputSpecs[ref]
+			if capabilities == "" {
+				capabilities = "—"
+			}
+			if outputSpec == "" {
+				outputSpec = "—"
+			}
+			sb.WriteString(fmt.Sprintf("| %s | %s | %s | %s |\n", agentName, title, capabilities, outputSpec))
+		}
+	}
+
+	sb.WriteString("\n## 协作铁律\n\n")
+	sb.WriteString("0. ⚠️ 简单任务只用最相关角色，不必全员出动。1个角色能完成就只用1个。\n")
+	sb.WriteString("1. 你是编排者，不是执行者——禁止自己写代码、写文档、做专业分析\n")
+	sb.WriteString("2. 分配给某角色的任务必须由该角色输出后采信，你只做编排与汇编\n")
+	sb.WriteString("3. 未完成前序任务不可跳到后续任务\n")
+	sb.WriteString("4. 验证不通过的任务必须回退重做，不可跳过\n")
+	sb.WriteString("5. 禁止自己代写任何团队成员的专业产出\n")
+
+	if len(tc.Routing) > 0 {
+		sb.WriteString("\n## 意图路由表\n\n")
+		sb.WriteString("| 意图关键词 | 路由角色 | 模式 |\n")
+		sb.WriteString("|-----------|---------|------|\n")
+		for _, r := range tc.Routing {
+			sb.WriteString(fmt.Sprintf("| %s | %v | %s |\n", r.Intent, r.Roles, r.Mode))
+		}
+		sb.WriteString("\n根据用户问题匹配意图关键词，选择对应的角色和模式。\n")
 	}
 
 	if len(tc.Leader.Rules) > 0 {
@@ -349,38 +424,6 @@ func (tc *TeamConfig) BuildLeaderPrompt(basePrompt string) string {
 		}
 	}
 
-	if tc.Pipeline != nil && len(tc.Pipeline.Pipelines) > 0 {
-		sb.WriteString("\n## Pipeline Templates (ADVISORY — use as reference, not mandatory)\n")
-		sb.WriteString("The following pipeline templates suggest how to decompose common goal types. Match the goal to a template by trigger keywords. If no template matches, decompose freely.\n\n")
-		for name, p := range tc.Pipeline.Pipelines {
-			sb.WriteString(fmt.Sprintf("### Pipeline: %s\n", name))
-			sb.WriteString(fmt.Sprintf("- Description: %s\n", p.Description))
-			if p.Trigger != "" {
-				sb.WriteString(fmt.Sprintf("- Trigger keywords: %s\n", p.Trigger))
-			}
-			sb.WriteString("- Stages:\n")
-			for _, s := range p.Stages {
-				sb.WriteString(fmt.Sprintf("  - %s (%s): roles=%v", s.ID, s.Label, s.Roles))
-				if len(s.DependsOn) > 0 {
-					sb.WriteString(fmt.Sprintf(", depends_on=%v", s.DependsOn))
-				}
-				if s.Parallel {
-					sb.WriteString(", parallel=true")
-				}
-				if len(s.VerifyBy) > 0 {
-					sb.WriteString(fmt.Sprintf(", verify_by=%v", s.VerifyBy))
-				}
-				if s.Output != "" {
-					sb.WriteString(fmt.Sprintf(", output=%s", s.Output))
-				}
-				sb.WriteString("\n")
-			}
-			sb.WriteString("\n")
-		}
-		if tc.Pipeline.Default != "" {
-			sb.WriteString(fmt.Sprintf("Default strategy when no template matches: %s\n", tc.Pipeline.Default))
-		}
-	}
 
 	return sb.String()
 }

@@ -148,6 +148,8 @@ func toProfile(name string) ToolProfile {
 		return ProfileContent
 	case "test":
 		return ProfileTest
+	case "verify":
+		return ProfileVerify
 	default:
 		return ProfileDefault
 	}
