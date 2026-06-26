@@ -203,6 +203,9 @@ func (tc *TeamConfig) LoadTeamAgentPrompt(agentName string) (string, bool) {
 func LoadTeamConfig(path string) (*TeamConfig, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, err // keep IsNotExist so callers can skip
+		}
 		return nil, fmt.Errorf("read team file %s: %w", path, err)
 	}
 	var tc TeamConfig
@@ -245,6 +248,10 @@ func LoadAllTeams(teamsDir string) ([]*TeamConfig, error) {
 // Supports both flat files (name.yaml) and directory structure (name/team.yaml).
 // When loading from directory, also loads config.yaml if present.
 func FindTeam(teamsDir, name string) (*TeamConfig, error) {
+	// If the teams directory itself doesn't exist, skip early.
+	if _, err := os.Stat(teamsDir); os.IsNotExist(err) {
+		return nil, err
+	}
 	// Priority 1: directory-based team (name/team.yaml)
 	dirPath := filepath.Join(teamsDir, name, "team.yaml")
 	if _, err := os.Stat(dirPath); err == nil {
@@ -277,7 +284,7 @@ func loadRuntimeConfig(path string) *TeamRuntimeConfig {
 
 
 // DefaultTeamRoots returns the team discovery roots for a workspace.
-// Workspace .whale/teams is listed first so it takes priority over global.
+// Priority: workspace > global home > bundled (next to the executable).
 func DefaultTeamRoots(workspaceRoot string) []string {
 	var roots []string
 	if root := strings.TrimSpace(workspaceRoot); root != "" {
@@ -285,6 +292,10 @@ func DefaultTeamRoots(workspaceRoot string) []string {
 	}
 	if home, err := os.UserHomeDir(); err == nil && strings.TrimSpace(home) != "" {
 		roots = append(roots, filepath.Join(home, ".whale", "teams"))
+	}
+	// Bundled teams shipped with the binary (bin/teams/ next to the exe).
+	if exe, err := os.Executable(); err == nil {
+		roots = append(roots, filepath.Join(filepath.Dir(exe), "bin", "teams"))
 	}
 	return roots
 }
