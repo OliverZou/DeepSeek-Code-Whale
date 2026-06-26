@@ -3128,10 +3128,15 @@ func (e *TeamEngine) appendTeamMemory(role AgentRole, lesson string) {
 				assembled.WriteString(out)
 				assembled.WriteString("\n\n")
 			}
-			// Write parent output + verify file.
-			os.MkdirAll(filepath.Dir(t.Output), 0755)
-			os.WriteFile(t.Output, []byte(assembled.String()), 0644)
-			os.WriteFile(filepath.Join(filepath.Dir(t.Output), "verify.md"), []byte("auto-assembled from children"), 0644)
+			// Write parent output + verify file.  Resolve relative paths
+			// against the task workdir so files do not land in CWD.
+			outputPath := t.Output
+			if !filepath.IsAbs(outputPath) {
+				outputPath = filepath.Join(t.Workdir, outputPath)
+			}
+			os.MkdirAll(filepath.Dir(outputPath), 0755)
+			os.WriteFile(outputPath, []byte(assembled.String()), 0644)
+			os.WriteFile(filepath.Join(filepath.Dir(outputPath), "verify.md"), []byte("auto-assembled from children"), 0644)
 			if defaultTeamLog != nil {
 				Log("task", "task: %s parent assembled from %d children → %s", t.ID[:8], len(children), t.Output)
 			}
