@@ -209,7 +209,13 @@ func NewShellSubagentSpawner() *ShellSubagentSpawner {
 func (s *ShellSubagentSpawner) SpawnSubagent(ctx context.Context, req SubagentRequest) (SubagentResponse, error) {
 	whaleBin := s.whaleBin
 	if whaleBin == "" {
-		whaleBin = "whale"
+		// Use the current executable so subprocesses get the same binary
+		// (including any local fixes), not whatever is in PATH.
+		if exe, err := os.Executable(); err == nil {
+			whaleBin = exe
+		} else {
+			whaleBin = "whale"
+		}
 	}
 
 	args := []string{
@@ -251,20 +257,25 @@ func (s *ShellSubagentSpawner) SpawnSubagent(ctx context.Context, req SubagentRe
 		req.OnPID(pid)
 	}
 
-	// Write initial prompt to stdin.
+	// Write initial prompt to stdin, then close it so the
+	// subprocess sees EOF and starts processing.  whale exec
+	// reads the entire stdin before acting; keeping it open
+	// causes a deadlock.
+	// The OnStdin callback is still called so the engine can
+	// track the pipe for external kill signals, but stdin is
+	// always closed after writing — ShellSubagentSpawner does
+	// not support mid-execution interactive input.
 	stdinPipe.Write([]byte(prompt))
-
-	// Store the pipe so the engine can write messages mid-execution.
 	if req.OnStdin != nil {
 		req.OnStdin(stdinPipe)
 	}
+	stdinPipe.Close()
 
 	done := make(chan error, 1)
 	go func() { done <- cmd.Wait() }()
 
 	select {
 	case waitErr := <-done:
-		stdinPipe.Close()
 		exitCode := 0
 		if waitErr != nil {
 			if exitErr, ok := waitErr.(*exec.ExitError); ok {
@@ -433,7 +444,7 @@ func NewWhaleSpawnAdapter(runner RunnerSpawner) SpawnSubagentFunc {
 // ---------------------------------------------------------------------------
 
 func ToolConfigFromEnv() (dbPath, whiteboardDir, configPath, workdir string) {
-	dbPath = envOrDefault("WHALE_TEAM_DB", ".whale/team_engine.db")
+	dbPath = envOrDefault("WHALE_TEAM_DB", ".whale/team_engine.db") // deprecated: file-based state, db no longer used
 	whiteboardDir = envOrDefault("WHALE_TEAM_WHITEBOARD", ".whale/team_tasks")
 	configPath = envOrDefault("WHALE_TEAM_CONFIG", "")
 	workdir = envOrDefault("WHALE_TEAM_WORKDIR", ".")

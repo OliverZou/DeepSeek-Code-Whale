@@ -31,20 +31,20 @@ type App struct {
 	ctx          context.Context
 	workDir      string
 	teamsDir     string
+	expertsDir   string
 	sessionsDir  string
 	sessionStore *store.JSONLStore
 	engine       *team_engine.TeamEngine
 	mu           sync.Mutex
 	running      bool
 
-	// Cached at startup to avoid repeated disk reads.
 	cachedAPIKey    string
 	agentDefCache   map[string]tasks.AgentDefinition
 	agentDefCacheMu sync.RWMutex
+	expertRegistry  *team_engine.ExpertRegistry
 
-	// Streaming chat cancellation.
 	abortMu     sync.Mutex
-	abortCancels map[string]context.CancelFunc // sessionID → cancel
+	abortCancels map[string]context.CancelFunc
 }
 
 func NewApp() *App {
@@ -53,18 +53,19 @@ func NewApp() *App {
 		exeDir = filepath.Dir(exe)
 	}
 	teamsDir := filepath.Join(exeDir, "teams")
-	// Dev: search upward for bin\teams（wails dev / go run 时自动定位项目 bin 目录）
+	expertsDir := filepath.Join(exeDir, "experts")
 	if cwd, err := os.Getwd(); err == nil {
 		for dir := cwd; dir != filepath.Dir(dir); dir = filepath.Dir(dir) {
 			if fi, err := os.Stat(filepath.Join(dir, "bin", "teams")); err == nil && fi.IsDir() {
 				binDir := filepath.Join(dir, "bin")
 				teamsDir = filepath.Join(binDir, "teams")
+				expertsDir = filepath.Join(binDir, "experts")
 				exeDir = binDir
 				break
 			}
 		}
 	}
-	return &App{workDir: exeDir, teamsDir: teamsDir}
+	return &App{workDir: exeDir, teamsDir: teamsDir, expertsDir: expertsDir}
 }
 
 // ---------------------------------------------------------------------------
@@ -89,7 +90,14 @@ func (a *App) startup(ctx context.Context) {
 	// Cache agent definitions (avoids repeated filesystem scans).
 	a.cacheAgentDefs()
 
-	pod.Log("startup", "whale-pod workDir=%s teamsDir=%s sessionsDir=%s", a.workDir, a.teamsDir, a.sessionsDir)
+	if reg, err := team_engine.LoadAllExperts(a.expertsDir); err != nil {
+		pod.Log("startup", "load experts: %v", err)
+	} else {
+		a.expertRegistry = reg
+		pod.Log("startup", "loaded %d expert files", len(reg.Files()))
+	}
+
+	pod.Log("startup", "whale-pod workDir=%s teamsDir=%s expertsDir=%s sessionsDir=%s", a.workDir, a.teamsDir, a.expertsDir, a.sessionsDir)
 	a.openEngine()
 }
 
@@ -181,12 +189,12 @@ func (a *App) ListTeams() []string {
 func (a *App) LoadSummonedItems() []pod.SummonedItemJSON {
 	data, err := os.ReadFile(filepath.Join(a.workDir, "summoned.json"))
 	if err != nil {
-		return nil
+		return []pod.SummonedItemJSON{}
 	}
 	var items []pod.SummonedItemJSON
 	if err := json.Unmarshal(data, &items); err != nil {
 		pod.Log("summoned", "unmarshal error: %v", err)
-		return nil
+		return []pod.SummonedItemJSON{}
 	}
 	return items
 }
@@ -205,11 +213,15 @@ func (a *App) SaveSummonedItems(items []pod.SummonedItemJSON) {
 // agentNameResolver implements team_engine.AgentInfoProvider by scanning
 // the agents directory and mapping agent file names to their role titles.
 type agentNameResolver struct {
-	roleMap map[string]string
+	roleMap      map[string]string
+	capMap       map[string]string
+	outputSpecMap map[string]string
 }
 
-func (r *agentNameResolver) AgentRole(name string) string { return r.roleMap[name] }
-func (r *agentNameResolver) AgentDesc(name string) string  { return "" }
+func (r *agentNameResolver) AgentRole(name string) string         { return r.roleMap[name] }
+func (r *agentNameResolver) AgentDesc(name string) string          { return "" }
+func (r *agentNameResolver) AgentCapabilities(name string) string  { return r.capMap[name] }
+func (r *agentNameResolver) AgentOutputSpec(name string) string    { return r.outputSpecMap[name] }
 
 // cacheAgentDefs scans the agents directory once and caches all definitions in memory.
 // This avoids repeated filesystem scans on every API call.
@@ -261,10 +273,25 @@ func (a *App) loadAgentNameResolver() *agentNameResolver {
 	a.agentDefCacheMu.RUnlock()
 
 	roleMap := make(map[string]string, len(cache))
+	capMap := make(map[string]string, len(cache))
+	outputSpecMap := make(map[string]string, len(cache))
 	for name, def := range cache {
 		roleMap[name] = def.Role
+		capMap[name] = team_engine.ExtractSection(def.Prompt, "核心能力")
+		outputSpecMap[name] = team_engine.ExtractSection(def.Prompt, "输出规范")
 	}
-	return &agentNameResolver{roleMap: roleMap}
+	if a.expertRegistry != nil {
+		for _, ef := range a.expertRegistry.Files() {
+			for _, exp := range ef.Experts {
+				if exp.Agent != "" {
+					if exp.Name != "" {
+						roleMap[exp.Agent] = exp.Name
+					}
+				}
+			}
+		}
+	}
+	return &agentNameResolver{roleMap: roleMap, capMap: capMap, outputSpecMap: outputSpecMap}
 }
 
 // loadAgentSystemPrompt returns the system prompt for a given agent identifier.
@@ -331,10 +358,18 @@ func (a *App) loadTeamLeaderPrompt(teamName string) string {
 		pod.Log("agent", "team '%s' not found: %v", teamName, err)
 		return fmt.Sprintf("你是 %s 团队的 Leader。请协调团队成员完成用户的编程任务。", teamName)
 	}
+	resolver := a.loadAgentNameResolver()
+	tc.ResolveRoles(resolver, a.expertRegistry)
+
 	role := tc.Leader.Role
 	prompt := tc.Leader.Prompt
 	if prompt == "" {
 		prompt = tc.Leader.Description
+	}
+	// Try team-local agent MD first
+	if localPrompt, ok := tc.LoadTeamAgentPrompt(role); ok {
+		pod.Log("agent", "using team-local agent for leader: %s", role)
+		return localPrompt
 	}
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("你是 %s。%s", role, prompt))
@@ -346,18 +381,32 @@ func (a *App) loadTeamLeaderPrompt(teamName string) string {
 	}
 	if len(tc.Roles) > 0 {
 		sb.WriteString("\n团队成员：")
-		resolver := a.loadAgentNameResolver()
 		var names []string
 		for _, r := range tc.Roles {
-			if resolver != nil {
-				if label := resolver.AgentRole(r); label != "" {
-					names = append(names, label)
-					continue
-				}
+			if label := tc.RoleDisplayName(r); label != "" {
+				names = append(names, label)
+			} else {
+				names = append(names, r)
 			}
-			names = append(names, r)
 		}
 		sb.WriteString(strings.Join(names, "、"))
+
+		sb.WriteString("\n\n## 团队成员能力清单\n\n")
+		sb.WriteString("| 专家 | 角色 | 核心能力 | 输出规范 |\n")
+		sb.WriteString("|------|------|---------|---------|\n")
+		for _, r := range tc.Roles {
+			title := tc.RoleDisplayName(r)
+			agentName := tc.RoleAgentName(r)
+			capabilities := tc.RoleCapabilities[r]
+			outputSpec := tc.RoleOutputSpecs[r]
+			if capabilities == "" {
+				capabilities = "—"
+			}
+			if outputSpec == "" {
+				outputSpec = "—"
+			}
+			sb.WriteString(fmt.Sprintf("| %s | %s | %s | %s |\n", agentName, title, capabilities, outputSpec))
+		}
 	}
 	if len(tc.Capabilities) > 0 {
 		sb.WriteString("\n\n团队能力范围：\n")
@@ -365,6 +414,14 @@ func (a *App) loadTeamLeaderPrompt(teamName string) string {
 			sb.WriteString(fmt.Sprintf("- %s\n", c))
 		}
 	}
+
+	sb.WriteString("\n\n## 协作铁律\n\n")
+	sb.WriteString("1. 你是编排者，不是执行者——禁止自己写代码、写文档、做专业分析\n")
+	sb.WriteString("2. 每个专业产出必须由对应角色输出后再采信，你只做编排与汇编\n")
+	sb.WriteString("3. 未完成前序任务不可跳到后续任务\n")
+	sb.WriteString("4. 验证不通过的任务必须回退重做，不可跳过\n")
+	sb.WriteString("5. 禁止自己代写任何团队成员的专业产出\n")
+
 	sb.WriteString("\n决策规则：\n")
 	sb.WriteString("- 如果用户的问题不在团队能力范围内，你作为通用助理直接回答，不要输出 ACTION\n")
 	sb.WriteString("- 如果用户的问题在能力范围内，且只需要单一角色处理，在回复末尾输出 <!-- ACTION:{\"mode\":\"agent\",\"role\":\"角色名\",\"goal\":\"任务目标\"} -->\n")
@@ -378,7 +435,7 @@ func (a *App) ListTeamDetails() []pod.TeamDetailJSON {
 	entries, err := os.ReadDir(teamsDir)
 	if err != nil {
 		pod.Log("teams", "ListTeamDetails read %s: %v", teamsDir, err)
-		return nil
+		return []pod.TeamDetailJSON{}
 	}
 	resolver := a.loadAgentNameResolver()
 	var result []pod.TeamDetailJSON
@@ -393,7 +450,7 @@ func (a *App) ListTeamDetails() []pod.TeamDetailJSON {
 				continue
 			}
 		}
-		tc.ResolveRoles(resolver)
+		tc.ResolveRoles(resolver, a.expertRegistry)
 		roles := make([]string, len(tc.Roles))
 		for i, name := range tc.Roles {
 			roles[i] = tc.RoleDisplayName(name)
@@ -416,7 +473,7 @@ func (a *App) ListAgents() []pod.AgentInfoJSON {
 	entries, err := os.ReadDir(agentsDir)
 	if err != nil {
 		pod.Log("agents", "ListAgents read %s: %v", agentsDir, err)
-		return nil
+		return []pod.AgentInfoJSON{}
 	}
 	var result []pod.AgentInfoJSON
 	for _, e := range entries {
@@ -825,8 +882,9 @@ func (a *App) DirectChat(taskID, message string, deepThink bool) string {
 		return ""
 	}
 
-	// Pod session (JSONL-based)
-	if isPodSession(taskID) && a.sessionStore != nil {
+	// Try session store for any session that has a JSONL file on disk.
+	sessionFile := filepath.Join(a.sessionsDir, taskID+".jsonl")
+	if _, statErr := os.Stat(sessionFile); statErr == nil && a.sessionStore != nil {
 		return a.directChatSession(taskID, message, deepThink)
 	}
 
@@ -859,7 +917,7 @@ func (a *App) directChatSession(sessionID, message string, deepThink bool) strin
 		if m.Role == core.RoleAssistant {
 			from = "agent"
 		}
-		history = append(history, chatMsg{From: from, Content: m.Text})
+		history = append(history, chatMsg{From: from, Content: core.MessagePlainText(m)})
 	}
 
 	// Load agent-specific system prompt
@@ -928,7 +986,9 @@ func (a *App) StreamChat(sessionID, message string, deepThink bool) string {
 		return ""
 	}
 
-	if !isPodSession(sessionID) || a.sessionStore == nil {
+	// Try session store for any session that has a JSONL file on disk.
+	sessionFile := filepath.Join(a.sessionsDir, sessionID+".jsonl")
+	if _, statErr := os.Stat(sessionFile); statErr != nil || a.sessionStore == nil {
 		return a.directChatLegacy(sessionID, message, deepThink)
 	}
 
@@ -954,7 +1014,7 @@ func (a *App) StreamChat(sessionID, message string, deepThink bool) string {
 			if m.Role == core.RoleAssistant {
 				from = "agent"
 			}
-			history = append(history, chatMsg{From: from, Content: m.Text})
+			history = append(history, chatMsg{From: from, Content: core.MessagePlainText(m)})
 		}
 
 		// Load agent-specific system prompt
@@ -1541,7 +1601,7 @@ func safePrefix(s string, n int) string {
 // All conversations (direct chat, expert, team) are sessions.
 // Team engine tasks are linked via SessionID.
 func (a *App) GetMasterTasks() []pod.MasterTaskJSON {
-	var result []pod.MasterTaskJSON
+	result := make([]pod.MasterTaskJSON, 0)
 
 	a.mu.Lock()
 	eng := a.engine
@@ -1598,7 +1658,7 @@ func (a *App) GetMasterTasks() []pod.MasterTaskJSON {
 
 // ListSessionsByAgent returns sessions filtered by agent, with pagination.
 func (a *App) ListSessionsByAgent(agent string, offset, limit int) []pod.MasterTaskJSON {
-	var result []pod.MasterTaskJSON
+	result := make([]pod.MasterTaskJSON, 0)
 	if a.sessionStore == nil {
 		return result
 	}
@@ -1653,17 +1713,17 @@ func (a *App) GetSubtasksBySession(sessionID string) []pod.SubtaskJSON {
 	a.mu.Lock()
 	eng := a.engine
 	a.mu.Unlock()
-	if eng == nil || eng.Store == nil { return nil }
+	if eng == nil || eng.Store == nil { return []pod.SubtaskJSON{} }
 
 	mts, _ := eng.Store.ListMasterTasksBySession(sessionID)
-	if len(mts) == 0 { return nil }
+	if len(mts) == 0 { return []pod.SubtaskJSON{} }
 
 	var allTasks []*team_engine.Task
 	for _, mt := range mts {
 		tasks, _ := eng.Store.ListTasksByMasterTask(mt.ID)
 		allTasks = append(allTasks, tasks...)
 	}
-	if len(allTasks) == 0 { return nil }
+	if len(allTasks) == 0 { return []pod.SubtaskJSON{} }
 
 	nodeMap := make(map[string]*pod.SubtaskJSON)
 	taskList := make([]*pod.SubtaskJSON, 0, len(allTasks))
@@ -1688,7 +1748,7 @@ func (a *App) GetSubtasksBySession(sessionID string) []pod.SubtaskJSON {
 			sj.Progress = sum / len(sj.Children)
 		}
 	}
-	var roots []pod.SubtaskJSON
+	roots := make([]pod.SubtaskJSON, 0)
 	for _, sj := range taskList {
 		hasParent := false
 		for _, pid := range sj.ParentIDs {
@@ -1708,10 +1768,10 @@ func (a *App) GetSubtasks(mtID string) []pod.SubtaskJSON {
 	a.mu.Lock()
 	eng := a.engine
 	a.mu.Unlock()
-	if eng == nil || eng.Store == nil { return nil }
+	if eng == nil || eng.Store == nil { return []pod.SubtaskJSON{} }
 
 	tasks, _ := eng.Store.ListTasksByMasterTask(mtID)
-	if len(tasks) == 0 { return nil }
+	if len(tasks) == 0 { return []pod.SubtaskJSON{} }
 
 	nodeMap := make(map[string]*pod.SubtaskJSON)
 	taskList := make([]*pod.SubtaskJSON, 0, len(tasks))
@@ -1736,7 +1796,7 @@ func (a *App) GetSubtasks(mtID string) []pod.SubtaskJSON {
 			sj.Progress = sum / len(sj.Children)
 		}
 	}
-	var roots []pod.SubtaskJSON
+	roots := make([]pod.SubtaskJSON, 0)
 	for _, sj := range taskList {
 		hasParent := false
 		for _, pid := range sj.ParentIDs {
@@ -1779,6 +1839,21 @@ func (a *App) RunSubtask(taskID string) string { updateMetaState(a.workDir, task
 
 // CancelSubtask suspends a task.
 func (a *App) CancelSubtask(taskID string) string { updateMetaState(a.workDir, taskID, "suspended"); return "" }
+
+// ApplyOutput copies a task's out/ directory to the given target directory.
+// The user explicitly triggers this to adopt agent-produced files into their workspace.
+func (a *App) ApplyOutput(taskID, targetDir string) string {
+	a.mu.Lock()
+	eng := a.engine
+	a.mu.Unlock()
+	if eng == nil {
+		return "引擎未启动"
+	}
+	if err := eng.ApplyOutput(taskID, targetDir); err != nil {
+		return err.Error()
+	}
+	return ""
+}
 
 func (a *App) DeleteSession(sessionID string) string {
 	// Delete session files
@@ -1950,8 +2025,9 @@ func (a *App) RenameMasterTask(taskID, newGoal string) string {
 		return "goal 不能为空"
 	}
 
-	// Pod session: update SessionMeta.Title
-	if isPodSession(taskID) {
+	// Try session meta for any session that has a JSONL file on disk.
+	sessionFile := filepath.Join(a.sessionsDir, taskID+".jsonl")
+	if _, statErr := os.Stat(sessionFile); statErr == nil {
 		_, err := session.UpdateSessionMeta(a.sessionsDir, taskID, func(m *session.SessionMeta) {
 			m.Title = newGoal
 		})
@@ -2018,28 +2094,32 @@ func (a *App) WindowClose() { runtime.Quit(a.ctx) }
 
 // GetChatMessages returns human-agent chat history.
 func (a *App) GetChatMessages(taskID string) []pod.ChatMessageJSON {
-	// Pod session: read from JSONL
-	if isPodSession(taskID) && a.sessionStore != nil {
+	// Try JSONL session store first (covers both pod-* and UUID-style sessions).
+	if a.sessionStore != nil {
 		msgs, err := a.sessionStore.List(context.Background(), taskID)
-		if err != nil {
-			return nil
-		}
-		var result []pod.ChatMessageJSON
-		for _, m := range msgs {
-			from := "human"
-			if m.Role == core.RoleAssistant {
-				from = "agent"
+		if err == nil && len(msgs) > 0 {
+			result := make([]pod.ChatMessageJSON, 0, len(msgs))
+			for _, m := range msgs {
+				from := "human"
+				if m.Role == core.RoleAssistant {
+					from = "agent"
+				}
+				result = append(result, pod.ChatMessageJSON{
+					Time:       m.CreatedAt.Format(time.RFC3339),
+					From:       from,
+					Content:    core.MessagePlainText(m),
+					Thinking:   m.Reasoning,
+					DurationMs: m.DurationMs,
+				})
 			}
-			result = append(result, pod.ChatMessageJSON{
-				Time:       m.CreatedAt.Format(time.RFC3339),
-				From:       from,
-				Content:    m.Text,
-				Thinking:   m.Reasoning,
-				DurationMs: m.DurationMs,
-			})
+			return result
 		}
-
-	return result
+		// If an error occurred, or no messages, fall through to check manifest existence.
+		// If the session file exists on disk (even with zero messages), stop here.
+		sessionFile := filepath.Join(a.sessionsDir, taskID+".jsonl")
+		if _, statErr := os.Stat(sessionFile); statErr == nil {
+			return []pod.ChatMessageJSON{}
+		}
 	}
 
 	// Legacy team_task fallback
@@ -2128,15 +2208,15 @@ func (a *App) GetTeamChat(masterTaskID string) []TeamChatMessage {
 	eng := a.engine
 	a.mu.Unlock()
 	if eng == nil || eng.Whiteboard == nil {
-		return nil
+		return []TeamChatMessage{}
 	}
 
 	messages, err := eng.Whiteboard.ReadChatMessages(masterTaskID)
 	if err != nil {
-		return nil
+		return []TeamChatMessage{}
 	}
 
-	var result []TeamChatMessage
+	result := make([]TeamChatMessage, 0, len(messages))
 	for _, m := range messages {
 		result = append(result, TeamChatMessage{
 			From:      m.From,
@@ -2245,11 +2325,11 @@ func (a *App) GetConfirmationsForMaster(masterTaskID string) []TaskConfirmation 
 	eng := a.engine
 	a.mu.Unlock()
 	if eng == nil || eng.Store == nil {
-		return nil
+		return []TaskConfirmation{}
 	}
 
 	tasks, _ := eng.Store.ListTasksByMasterTask(masterTaskID)
-	var result []TaskConfirmation
+	result := make([]TaskConfirmation, 0, len(tasks))
 	for _, t := range tasks {
 		if eng.Whiteboard.HasConfirmation(t.ID) {
 			content, _ := eng.Whiteboard.ReadConfirmation(t.ID)
@@ -2282,7 +2362,7 @@ func readDialogue(workDir, taskID string) []pod.AgentDialogueJSON {
 		if json.Unmarshal(data, &meta) == nil && meta.Role != "" { roleName = meta.Role }
 	}
 
-	var dialogue []pod.AgentDialogueJSON
+	dialogue := make([]pod.AgentDialogueJSON, 0)
 	if input, err := os.ReadFile(filepath.Join(taskDir, "input.md")); err == nil && len(input) > 0 {
 		dialogue = append(dialogue, pod.AgentDialogueJSON{Role: "input", Content: string(input)})
 	}
@@ -2298,7 +2378,7 @@ func readDialogue(workDir, taskID string) []pod.AgentDialogueJSON {
 
 func readLeaderPlan(workDir string) []pod.AgentDialogueJSON {
 	leaderDir := filepath.Join(workDir, ".whale", "team_tasks", "logs", "leader")
-	var dialogue []pod.AgentDialogueJSON
+	dialogue := make([]pod.AgentDialogueJSON, 0)
 	for round := 1; round <= 99; round++ {
 		for _, prefix := range []string{"decompose", "review"} {
 			data, _ := os.ReadFile(filepath.Join(leaderDir, fmt.Sprintf("%s_%03d.md", prefix, round)))
@@ -2314,9 +2394,8 @@ func readLeaderPlan(workDir string) []pod.AgentDialogueJSON {
 func readChat(workDir, taskID string) []pod.ChatMessageJSON {
 	msgDir := filepath.Join(workDir, ".whale", "team_tasks", taskID, "messages")
 	entries, _ := os.ReadDir(msgDir)
-	// Sort by name (timestamp prefix)
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
-	var msgs []pod.ChatMessageJSON
+	msgs := make([]pod.ChatMessageJSON, 0, len(entries))
 	var lastHumanTime int64
 	for _, e := range entries {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".md") { continue }

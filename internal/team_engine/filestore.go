@@ -10,17 +10,22 @@ import (
 	"time"
 )
 
-// FileTaskStore replaces SQLite TaskDB with a file-system-based task store.
+// FileTaskStore is a file-system-based task store.
 // Tasks are indexed in memory — directory scanning only happens on startup.
+// Task state is derived from files, never stored in meta.json.
 //
 //	{baseDir}/
 //	├── {task_id}/
-//	│   ├── meta.json    ← state tracking
-//	│   ├── goal.md      ← Engine writes
-//	│   ├── input.md     ← Engine writes (WriteInboxFile)
-//	│   ├── output.md    ← Agent writes
-//	│   ├── verify.md    ← Verifier writes
-//	│   └── plan.json    ← Leader/self-split writes
+//	│   ├── meta.json     ← structural metadata (no state field)
+//	│   ├── goal.md       ← Engine writes
+//	│   ├── input.md      ← Engine writes (WriteInboxFile)
+//	│   ├── output.md     ← Agent writes  →  produced
+//	│   ├── out/          ← Agent output files (sandboxed)
+//	│   ├── verify.md     ← Verifier writes → done (with output.md)
+//	│   ├── error.md      ← failed
+//	│   ├── suspended.md  ← suspended
+//	│   ├── confirmation.md ← pending_confirmation
+//	│   └── plan.json     ← Leader/self-split writes
 //	└── masters/{master_id}/
 //	    ├── meta.json
 //	    └── goal.md
@@ -45,6 +50,7 @@ func NewFileTaskStore(baseDir string) (*FileTaskStore, error) {
 }
 
 // rebuildIndex scans the baseDir once to rebuild the in-memory index.
+// State is derived from files, not read from meta.json.
 func (fs *FileTaskStore) rebuildIndex() {
 	// Scan task directories.
 	entries, _ := os.ReadDir(fs.baseDir)
@@ -56,7 +62,9 @@ func (fs *FileTaskStore) rebuildIndex() {
 		if err != nil {
 			continue
 		}
-		fs.tasks[e.Name()] = fs.taskFromMeta(meta)
+		t := fs.taskFromMeta(meta)
+		t.State = fs.deriveState(fs.taskDir(e.Name()))
+		fs.tasks[e.Name()] = t
 	}
 	// Scan master directories.
 	mastersDir := filepath.Join(fs.baseDir, "masters")
@@ -82,11 +90,16 @@ func (fs *FileTaskStore) refreshState(t *Task) {
 	t.State = fs.deriveState(fs.taskDir(t.ID))
 }
 
+// DeriveState is the public entry point for state derivation.
+func (fs *FileTaskStore) DeriveState(dir string) TaskState {
+	return fs.deriveState(dir)
+}
+
 func (fs *FileTaskStore) taskDir(id string) string  { return filepath.Join(fs.baseDir, id) }
 func (fs *FileTaskStore) masterDir(id string) string { return filepath.Join(fs.baseDir, "masters", id) }
 
 // ---------------------------------------------------------------------------
-// metadata
+// metadata — structural fields only, no state
 // ---------------------------------------------------------------------------
 
 type taskMeta struct {
@@ -97,7 +110,6 @@ type taskMeta struct {
 	Agent            string   `json:"agent,omitempty"`
 	SessionID        string   `json:"session_id,omitempty"`
 	WorkspacePath    string   `json:"workspace_path,omitempty"`
-	State            string   `json:"state,omitempty"`
 	Output           string   `json:"output"`
 	ParentIDs        []string `json:"parent_ids,omitempty"`
 	BatchID          string   `json:"batch_id,omitempty"`
@@ -105,7 +117,6 @@ type taskMeta struct {
 	VerifierFocus    string   `json:"verifier_focus,omitempty"`
 	VerifierFeedback string   `json:"verifier_feedback,omitempty"`
 	MaxRetries       int      `json:"max_retries,omitempty"`
-	RetryCount       int      `json:"retry_count,omitempty"`
 	CreatedAt        string   `json:"created_at"`
 }
 
@@ -137,7 +148,6 @@ func (fs *FileTaskStore) taskFromMeta(meta *taskMeta) *Task {
 		Title:            meta.Title,
 		Description:      meta.Description,
 		Role:             AgentRole(meta.Role),
-		State:            TaskState(meta.State),
 		Output:           meta.Output,
 		ParentIDs:        meta.ParentIDs,
 		BatchID:          meta.BatchID,
@@ -145,45 +155,49 @@ func (fs *FileTaskStore) taskFromMeta(meta *taskMeta) *Task {
 		VerifierFocus:    meta.VerifierFocus,
 		VerifierFeedback: meta.VerifierFeedback,
 		MaxRetries:       meta.MaxRetries,
-		RetryCount:       meta.RetryCount,
+		RetryCount:       0, // runtime counter, not persisted
 		CreatedAt:        meta.CreatedAt,
 	}
 }
 
 // ---------------------------------------------------------------------------
-// state derivation from files
+// state derivation from files — the ONE source of truth
 // ---------------------------------------------------------------------------
 
+// marker files for terminal / explicit states.
+var markerFiles = map[string]TaskState{
+	"error.md":         TaskStateFailed,
+	"suspended.md":     TaskStateSuspended,
+	"confirmation.md":  TaskStatePendingConfirmation,
+}
+
 func (fs *FileTaskStore) deriveState(dir string) TaskState {
-	conf := filepath.Join(dir, "confirmation.md")
-	if _, err := os.Stat(conf); err == nil {
-		if meta, merr := fs.readMeta(dir); merr == nil {
-			if TaskState(meta.State) == TaskStatePendingConfirmation {
-				return TaskStatePendingConfirmation
-			}
+	// Check marker files (failed, suspended, pending_confirmation).
+	for name, state := range markerFiles {
+		if _, err := os.Stat(filepath.Join(dir, name)); err == nil {
+			return state
 		}
 	}
-	out := filepath.Join(dir, "output.md")
-	verify := filepath.Join(dir, "verify.md")
-	_, outErr := os.Stat(out)
-	_, verErr := os.Stat(verify)
 
-	if outErr == nil && verErr == nil {
+	hasOutput := fileExists(filepath.Join(dir, "output.md"))
+	hasVerify := fileExists(filepath.Join(dir, "verify.md")) || fileExists(filepath.Join(dir, "verifier.md"))
+	hasInput := fileExists(filepath.Join(dir, "input.md"))
+
+	if hasOutput && hasVerify {
 		return TaskStateDone
 	}
-	if outErr == nil {
-		if meta, err := fs.readMeta(dir); err == nil {
-			switch TaskState(meta.State) {
-			case TaskStateSuspended, TaskStateFailed, TaskStatePending, TaskStateAssigned:
-				return TaskState(meta.State)
-			}
-		}
+	if hasOutput {
 		return TaskStateProduced
 	}
-	if meta, err := fs.readMeta(dir); err == nil && meta.State != "" {
-		return TaskState(meta.State)
+	if hasInput {
+		return TaskStateAssigned
 	}
 	return TaskStatePending
+}
+
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
 }
 
 func (fs *FileTaskStore) findTaskDir(id string) string {
@@ -255,8 +269,16 @@ func (fs *FileTaskStore) GetMasterTask(id string) (*MasterTask, error) {
 	return mt, nil
 }
 
-func (fs *FileTaskStore) UpdateMasterTaskStatus(id, status string) error { return nil }
-
+func (fs *FileTaskStore) CompleteMasterTask(id string) error {
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+	mt, ok := fs.masters[id]
+	if !ok {
+		return nil
+	}
+	mt.Status = "done"
+	return nil
+}
 
 func (fs *FileTaskStore) SaveMasterTaskProgress(masterTaskID, progressJSON string) error {
 	return os.WriteFile(filepath.Join(fs.masterDir(masterTaskID), "plan.json"), []byte(progressJSON), 0644)
@@ -281,7 +303,7 @@ func (fs *FileTaskStore) InsertTask(task *Task) error {
 	}
 	meta := &taskMeta{
 		ID:            task.ID, Title: task.Title, Description: task.Description,
-		Role:          string(task.Role), State: "pending", Output: task.Output,
+		Role:          string(task.Role), Output: task.Output,
 		ParentIDs:     task.ParentIDs, BatchID: task.BatchID, MasterTaskID: task.MasterTaskID,
 		VerifierFocus: task.VerifierFocus, MaxRetries: task.MaxRetries,
 		CreatedAt: time.Now().UTC().Format(time.RFC3339),
@@ -362,6 +384,7 @@ func (fs *FileTaskStore) ListTasksByState(state TaskState) ([]*Task, error) {
 	return result, nil
 }
 
+// UpdateTask updates structural fields only. State and RetryCount are runtime-only.
 func (fs *FileTaskStore) UpdateTask(id string, fields map[string]interface{}) error {
 	fs.mu.Lock()
 	t, ok := fs.tasks[id]
@@ -383,9 +406,6 @@ func (fs *FileTaskStore) UpdateTask(id string, fields map[string]interface{}) er
 	if v, ok := fields["description"]; ok {
 		meta.Description = fmt.Sprint(v)
 		t.Description = meta.Description
-	}
-	if v, ok := fields["state"]; ok {
-		meta.State = fmt.Sprint(v)
 	}
 	if v, ok := fields["batch_id"]; ok {
 		meta.BatchID = fmt.Sprint(v)
@@ -413,39 +433,82 @@ func (fs *FileTaskStore) UpdateTask(id string, fields map[string]interface{}) er
 			t.MaxRetries = int(n)
 		}
 	}
+	// retry_count: runtime only, update in-memory but don't persist.
 	if v, ok := fields["retry_count"]; ok {
 		switch n := v.(type) {
 		case int:
-			meta.RetryCount = n
 			t.RetryCount = n
 		case float64:
-			meta.RetryCount = int(n)
 			t.RetryCount = int(n)
 		}
 	}
 	return fs.writeMeta(dir, meta)
 }
 
+// TransitionState updates the in-memory state and writes/clears marker files.
+// Terminal states (failed, suspended, pending_confirmation) write marker files.
+// Non-terminal states (pending, assigned, producing, etc.) clear terminal markers
+// so deriveState works correctly from output files.
 func (fs *FileTaskStore) TransitionState(id string, newState TaskState, _, _ string) error {
 	fs.mu.Lock()
 	if t, ok := fs.tasks[id]; ok {
 		t.State = newState
 	}
 	fs.mu.Unlock()
+
 	dir := fs.findTaskDir(id)
 	if dir == "" {
 		return nil
 	}
-	meta, err := fs.readMeta(dir)
-	if err != nil {
-		return nil
-	}
-	meta.State = string(newState)
-	return fs.writeMeta(dir, meta)
+
+	fs.applyStateMarkers(dir, newState)
+	return nil
 }
 
+// ForceTransitionState bypasses the valid-transitions table.
+// Used for admin actions (cancel, cleanup, resume).
 func (fs *FileTaskStore) ForceTransitionState(id string, newState TaskState, _ string) error {
-	return fs.TransitionState(id, newState, "", "")
+	fs.mu.Lock()
+	if t, ok := fs.tasks[id]; ok {
+		t.State = newState
+	}
+	fs.mu.Unlock()
+
+	dir := fs.findTaskDir(id)
+	if dir == "" {
+		return nil
+	}
+
+	fs.applyStateMarkers(dir, newState)
+	return nil
+}
+
+// applyStateMarkers writes or clears marker files to match the target state.
+func (fs *FileTaskStore) applyStateMarkers(dir string, newState TaskState) {
+	// Always clear terminal markers when moving to a non-terminal state.
+	switch newState {
+	case TaskStateFailed:
+		os.WriteFile(filepath.Join(dir, "error.md"), []byte("task failed"), 0644)
+		os.Remove(filepath.Join(dir, "suspended.md"))
+		os.Remove(filepath.Join(dir, "confirmation.md"))
+	case TaskStateSuspended:
+		os.WriteFile(filepath.Join(dir, "suspended.md"), []byte("task suspended"), 0644)
+		os.Remove(filepath.Join(dir, "error.md"))
+		os.Remove(filepath.Join(dir, "confirmation.md"))
+	case TaskStatePendingConfirmation:
+		os.WriteFile(filepath.Join(dir, "confirmation.md"), []byte("pending confirmation"), 0644)
+		os.Remove(filepath.Join(dir, "error.md"))
+		os.Remove(filepath.Join(dir, "suspended.md"))
+	case TaskStateDone:
+		os.Remove(filepath.Join(dir, "error.md"))
+		os.Remove(filepath.Join(dir, "suspended.md"))
+		os.Remove(filepath.Join(dir, "confirmation.md"))
+	default:
+		// Non-terminal: clear all terminal markers.
+		os.Remove(filepath.Join(dir, "error.md"))
+		os.Remove(filepath.Join(dir, "suspended.md"))
+		os.Remove(filepath.Join(dir, "confirmation.md"))
+	}
 }
 
 func (fs *FileTaskStore) UpdateTaskMasterTaskID(taskID, masterTaskID string) error {
@@ -464,14 +527,27 @@ func (fs *FileTaskStore) DeleteTask(id string) error {
 }
 
 // ---------------------------------------------------------------------------
-// maintenance
+// compatibility — no-op methods retained for callers that haven't been updated
 // ---------------------------------------------------------------------------
 
-func (fs *FileTaskStore) Checkpoint() error                             { return nil }
-func (fs *FileTaskStore) checkpointAfterWrite()                          {}
-func (fs *FileTaskStore) Close() error                                   { return nil }
-func (fs *FileTaskStore) RecordStateHistory(_, _, _, _ string) error     { return nil }
+func (fs *FileTaskStore) Close() error                             { return nil }
+func (fs *FileTaskStore) Checkpoint() error                        { return nil }
+func (fs *FileTaskStore) checkpointAfterWrite()                     {}
 func (fs *FileTaskStore) GetTaskHistory(_ string) ([]StateHistoryEntry, error) { return nil, nil }
+
+// UpdateMasterTaskStatus updates the master task status in memory.
+func (fs *FileTaskStore) UpdateMasterTaskStatus(id, status string) error {
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+	if mt, ok := fs.masters[id]; ok {
+		mt.Status = status
+	}
+	return nil
+}
+
+// ---------------------------------------------------------------------------
+// memory
+// ---------------------------------------------------------------------------
 
 func (fs *FileTaskStore) SaveMemory(memory *MemoryEntry) error {
 	memDir := filepath.Join(fs.baseDir, "memory")

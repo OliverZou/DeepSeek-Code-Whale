@@ -122,11 +122,11 @@ func (e *TeamEngine) Team() *TeamConfig {
 // New creates a TeamEngine with the given dependencies.
 //
 // Parameters:
-//   - dbPath:         Path to SQLite database (use ":memory:" for testing)
-//   - whiteboardDir:  Directory for inter-agent file communication
+//   - _:              Deprecated (was SQLite dbPath, now unused — state is file-based)
+//   - whiteboardDir:  Directory for inter-agent file communication and task storage
 //   - configPath:     Path to team_engine.yaml (empty = use defaults)
 //   - spawner:        Whale SubagentSpawner implementation
-func New(dbPath, whiteboardDir, configPath string, spawner SubagentSpawner) (*TeamEngine, error) {
+func New(_, whiteboardDir, configPath string, spawner SubagentSpawner) (*TeamEngine, error) {
 	wb, err := NewWhiteboard(whiteboardDir)
 	if err != nil {
 		return nil, fmt.Errorf("init whiteboard: %w", err)
@@ -224,10 +224,9 @@ func (e *TeamEngine) CancelMasterTaskExecution(masterTaskID string) bool {
 	return ok
 }
 
-// CleanupInterruptedTasks opens the database at dbPath, resets tasks
-// in transient states (producing, verifying, assigned) to suspended,
-// and clears stale "running" status on master tasks.  Safe to call
-// during startup or when a whale process reconnects.
+// CleanupInterruptedTasks resets tasks in transient states to suspended.
+// With file-based state, this is rarely needed — deriveState handles crash
+// recovery naturally. Kept for explicit cleanup scenarios.
 func CleanupInterruptedTasks(storeDir string) {
 	store, err := NewFileTaskStore(storeDir)
 	if err != nil {
@@ -236,7 +235,7 @@ func CleanupInterruptedTasks(storeDir string) {
 	tasks, _ := store.ListTasks()
 	for _, t := range tasks {
 		switch t.State {
-		case TaskStateProducing, TaskStateVerifying, TaskStateAssigned:
+		case TaskStateProducing, TaskStateChecking, TaskStateChecked, TaskStateVerifying, TaskStateAssigned:
 			_ = store.ForceTransitionState(t.ID, TaskStateSuspended, "interrupted-restart")
 		}
 	}
@@ -252,7 +251,7 @@ func (e *TeamEngine) cleanupInterruptedTasks() {
 	}
 	for _, t := range tasks {
 		switch t.State {
-		case TaskStateProducing, TaskStateVerifying, TaskStateAssigned:
+		case TaskStateProducing, TaskStateChecking, TaskStateChecked, TaskStateVerifying, TaskStateAssigned:
 			_ = e.Store.ForceTransitionState(t.ID, TaskStateSuspended, "interrupted-restart")
 			if defaultTeamLog != nil {
 				defaultTeamLog.EngineResumeTask(t.ID, string(TaskStateSuspended))
@@ -427,8 +426,20 @@ func filepathJoin(elem ...string) string {
 // Task creation & lifecycle
 // ---------------------------------------------------------------------------
 
-// CreateMasterTask creates a new master task record.
+// CreateMasterTask creates or reuses a master task record.
+// If a master task with the same goal and workspace already exists,
+// it is returned instead of creating a duplicate.
 func (e *TeamEngine) CreateMasterTask(goal, workspacePath, sessionID string) (*MasterTask, error) {
+	// Reuse existing master task if goal + workspace match.
+	if existing, _ := e.Store.ListMasterTasks(); len(existing) > 0 {
+		for _, mt := range existing {
+			if mt.Goal == goal && mt.WorkspacePath == workspacePath {
+				Log("task", "reuse master task %s for goal %q", mt.ID[:8], goal)
+				return mt, nil
+			}
+		}
+	}
+
 	agent := ""
 	if e.team != nil {
 		if len(e.team.Roles) == 1 {
@@ -877,7 +888,7 @@ func (e *TeamEngine) buildExecutionSummary(batches []*Batch, goal, workdir strin
 	return b.String()
 }
 
-// CreateTask creates a new task and persists it to the database.
+// CreateTask creates a new task and persists it to the store.
 func (e *TeamEngine) CreateTask(title, description string, role AgentRole, profile ToolProfile, parentIDs []string, maxRetries int, workdir, verifierFocus, batchID, masterTaskID string) (*Task, error) {
 	id := uuid.New().String()
 	if profile == "" {
@@ -965,24 +976,26 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 		return false, fmt.Errorf("task %q not found", taskID)
 	}
 
-	// File-based completion: if output + verify files already exist, done.
-	if task.Output != "" {
-		if _, oErr := os.Stat(task.Output); oErr == nil {
-			if _, vErr := os.Stat(filepath.Join(filepath.Dir(task.Output), "verify.md")); vErr == nil {
-				e.mu.Unlock()
-				_ = e.Store.ForceTransitionState(taskID, TaskStateDone, "output files exist")
-				return true, nil
-			}
-		}
-	}
-
-	// Guard: only start from PENDING or ASSIGNED.
-	if task.State != TaskStatePending && task.State != TaskStateAssigned {
+	// File-based completion: task-dir output + verifier → skip execution.
+	// State is derived from files, not read from meta.json.
+	dir := e.Whiteboard.TaskDir(taskID)
+	state := e.Store.DeriveState(dir)
+	if state == TaskStateDone {
 		e.mu.Unlock()
-		return false, fmt.Errorf("task %q is in state %s; can only run from pending or assigned", taskID, task.State)
+		Log("task", "task: %s skipped (done: output+verify exist)", taskID[:8])
+		return true, nil
 	}
 
-	// Step 1: Assign.
+	// Guard: only start from PENDING, ASSIGNED, or PRODUCED.
+	if task.State != TaskStatePending && task.State != TaskStateAssigned && task.State != TaskStateProduced {
+		e.mu.Unlock()
+		return false, fmt.Errorf("task %q is in state %s; can only run from pending/assigned/produced", taskID, task.State)
+	}
+
+	// When resuming with existing output, skip produce and go straight to verification.
+	skipProduce := task.State == TaskStateProduced
+
+	// Step 1: Assign (only for pending tasks).
 	if task.State == TaskStatePending {
 		if err := e.AssignTask(taskID); err != nil {
 			e.mu.Unlock()
@@ -1024,7 +1037,9 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 			}
 		}
 
-		// Read team template and memory.
+		// ---- Phase 1: Producing (skip if resuming with existing output) --
+		if !skipProduce {
+			// Read team template and memory.
 		template := e.readTeamTemplate(task.Output)
 		memory, _ := e.BuildMemoryContext(task.Role, task.Title)
 
@@ -1044,9 +1059,11 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 			return false, fmt.Errorf("write inbox: %w", err)
 		}
 
-		// Agent prompt: short reference to inbox.md.
+		// Agent prompt: reference inbox.md, working dir is out/.
 		inboxPath := filepath.Join(e.Whiteboard.TaskDir(task.ID), "input.md")
-		prompt := fmt.Sprintf("[Role: %s]\n\n🎯 任务文件: %s\n📤 产出路径: %s\n\n请先阅读任务文件了解完整需求，然后产出到指定路径。", task.Role, inboxPath, task.Output)
+		outDir := filepath.Join(e.Whiteboard.TaskDir(task.ID), "out")
+		prompt := fmt.Sprintf("[Role: %s]\n\n工作目录: %s\n任务文件: %s\n产出: %s\n\n所有产出文件请写在你的工作目录下。完成后在 output.md 中总结你的工作。",
+			task.Role, outDir, inboxPath, task.Output)
 		if len(task.ParentIDs) == 0 {
 			prompt += "\n\n如果任务过大无法一次完成，在产出开头输出 [SPLIT_PLAN] 拆分。"
 		}
@@ -1064,13 +1081,17 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 		if workdir == "" {
 			workdir = "."
 		}
+		// Agent runs in a sandboxed out/ directory.
+		// task.Workdir keeps the original workspace for checker/build reference.
+		agentWorkdir := filepath.Join(e.Whiteboard.TaskDir(taskID), "out")
+		os.MkdirAll(agentWorkdir, 0755)
 
 		// Coding Harness (场景2): create isolated git worktree for coding tasks.
 		var hasWorktree bool
 		if e.worktreeEnabled && isCodingRole(task.Role) {
 			wtPath, branch, err := e.createWorktree(task.ID)
 			if err == nil {
-				workdir = wtPath
+				agentWorkdir = wtPath
 				task.Workdir = wtPath
 				task.ArtifactPath = branch
 				hasWorktree = true
@@ -1117,7 +1138,7 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 			e.activeStdinWriters[taskID] = w
 			e.mu.Unlock()
 		}
-		result := e.Runner.RunWithContext(taskCtx, prompt, workdir, toolsStr, taskTimeout, liveOutput, onPID, onStdin)
+		result := e.Runner.RunWithContext(taskCtx, prompt, agentWorkdir, toolsStr, taskTimeout, liveOutput, onPID, onStdin)
 		e.mu.Lock()
 		delete(e.activeCancels, taskID)
 		delete(e.activeAgents, taskID)
@@ -1202,8 +1223,53 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 			return false, fmt.Errorf("transition to produced: %w", err)
 		}
 		e.mu.Unlock()
+		} // end if !skipProduce
 
-		// ---- Phase 2: Verifying ----------------------------------------
+		// Reset for subsequent retry iterations.
+		skipProduce = false
+
+		// ---- Phase 2a: Checking (deterministic, no LLM) ----------------
+		e.mu.Lock()
+		if err := e.Store.TransitionState(taskID, TaskStateChecking, "", ""); err != nil {
+			e.mu.Unlock()
+			return false, fmt.Errorf("transition to checking: %w", err)
+		}
+		e.mu.Unlock()
+
+		var passed, isRetry bool
+			var feedback string
+			var verifyDur time.Duration
+
+		chk := NewChecker(e.Whiteboard, 60*time.Second)
+		chkPassed, _, chkFeedback, chkErr := chk.Check(task)
+		if chkErr != nil {
+			return false, fmt.Errorf("checker error: %w", chkErr)
+		}
+
+		if !chkPassed {
+			// Checker found deterministic issues.  Skip Verifier (saves
+			// tokens) and feed back to Worker for retry.
+			if e.Loggers != nil {
+				e.Loggers.LogAgent("checker", taskID, attempt+1, "Deterministic check", fmt.Sprintf("[FAIL] %s", chkFeedback), 0, 0, nil)
+				e.fireEvent(TaskEvent{Type: EventAgentLog, TaskID: taskID})
+			}
+			// Reuse the verification-failure retry path below.
+			feedback = chkFeedback
+			passed = false
+			isRetry = false
+		}
+
+
+		if chkPassed {
+			// Checker passed — ready for semantic verification.
+			e.mu.Lock()
+			if err := e.Store.TransitionState(taskID, TaskStateChecked, "", ""); err != nil {
+				e.mu.Unlock()
+				return false, fmt.Errorf("transition to checked: %w", err)
+			}
+			e.mu.Unlock()
+
+		// ---- Phase 2b: Verifying (LLM agent, semantic) ----------------
 		e.mu.Lock()
 		if err := e.Store.TransitionState(taskID, TaskStateVerifying, "", ""); err != nil {
 			e.mu.Unlock()
@@ -1211,10 +1277,7 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 		}
 		e.mu.Unlock()
 
-		var passed, isRetry bool
-		var feedback string
 
-		var verifyDur time.Duration
 		if task.UseDW {
 			// Dynamic Workflow mode: N verifiers in parallel + Synthesizer.
 			passed, isRetry, feedback = e.runDWVerification(task)
@@ -1232,7 +1295,7 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 			if e.team != nil && e.team.Config != nil {
 				verifierModel = e.team.Config.Model.VerifierDefault
 			}
-			v := NewVerifier(e.Whiteboard, e.Runner, 0, verifierModel).WithCustomPrompt(verifierPrompt)
+			v := NewVerifier(e.Whiteboard, e.Runner, e.Router, 0, verifierModel).WithCustomPrompt(verifierPrompt)
 			verifyStart := time.Now()
 			passed, isRetry, feedback, err = v.Verify(task)
 			verifyDur = time.Since(verifyStart)
@@ -1282,13 +1345,14 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 			e.mu.Unlock()
 			// Write verify file — file-based completion proof.
 			if task.Output != "" {
-				os.WriteFile(filepath.Join(filepath.Dir(task.Output), "verify.md"), []byte(feedback), 0644)
+				os.WriteFile(filepath.Join(e.Whiteboard.TaskDir(taskID), "verify.md"), []byte(feedback), 0644)
 			}
 			// Record lesson for future agents with the same role.
 			e.recordLesson(task.Role, task.Title, truncateLesson(feedback, 80))
 			return true, nil
 		}
 
+		}
 		// Verification failed — prepare retry.
 		e.mu.Lock()
 		task, err = e.Store.GetTask(taskID)
@@ -1533,9 +1597,6 @@ func (e *TeamEngine) PlanAndRun(ctx context.Context, goal, workdir, masterTaskID
 	// Write plan.md — structured overview of the goal and all batches/tasks.
 	e.writePlanMarkdown(goal, batches, workdir)
 
-	// Flush WAL so dashboard's separate DB connection can see new tasks.
-	if err := e.Store.Checkpoint(); err != nil {
-	}
 	// Notify dashboard that tasks have been created.
 	e.fireEvent(TaskEvent{Type: EventStateChanged})
 
@@ -1669,7 +1730,7 @@ func (e *TeamEngine) PlanAndRun(ctx context.Context, goal, workdir, masterTaskID
 						return e.Store.ForceTransitionState(taskID, state, reason)
 					},
 				)
-				// Flush WAL so dashboard sees new re-decomposed tasks.
+				// Pick up new re-decomposed tasks for the dashboard.
 				if len(newTasks) > 0 {
 					_ = e.Store.Checkpoint()
 				}
@@ -2362,7 +2423,7 @@ func (e *TeamEngine) DeleteMasterTask(masterTaskID string) error {
 	return fmt.Errorf("list subtasks: %w", err)
 	}
 	for _, t := range subtasks {
-		if t.State == TaskStateProducing || t.State == TaskStateVerifying {
+		if t.State == TaskStateProducing || t.State == TaskStateChecking || t.State == TaskStateChecked || t.State == TaskStateVerifying {
 			_ = e.Store.TransitionState(t.ID, TaskStateFailed, "deleted by user", "")
 		}
 		_ = e.Store.DeleteTask(t.ID)
@@ -2378,6 +2439,39 @@ func (e *TeamEngine) DeleteMasterTask(masterTaskID string) error {
 	e.Whiteboard.CleanupMasterTask(masterTaskID, ids)
 	return nil
 	}
+
+// ApplyOutput copies the task's out/ directory contents to targetDir.
+// This is the user-facing "apply to workspace" action. The original
+// output files in the task directory are never modified or removed.
+func (e *TeamEngine) ApplyOutput(taskID, targetDir string) error {
+	srcDir := filepath.Join(e.Whiteboard.TaskDir(taskID), "out")
+	if _, err := os.Stat(srcDir); err != nil {
+		return fmt.Errorf("task %s has no output directory", taskID)
+	}
+	if err := os.MkdirAll(targetDir, 0755); err != nil {
+		return fmt.Errorf("create target dir: %w", err)
+	}
+	return copyDir(srcDir, targetDir)
+}
+
+// copyDir recursively copies a directory tree.
+func copyDir(src, dst string) error {
+	return filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, _ := filepath.Rel(src, path)
+		target := filepath.Join(dst, rel)
+		if info.IsDir() {
+			return os.MkdirAll(target, 0755)
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		return os.WriteFile(target, data, 0644)
+	})
+}
 
 // runDWVerification executes Dynamic Workflow verification for a task:
 // N parallel verifiers with different perspectives + Synthesizer merge.
@@ -2414,7 +2508,7 @@ func (e *TeamEngine) runDWVerification(task *Task) (passed bool, retry bool, fee
 		wg.Add(1)
 		go func(idx int, perspective string) {
 			defer func() { <-sem; wg.Done() }()
-			v := NewVerifier(e.Whiteboard, e.Runner, 0)
+			v := NewVerifier(e.Whiteboard, e.Runner, e.Router, 0)
 			// Set verifier focus for this perspective.
 			t := *task // shallow copy
 			t.VerifierFocus = strings.TrimSpace(perspective)
@@ -2456,7 +2550,7 @@ SYNTHESIS: brief explanation
 FINDINGS: key issues consolidated from all verifiers
 `)
 
-	synthOutput := e.Runner.RunVerifier(synthPrompt, task.Workdir, 120*time.Second, "")
+	synthOutput := e.Runner.RunVerifier(synthPrompt, task.Workdir, 120*time.Second, ProfileReadOnly, "")
 	synthVerdict := extractVerdict(synthOutput.Stdout, passCount, len(results))
 
 	// Write DW verification results to whiteboard.
@@ -2557,6 +2651,10 @@ func GetProgress(state TaskState) int {
 		return 25
 	case TaskStateProduced:
 		return 50
+	case TaskStateChecking:
+		return 55
+	case TaskStateChecked:
+		return 60
 	case TaskStateVerifying:
 		return 65
 	case TaskStateVerified:

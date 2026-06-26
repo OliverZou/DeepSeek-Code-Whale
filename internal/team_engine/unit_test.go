@@ -30,7 +30,7 @@ func TestDeleteMasterTaskCascades(t *testing.T) {
 	eng := newTestEngine(t)
 	defer eng.Close()
 
-	mt, _ := eng.CreateMasterTask("cascade test", "/tmp")
+	mt, _ := eng.CreateMasterTask("cascade test", "/tmp", "")
 	// Create 3 subtasks.
 	for i := 0; i < 3; i++ {
 		task, _ := eng.CreateTask("Sub", "subtask", RoleDeveloper, "", nil, 0, ".", "", "", "")
@@ -61,10 +61,10 @@ func TestForceTransitionState(t *testing.T) {
 
 	task, _ := eng.CreateTask("Force", "Force transition", RoleDeveloper, "", nil, 0, ".", "", "", "")
 
-	// Normal CanTransition from PENDING to DONE is not valid.
-	if CanTransition(TaskStatePending, TaskStateDone) {
-		t.Skip("PENDING→DONE is now valid, skipping force test")
-	}
+	// With file-based state, DONE requires output.md + verify.md.
+	dir := eng.Whiteboard.TaskDir(task.ID)
+	os.WriteFile(filepath.Join(dir, "output.md"), []byte("done"), 0644)
+	os.WriteFile(filepath.Join(dir, "verify.md"), []byte("passed"), 0644)
 
 	// ForceTransitionState bypasses the transition table.
 	if err := eng.Store.ForceTransitionState(task.ID, TaskStateDone, "forced"); err != nil {
@@ -247,6 +247,32 @@ func TestParseFindingsNone(t *testing.T) {
 	findings = ParseFindings("")
 	if len(findings) != 0 {
 		t.Errorf("expected 0 findings for empty input, got %d", len(findings))
+	}
+}
+
+func TestParseVerdict_Emoji(t *testing.T) {
+	tests := []struct {
+		output    string
+		wantPass  bool
+		wantRetry bool
+	}{
+		{"VERDICT: PASS", true, false},
+		{"VERDICT: FAIL", false, false},
+		{"VERDICT: RETRY", false, true},
+		{"**VERDICT: ✅ PASS**", true, false},
+		{"**VERDICT:** ✅ PASS", true, false},
+		{"VERDICT:  PASS", true, false},
+		{"VERDICT: ❌ FAIL", false, false},
+		{"VERDICT:\nPASS", true, false},
+		{"some text VERDICT: PASS more text", true, false},
+		{"no verdict here", false, false},
+	}
+	for _, tc := range tests {
+		gotPass, gotRetry := parseVerdict(tc.output)
+		if gotPass != tc.wantPass || gotRetry != tc.wantRetry {
+			t.Errorf("parseVerdict(%q) = {passed:%v, retry:%v}, want {passed:%v, retry:%v}",
+				tc.output, gotPass, gotRetry, tc.wantPass, tc.wantRetry)
+		}
 	}
 }
 

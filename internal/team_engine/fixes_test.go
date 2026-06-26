@@ -125,55 +125,50 @@ func TestBuildLeaderPrompt_InjectRules(t *testing.T) {
 	}
 }
 
-func TestBuildLeaderPrompt_InjectPipeline(t *testing.T) {
+func TestBuildLeaderPrompt_CollaborationRules(t *testing.T) {
 	tc := &TeamConfig{
 		Label: "test",
 		Leader: TeamLeaderConfig{Role: "队长"},
 		Roles: []string{"backend-engineer"},
 		RoleTitles: map[string]string{"backend-engineer": "后端工程师"},
 		RoleDescs:  map[string]string{"backend-engineer": "写后端"},
-		Pipeline: &PipelineFile{
-			Pipelines: map[string]PipelineDef{
-				"new-feature": {
-					Description: "新功能开发",
-					Trigger:     "新建|开发",
-					Stages: []PipelineStage{
-						{ID: "design", Label: "设计", Roles: []string{"软件架构师"}},
-						{ID: "impl", Label: "实施", Roles: []string{"后端工程师", "前端工程师"}, DependsOn: []string{"design"}, Parallel: true},
-					},
-				},
-				"bugfix": {
-					Description: "Bug修复",
-					Trigger:     "bug|修复",
-					Stages: []PipelineStage{
-						{ID: "fix", Label: "修复", Roles: []string{"后端工程师"}},
-					},
-				},
-			},
-			Default: "dynamic",
-		},
 	}
 
 	basePrompt := DecomposePrompt("test goal")
 	result := tc.BuildLeaderPrompt(basePrompt)
 
-	if !strings.Contains(result, "Pipeline Templates") {
-		t.Error("missing pipeline section header")
+	if !strings.Contains(result, "协作铁律") {
+		t.Error("missing collaboration rules section")
 	}
-	if !strings.Contains(result, "ADVISORY") {
-		t.Error("missing advisory label")
+	if !strings.Contains(result, "你是编排者，不是执行者") {
+		t.Error("missing rule: leader is orchestrator not executor")
 	}
-	if !strings.Contains(result, "new-feature") {
-		t.Error("missing pipeline name: new-feature")
+	if !strings.Contains(result, "禁止自己代写") {
+		t.Error("missing rule: no ghost-writing")
 	}
-	if !strings.Contains(result, "bugfix") {
-		t.Error("missing pipeline name: bugfix")
+}
+
+func TestBuildLeaderPrompt_CapabilityTable(t *testing.T) {
+	tc := &TeamConfig{
+		Label: "test",
+		Leader: TeamLeaderConfig{Role: "队长"},
+		Roles: []string{"backend-engineer"},
+		RoleTitles:        map[string]string{"backend-engineer": "后端工程师"},
+		RoleCapabilities:  map[string]string{"backend-engineer": "功能开发、Bug修复"},
+		RoleOutputSpecs:   map[string]string{"backend-engineer": "代码+测试"},
 	}
-	if !strings.Contains(result, "dynamic") {
-		t.Error("missing default strategy")
+
+	basePrompt := DecomposePrompt("test goal")
+	result := tc.BuildLeaderPrompt(basePrompt)
+
+	if !strings.Contains(result, "团队成员能力清单") {
+		t.Error("missing capability table header")
 	}
-	if !strings.Contains(result, "parallel=true") {
-		t.Error("missing parallel flag")
+	if !strings.Contains(result, "功能开发") {
+		t.Error("missing capability content")
+	}
+	if !strings.Contains(result, "代码+测试") {
+		t.Error("missing output spec content")
 	}
 }
 

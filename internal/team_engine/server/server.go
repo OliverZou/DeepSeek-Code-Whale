@@ -2,7 +2,7 @@
 // real-time task status monitoring.  The web dashboard frontend lives
 // in cmd/dashboard (Wails app) and consumes these API endpoints.
 //
-//	Browser ←── SSE (/api/events) ──→ Go HTTP Server ←── TeamEngine (SQLite + Whiteboard)
+//	Browser ←── SSE (/api/events) ──→ Go HTTP Server ←── TeamEngine (FileStore + Whiteboard)
 //	        ←── GET /api/tasks      ← JSON task list
 //	        ←── GET /api/stats      ← JSON aggregate stats
 package server
