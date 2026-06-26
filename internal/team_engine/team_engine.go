@@ -1126,8 +1126,10 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 			e.activeStdinWriters[taskID] = w
 			e.mu.Unlock()
 		}
-		result := e.Runner.RunWithContext(taskCtx, prompt, agentWorkdir, toolsStr, taskTimeout, liveOutput, onPID, onStdin)
-		// Clean up nested .whale created by whale exec in the agent sandbox.
+		workerStart := time.Now()
+			result := e.Runner.RunWithContext(taskCtx, prompt, agentWorkdir, toolsStr, taskTimeout, liveOutput, onPID, onStdin)
+			Log("timing", "task %s worker done in %.1fs (success=%v)", taskID[:8], time.Since(workerStart).Seconds(), result.Success)
+			// Clean up nested .whale created by whale exec in the agent sandbox.
 		_ = os.RemoveAll(filepath.Join(agentWorkdir, ".whale"))
 		e.mu.Lock()
 		delete(e.activeCancels, taskID)
@@ -1231,7 +1233,9 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 			var verifyDur time.Duration
 
 		chk := NewChecker(e.Whiteboard, 60*time.Second)
+		chkStart := time.Now()
 		chkPassed, _, chkFeedback, chkErr := chk.Check(task)
+		Log("timing", "task %s checker done in %.1fs (pass=%v)", taskID[:8], time.Since(chkStart).Seconds(), chkPassed)
 		if chkErr != nil {
 			return false, fmt.Errorf("checker error: %w", chkErr)
 		}

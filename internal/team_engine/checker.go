@@ -87,7 +87,15 @@ func (c *Checker) Check(task *Task) (passed bool, retry bool, feedback string, e
 	}
 
 	// Use taskDir for build/lint/test if workdir lacks project files.
-	checkDir := workdir
+	outDir := filepath.Join(taskDir, "out")
+		checkDir := outDir
+		if !hasProjectFiles(checkDir) {
+			if hasProjectFiles(taskDir) {
+				checkDir = taskDir
+			} else {
+				checkDir = workdir
+			}
+		}
 	if !hasProjectFiles(checkDir) && hasProjectFiles(taskDir) {
 		checkDir = taskDir
 	}
