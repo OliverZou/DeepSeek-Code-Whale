@@ -2872,9 +2872,9 @@ func countBatches(tasks []PlanTask) int {
 	return len(seen)
 }
 
-// writePlanMarkdown writes plan.md — the structured plan overview.
+// writePlanMarkdown writes plan.md to the whiteboard, not the workspace.
 func (e *TeamEngine) writePlanMarkdown(goal string, batches []*Batch, workdir string) {
-	path := filepath.Join(workdir, "plan.md")
+	path := filepath.Join(e.Whiteboard.BaseDir(), "plan.md")
 	f, err := os.Create(path)
 	if err != nil {
 		return
@@ -2926,7 +2926,7 @@ func countTasks(batches []*Batch) int {
 			b.WriteString("\n")
 		}
 
-		path := filepath.Join(workdir, "output.md")
+		path := filepath.Join(e.Whiteboard.BaseDir(), "output.md")
 		os.WriteFile(path, []byte(b.String()), 0644)
 		if defaultTeamLog != nil {
 			Log("output", "wrote output.md (%d bytes)", b.Len())
