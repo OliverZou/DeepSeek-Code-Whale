@@ -6,6 +6,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"regexp"
+	"strconv"
 	"time"
 )
 
@@ -144,6 +146,10 @@ func (c *Checker) Check(task *Task) (passed bool, retry bool, feedback string, e
 	}
 	// Other roles: no additional deterministic checks.
 
+	// Run LieDetector for code tasks.
+	if task.Role.IsCodeRole() {
+		c.detectLies(workerOutput, checkDir, result)
+	}
 	// 3. Check referenced files exist in worker output.
 	missingRefs := findMissingRefs(workerOutput, checkDir)
 	if len(missingRefs) > 0 {
@@ -538,4 +544,22 @@ func BuildAgentVerifierPrompt(task *Task, workerOutput, _, _ string) string {
 	return fmt.Sprintf(`(deprecated — use Verifier)
 ORIGINAL TASK: %s
 WORKER OUTPUT: %s`, task.Description, workerOutput)
+}
+
+
+// detectLies compares Worker output claims against tool-measured reality.
+func (c *Checker) detectLies(workerOutput, checkDir string, result *CheckResult) {
+	re := regexp.MustCompile(`(\d+)\s*(?:个|项|tests?|测试用例|cases)`)
+	if m := re.FindStringSubmatch(strings.ToLower(workerOutput)); len(m) > 1 {
+		claimed, _ := strconv.Atoi(m[1])
+		// Count actual test functions.
+		_, out, _ := runCheck(checkDir, []string{"grep", "-c", "func Test", "*_test.go"}, c.timeout)
+		if n := strings.TrimSpace(out); n != "" && n != "0" {
+			if actual, err := strconv.Atoi(n); err == nil && claimed > 0 && claimed != actual {
+				result.Passed = false
+				result.Issues = append(result.Issues, fmt.Sprintf("Worker claimed %d tests, actual: %d", claimed, actual))
+				result.Evidence = append(result.Evidence, fmt.Sprintf("LieDetector: tests claimed=%d actual=%d", claimed, actual))
+			}
+		}
+	}
 }

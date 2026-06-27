@@ -1237,19 +1237,33 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 		var passed, isRetry bool
 			var feedback string
 			var verifyDur time.Duration
+			var v *Verifier
 
 		chk := NewChecker(e.Whiteboard, 60*time.Second)
 		chkStart := time.Now()
-		if e.Loggers != nil { e.Loggers.Engine("task %s mech START", taskID[:8]) }
+		if e.Loggers != nil { e.Loggers.Engine("task %s check START", taskID[:8]) }
 		chkPassed, _, chkFeedback, chkErr := chk.Check(task)
 		Log("timing", "task %s checker done in %.1fs (pass=%v)", taskID[:8], time.Since(chkStart).Seconds(), chkPassed)
-		if e.Loggers != nil { e.Loggers.Engine("task %s mech DONE in %.1fs (pass=%v)", taskID[:8], time.Since(chkStart).Seconds(), chkPassed) }
+		if e.Loggers != nil { e.Loggers.Engine("task %s check DONE in %.1fs (pass=%v)", taskID[:8], time.Since(chkStart).Seconds(), chkPassed) }
+		if chkPassed && task.Role.IsCodeRole() {
+			if e.Loggers != nil { e.Loggers.Engine("task %s PASS -> done (code)", taskID[:8]) }
+			e.mu.Lock()
+			e.Store.TransitionState(taskID, TaskStateDone, "", "checker")
+			e.mu.Unlock()
+			if task.Output != "" { os.WriteFile(filepath.Join(e.Whiteboard.TaskDir(taskID), "verify.md"), []byte(chkFeedback), 0644) }
+			e.recordLesson(task.Role, task.Title, truncateLesson(chkFeedback, 80))
+			e.closePersistentSession("worker:" + taskID)
+			return true, nil
+		}
 		if chkErr != nil {
 			return false, fmt.Errorf("checker error: %w", chkErr)
 		}
 
-		if !chkPassed && e.Loggers != nil {
-			e.Loggers.Engine("task %s checker issue (verifier will handle): %s", taskID[:8], chkFeedback)
+		if !chkPassed {
+			feedback = chkFeedback
+			passed = false
+			isRetry = false
+			goto verificationFailed
 		}
 
 
@@ -1270,7 +1284,6 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 		e.mu.Unlock()
 
 
-			var v *Verifier
 		if task.UseDW {
 			// Dynamic Workflow mode: N verifiers in parallel + Synthesizer.
 			passed, isRetry, feedback = e.runDWVerification(task)
@@ -1288,7 +1301,6 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 			if e.team != nil && e.team.Config != nil {
 				verifierModel = e.team.Config.Model.VerifierDefault
 			}
-			var v *Verifier
 			v = NewVerifier(e.Whiteboard, e.Runner, e.Router, 0, verifierModel).WithCustomPrompt(verifierPrompt)
 			verifyStart := time.Now()
 			if e.Loggers != nil { e.Loggers.Engine("task %s verifier START", taskID[:8]) }
@@ -1349,6 +1361,7 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 			return true, nil
 		}
 
+verificationFailed:
 		// Verification failed — prepare retry.
 		e.mu.Lock()
 		task, err = e.Store.GetTask(taskID)
