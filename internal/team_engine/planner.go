@@ -199,9 +199,9 @@ func (p *Planner) Elaborate(rawGoal string, workdir string, timeout time.Duratio
 	if p.team != nil {
 		prompt = p.team.BuildLeaderPrompt(prompt)
 	}
-	if p.team != nil && p.team.Leader.Model != "" {
-		model = []string{p.team.Leader.Model}
-	}
+	// Elaboration is domain-knowledge gap-filling — flash is sufficient.
+	// Override any pro model setting for this phase only.
+	model = []string{"deepseek-v4-flash"}
 
 	mdl := ""
 	if len(model) > 0 {
