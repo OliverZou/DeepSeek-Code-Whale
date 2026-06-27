@@ -43,7 +43,10 @@ func teamEngineSpawnAdapter(runner *tasks.Runner, library *tasks.AgentDefinition
 				// Prepend the agent's system prompt to the task so the
 				// subagent inherits the expert's behavioral instructions.
 				if def.Prompt != "" {
-					tasksReq.Task = def.Prompt + "\n\n---\n\n" + tasksReq.Task
+					// Strip "团队协作" section — WorkBuddy
+					// SendMessage/shutdown protocols conflict with
+					// Team Engine stdout-capture mode.
+					tasksReq.Task = stripTeamworkSection(def.Prompt) + "\n\n---\n\n" + tasksReq.Task
 				}
 			}
 		}
@@ -105,4 +108,17 @@ func teamEngineSpawnAdapter(runner *tasks.Runner, library *tasks.AgentDefinition
 			Diagnostic:      diag,
 		}, nil
 	}
+}
+
+// stripTeamworkSection removes the "团队协作" section from an agent .md prompt.
+// This section (usually "## 团队协作（回传机制）" or "## 团队协作机制（铁律）")
+// contains WorkBuddy orchestration instructions (SendMessage, shutdown_request,
+// TeamCreate) that conflict with Team Engine's subagent stdout-capture model.
+// In Team Engine, subagent output is captured via stdout, not SendMessage.
+func stripTeamworkSection(prompt string) string {
+	idx := strings.Index(prompt, "\n## 团队协作")
+	if idx < 0 {
+		return prompt
+	}
+	return prompt[:idx]
 }

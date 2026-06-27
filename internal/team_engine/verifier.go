@@ -17,18 +17,17 @@ import (
 // The Verifier checks: requirements coverage, logic correctness, security,
 // professional quality, and whether the output meets the original task intent.
 type Verifier struct {
-	runner       *AgentRunner
-	whiteboard   *Whiteboard
-	router       *Router
-	timeout      time.Duration
-	model        string
-	customPrompt string
-	LastPrompt   string
+	runner     *AgentRunner
+	whiteboard *Whiteboard
+	router     *Router
+	timeout    time.Duration
+	model      string
+	agentName  string // agent definition name (e.g. "review", "verifier")
+	LastPrompt string
 }
 
 // NewVerifier creates a Verifier that spawns an LLM agent for semantic
-// verification.  The router is used to resolve tool profiles (ProfileVerify
-// by default) and timeouts.
+// verification.  The router is used to resolve timeouts.
 func NewVerifier(wb *Whiteboard, runner *AgentRunner, router *Router, timeout time.Duration, model ...string) *Verifier {
 	if timeout <= 0 {
 		timeout = 300 * time.Second
@@ -45,9 +44,11 @@ func NewVerifier(wb *Whiteboard, runner *AgentRunner, router *Router, timeout ti
 	return v
 }
 
-// WithCustomPrompt sets a prefix prompt for the verifier (e.g. role context).
-func (v *Verifier) WithCustomPrompt(p string) *Verifier {
-	v.customPrompt = p
+// WithAgentName sets the agent definition name for the verifier.
+// When set, the agent definition's system prompt, tools, and skills
+// are injected by the spawner.  When empty, falls back to ProfileVerify tools.
+func (v *Verifier) WithAgentName(name string) *Verifier {
+	v.agentName = name
 	return v
 }
 
@@ -75,37 +76,47 @@ func (v *Verifier) Verify(task *Task) (passed bool, retry bool, feedback string,
 		workdir = "."
 	}
 
-	// Build the Verifier prompt.
-	var prompt string
-	if v.customPrompt != "" {
-		prompt = v.customPrompt + "\n\n---\n\n"
+	// Build the Verifier prompt — task context only.
+	// The agent's system prompt (from .md or builtin) provides verification
+	// methodology, persona, and output format instructions.
+	desc := stripVerifierFeedback(task.Description)
+	var promptBuilder strings.Builder
+	promptBuilder.WriteString(fmt.Sprintf(`TASK:
+%s
+
+WORKER OUTPUT (%d chars):
+%s
+`, desc, len(workerOutput), truncateStr(workerOutput, 8000)))
+
+	if inbox != "" {
+		promptBuilder.WriteString(fmt.Sprintf(`
+UPSTREAM CONTEXT:
+%s
+`, inbox))
 	}
-	if task.Role.IsContentRole() {
-		prompt += BuildVerifierContentPrompt(task, workerOutput, inbox)
-	} else {
-		prompt += BuildVerifierSemanticPrompt(task, workerOutput, inbox)
+
+	if task.VerifierFocus != "" {
+		promptBuilder.WriteString(buildFocusSection(task.VerifierFocus))
 	}
 
 	// If the Worker output is short, the real deliverable is on disk.
 	if len(workerOutput) < 500 {
-		prompt += fmt.Sprintf(`
-
-NOTE: The worker output above is very short (%d chars).  The actual
-deliverable was likely written to files in the workspace.  Use list_dir
-and read_file to explore the working directory (%s) — look for recently
-created or modified .md, .go, .py, or other project files.  Check
-those files against the requirements, not the empty output above.
-`, len(workerOutput), workdir)
+		promptBuilder.WriteString(fmt.Sprintf(`
+NOTE: The worker output is very short (%d chars).  The actual deliverable
+was likely written to files in %s.  Use list_dir and read_file to
+explore — look for recently created/modified files.
+`, len(workerOutput), workdir))
 	}
 
-	// Resolve tool profile and timeout via router.
-	profile := v.router.ResolveProfile(task.Role, task.Description, true)
+	prompt := promptBuilder.String()
+
+	// Resolve timeout via router.
 	timeout := time.Duration(v.router.ResolveTimeout(task.Role, true)) * time.Second
 	model := v.model
 
 	// Spawn the Verifier LLM agent.
 	v.LastPrompt = prompt
-	result := v.runner.RunVerifier(prompt, workdir, timeout, profile, model)
+	result := v.runner.RunVerifier(prompt, workdir, timeout, v.agentName, model)
 
 	output := result.Stdout
 
@@ -115,7 +126,7 @@ those files against the requirements, not the empty output above.
 			"You MUST run at least 2 tools (read_file + shell_run or grep) and report " +
 			"their ACTUAL output. A bare PASS/FAIL without tool output will be rejected again.\n\n" +
 			prompt
-		result2 := v.runner.RunVerifier(hardenedPrompt, workdir, timeout, profile, model)
+		result2 := v.runner.RunVerifier(hardenedPrompt, workdir, timeout, v.agentName, model)
 		output = result2.Stdout
 	}
 
@@ -186,104 +197,7 @@ func parseVerdict(output string) (passed bool, retry bool) {
 }
 
 // ---------------------------------------------------------------------------
-// Prompts — semantic focus (checker already verified build/lint/files)
-// ---------------------------------------------------------------------------
-
-// BuildVerifierSemanticPrompt creates a prompt for the Verifier LLM agent.
-// The deterministic Checker has already verified build/lint/file-existence,
-// so the Verifier focuses on SEMANTIC concerns.
-func BuildVerifierSemanticPrompt(task *Task, workerOutput, inbox string) string {
-	desc := stripVerifierFeedback(task.Description)
-	return fmt.Sprintf(`Mechanical checks passed. Find at most 5 issues.
-
-TASK:
-%s
-
-WORKER SUMMARY (%d chars):
-%s
-
-Check: requirements met? edge cases? false claims?
-If numbers claimed, count them yourself.
-
-OUTPUT:
-VERDICT:PASS|FAIL
-COUNT:<N>
-ISSUES:
-- <issue>
-... up to 5`, desc, len(workerOutput), truncateStr(workerOutput, 2000))
-}
-
-// BuildVerifierContentPrompt creates a Verifier prompt for content roles
-// (researcher, writer, formatter, evaluator, synthesizer).
-func BuildVerifierContentPrompt(task *Task, workerOutput, inbox string) string {
-	var inboxSection string
-	if inbox != "" {
-		inboxSection = fmt.Sprintf("\n\nFULL TASK INBOX (what the Worker was given):\n%s", inbox)
-	}
-
-	return fmt.Sprintf(`You are a Content Verifier. The deterministic Checker has already verified
-output files exist. Your job is SEMANTIC verification of the content.  Read
-the FULL TASK INBOX — it contains upstream outputs, templates, and context that
-the Worker was expected to read and follow.
-
-ORIGINAL TASK:
-%s%s
-
-OUTPUT TO VERIFY:
-%s
-
-CONTENT CHECKLIST:
-1. SUBSTANCE: Concrete facts, data, or analysis? Or mostly filler?
-2. INBOX REQUIREMENTS: Read the inbox carefully. Does the output satisfy every
-   requirement stated there? Did the Worker incorporate upstream outputs?
-3. SOURCES: Are specific sources cited (URLs, dates, publications)?
-4. CONTRADICTIONS: Do any statements contradict each other or the task?
-5. PLAUSIBILITY: Are any claims obviously impossible?
-6. COMPLETENESS: Does it address ALL requirements from the inbox?
-%s
-
-TOOL-GROUNDED: Use read_file + list_dir to check files, web_search/fetch to
-verify factual claims. Your verdict must be based on external verification.
-
-OUTPUT FORMAT:
-TOOLS USED: [list tools you ran]
-VERDICT: PASS|RETRY|FAIL
-EVIDENCE: [verification evidence from tools]
-ISSUES:
-- [list specific issues, or "none" if PASS]
-
-## FINDINGS (structured JSON array)
----json
-[
-  {"id": "unique-key", "title": "one-line summary", "severity": "critical|major|minor", "evidence": "specific reason"}
-]
----
-`, task.Description, inboxSection, workerOutput, buildFocusSection(task.VerifierFocus))
-}
-
-// ---------------------------------------------------------------------------
-// Backward-compatible stubs (keep old API surface)
-// ---------------------------------------------------------------------------
-
-// Deprecated: Checker.Check with runner is replaced by deterministic Checker.
-// NewChecker(wb, timeout) no longer needs a runner.
-// Use NewChecker(wb, timeout) for deterministic checking.
-// Use NewVerifier(wb, runner, router, timeout, model...) for LLM verification.
-
-// Deprecated: BuildVerifierPrompt kept for external callers.
-// Use BuildVerifierSemanticPrompt instead.
-func BuildVerifierPrompt(task *Task, workerOutput string) string {
-	return BuildVerifierSemanticPrompt(task, workerOutput, "")
-}
-
-// Deprecated: BuildContentVerifierPrompt kept for external callers.
-// Use BuildVerifierContentPrompt instead.
-func BuildContentVerifierPrompt(task *Task, workerOutput string) string {
-	return BuildVerifierContentPrompt(task, workerOutput, "")
-}
-
-// ---------------------------------------------------------------------------
-// Shared helpers (moved from old checker.go)
+// Shared helpers
 // ---------------------------------------------------------------------------
 
 func buildFocusSection(focus string) string {

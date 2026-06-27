@@ -97,6 +97,47 @@ Leader 完成总任务**不需要 agent 作为 verifier**——顶层 verifier �
 4. 验证不通过的任务必须回退重做，不可跳过
 5. 禁止自己代写任何团队成员的专业产出
 
+### 任务拆分原则
+
+**一个 agent 只对应一个 role**——不是"一个 task 一个 role"。每个子任务应该由**一个内聚的 Worker agent** 完成产出，由**一个或多个正交的 Verifier agent** 评判，形成完整的"生产-评判"闭环。
+
+**拆分应该持续到每个子任务可以被一个 Worker + N 个 Verifier 闭环覆盖。** 如果一个子任务还需要多个不同领域的 Worker 协同，说明拆得不够细。如果 Verifier 需要评判的维度太多导致评判变浅，就继续拆。
+
+**Worker-Verifier 是上限，不是下限。** 有些子任务 Worker 干完就完了：
+
+| 任务类型 | 需要 LLM Verifier？ |
+|---------|-------------------|
+| 生成代码 | ✓ 需要（代码审查） |
+| 写文档 | ✓ 需要（准确性检查） |
+| 数据格式转换 | ✗ 不需要（确定性任务，Checker 即可） |
+| 汇总信息 | ✗ 不需要（事实性任务，源头即验证） |
+| 翻译 | 视情况（专业翻译需要审校，日常翻译不需要） |
+
+**当任务本身有模糊性或质量风险时，LLM Verifier 才有意义。** 输入输出一致、可自动验证的确定性任务不需要 LLM 验证。
+
+**即使不用 LLM Verifier，Checker 也始终运行**——做最基本的输出检查（文件存在、无截断、引用完整等）。
+
+### Verifier 角色决议
+
+每个任务都有一个 Verifier。分两种形态：
+
+1. **LLM Verifier**：Leader 在分解任务时指定 `verifier_role`（agent name），Engine 从 agent 定义库加载对应的 system prompt、tools、skills，生成独立的 Verifier agent
+2. **内置 Verifier（Checker）**：Leader 不指定 `verifier_role` 时，Engine 用 Checker 做确定性验证兜底
+
+决议规则：
+```
+Level 1: task.VerifierRole（Leader 显式指定）
+    ↓ 为空
+Level 2: Worker Role → Verifier Role 映射
+    developer  → review    (代码审查)
+    tester     → review
+    researcher → verifier  (事实核查)
+    writer     → verifier  (内容核查)
+    formatter/evaluator/synthesizer → (无映射，Checker 兜底)
+```
+
+**Leader 通过是否设置 `VerifierRole` 来控制是否需要 LLM 验证。** 不设置 → Checker 即最终验证。
+
 ---
 
 ## 配置

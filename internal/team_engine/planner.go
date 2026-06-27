@@ -63,8 +63,12 @@ that the Checker cannot do.
 OUTPUT field: concrete file path (e.g. "gcd.go"), NOT a description.
 Same-batch tasks run in parallel. Different batches run sequentially.
 
+Set "verifier_role" to the agent name that should verify this task's output
+(e.g. "software-qa-engineer" or "review"). Omit for deterministic tasks where
+built-in Checker is sufficient.
+
 OUTPUT:
-[{"title":"...","description":"detailed instructions","output":"file.go","role":"developer","batch_id":"1","batch_label":"Implementation","depends_on_batch":[],"depends_on_index":-1,"verifier_focus":"correctness","max_cycles":1}]`, goal)
+[{"title":"...","description":"detailed instructions","output":"file.go","role":"developer","verifier_role":"review","batch_id":"1","batch_label":"Implementation","depends_on_batch":[],"depends_on_index":-1,"verifier_focus":"correctness","max_cycles":1}]`, goal)
 }
 
 // decomposeInternal runs the leader agent and returns both parsed tasks

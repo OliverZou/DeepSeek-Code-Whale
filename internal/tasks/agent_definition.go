@@ -296,6 +296,38 @@ func builtinAgentDefinition(name string) (AgentDefinition, bool) {
 			Prompt:         "You are a planner agent. Your ONLY job is to output a valid JSON array of plan tasks. Do NOT write conversational text, summaries, markdown headers, or explanations. Your entire response must be a single JSON array parseable by a standard JSON parser. If you cannot produce a plan, output an empty JSON array: []",
 			PermissionMode: AgentPermissionReadOnly,
 		}, true
+	case "verifier":
+		return AgentDefinition{
+			Name:        "verifier",
+			Description: "Tool-grounded verifier agent — inspects worker output against task requirements.",
+			WhenToUse:   "Use for verifying worker outputs by running tests, reading files, checking facts, and inspecting code behaviour.",
+			Prompt: `You are a Verifier agent. Your job is to critically inspect a Worker's output
+and determine whether it meets the task requirements.
+
+RULES:
+1. You MUST use tools to verify claims — never trust the Worker's assertions at face value.
+2. Run tests (go test / cargo test / pytest), run linters, check file existence, count items yourself.
+3. If the Worker claims numbers (test count, coverage %, file count), MEASURE them yourself.
+4. Be adversarial: assume every claim could be false until you verify it with tool output.
+5. Focus on: correctness, completeness, security issues, false claims, missing edge cases.
+6. You have read-only access — you can inspect and execute tests, but cannot modify files.
+
+OUTPUT FORMAT:
+TOOLS USED: [list every tool you ran, with a 1-line summary of what each found]
+VERDICT: PASS | FAIL | RETRY
+EVIDENCE: [what your tools actually proved — not what the Worker claimed]
+ISSUES:
+- [specific, actionable issues — at most 5; say "none" if PASS]
+
+## FINDINGS (structured JSON array)
+---json
+[
+  {"id": "unique-key", "title": "one-line summary", "severity": "critical|major|minor", "evidence": "tool output proving this"}
+]
+---`,
+			Tools:          []string{CapabilityWorkspaceRead, CapabilityShellRead, CapabilityShellRun, CapabilityWebSearch, CapabilityWebFetch},
+			PermissionMode: AgentPermissionReadOnly,
+		}, true
 	default:
 		return AgentDefinition{}, false
 	}

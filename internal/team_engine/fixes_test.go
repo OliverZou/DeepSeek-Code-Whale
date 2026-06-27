@@ -97,7 +97,7 @@ func TestBuildLeaderPrompt_NoRolesPreservesBase(t *testing.T) {
 	result := tc.BuildLeaderPrompt(basePrompt)
 
 	// Base prompt content should remain.
-	if !strings.Contains(result, "ONE TASK PER ROLE") {
+	if !strings.Contains(result, "CORE RULE") {
 		t.Error("base prompt should remain when no team roles")
 	}
 	if !strings.Contains(result, "You are a great leader") {

@@ -1054,7 +1054,7 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 		// Agent prompt: reference inbox.md, working dir is out/.
 		inboxPath := filepath.Join(e.Whiteboard.TaskDir(task.ID), "input.md")
 		outDir := filepath.Join(e.Whiteboard.TaskDir(task.ID), "out")
-		prompt := fmt.Sprintf("[Role: %s]\n\n工作目录: %s\n任务文件: %s\n产出: %s\n\n所有产出文件请写在你的工作目录下。完成后在 output.md 中总结你的工作。",
+		prompt := fmt.Sprintf("[Role: %s]\n\n工作目录: %s\n任务文件: %s\n产出: %s\n\n将产出文件写在你的工作目录下。只汇报实际完成的内容，不虚构数字。",
 			task.Role, outDir, inboxPath, task.Output)
 		if len(task.ParentIDs) == 0 {
 			prompt += "\n\n如果任务过大无法一次完成，在产出开头输出 [SPLIT_PLAN] 拆分。"
@@ -1234,7 +1234,7 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 		}
 		e.mu.Unlock()
 
-		var passed, isRetry bool
+		var passed bool
 			var feedback string
 			var verifyDur time.Duration
 			var v *Verifier
@@ -1245,31 +1245,6 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 		chkPassed, _, chkFeedback, chkErr := chk.Check(task)
 		Log("timing", "task %s checker done in %.1fs (pass=%v)", taskID[:8], time.Since(chkStart).Seconds(), chkPassed)
 		if e.Loggers != nil { e.Loggers.Engine("task %s check DONE in %.1fs (pass=%v)", taskID[:8], time.Since(chkStart).Seconds(), chkPassed) }
-		if chkPassed && task.Role.IsCodeRole() {
-			if e.Loggers != nil { e.Loggers.Engine("task %s PASS -> done (code)", taskID[:8]) }
-			e.mu.Lock()
-			e.Store.TransitionState(taskID, TaskStateDone, "", "checker")
-			e.mu.Unlock()
-			if task.Output != "" { os.WriteFile(filepath.Join(e.Whiteboard.TaskDir(taskID), "verify.md"), []byte(chkFeedback), 0644) }
-			e.recordLesson(task.Role, task.Title, truncateLesson(chkFeedback, 80))
-			e.closePersistentSession("worker:" + taskID)
-			return true, nil
-		}
-		if chkPassed && task.Role.IsContentRole() {
-			if e.Loggers != nil { e.Loggers.Engine("task %s content verify", taskID[:8]) }
-			cv := NewContentVerifier(e.Runner)
-			workerOut, _ := e.Whiteboard.ReadOutput(taskID)
-			cvResult := cv.Verify(task, workerOut)
-			e.mu.Lock()
-			e.Store.TransitionState(taskID, TaskStateDone, "", "content-verified")
-			e.mu.Unlock()
-			if task.Output != "" { os.WriteFile(filepath.Join(e.Whiteboard.TaskDir(taskID), "verify.md"), []byte(cvResult), 0644) }
-			cvPassed, _ := parseVerdict(cvResult)
-			if cvPassed { return true, nil }
-			feedback = cvResult
-			passed = false
-			isRetry = false
-		}
 		if chkErr != nil {
 			return false, fmt.Errorf("checker error: %w", chkErr)
 		}
@@ -1277,7 +1252,6 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 		if !chkPassed {
 			feedback = chkFeedback
 			passed = false
-			isRetry = false
 			goto verificationFailed
 		}
 
@@ -1301,40 +1275,30 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 
 		if task.UseDW {
 			// Dynamic Workflow mode: N verifiers in parallel + Synthesizer.
-			passed, isRetry, feedback = e.runDWVerification(task)
+			passed, _, feedback = e.runDWVerification(task)
 		} else {
-			// Use task-level verifier role if specified, otherwise default verifier.
-			verifierPrompt := ""
-			verifierAgentName := task.VerifierRole
-			if verifierAgentName != "" && e.team != nil {
-				// The verifier's agent definition will be resolved by the
-				// spawner adapter via AgentName — we just need to set the
-				// role so the prompt prefix is correct.
-				verifierPrompt = fmt.Sprintf("[Role: %s]\n\n", verifierAgentName)
-			}
-			verifierModel := ""
-			if e.team != nil && e.team.Config != nil {
-				verifierModel = e.team.Config.Model.VerifierDefault
-			}
-			v = NewVerifier(e.Whiteboard, e.Runner, e.Router, 0, verifierModel).WithCustomPrompt(verifierPrompt)
-			verifyStart := time.Now()
-			if e.Loggers != nil { e.Loggers.Engine("task %s verifier START", taskID[:8]) }
-			passed, isRetry, feedback, err = v.Verify(task)
-			verifyDur = time.Since(verifyStart)
-			if e.Loggers != nil { e.Loggers.Engine("task %s verifier DONE in %.1fs (pass=%v)", taskID[:8], verifyDur.Seconds(), passed) }
-			if err != nil {
-				return false, fmt.Errorf("verifier error: %w", err)
-			}
-		}
-
-		// Fallback for content roles: if the Verifier couldn't produce a
-		// verdict (empty feedback) but the Worker output is clearly substantive
-		// (> 500 chars), accept it.
-		if !passed && !isRetry && feedback == "" && task.Role.IsContentRole() {
-			out, _ := e.Whiteboard.ReadOutput(task.ID)
-			if len(out) > 500 {
+			verifierAgentName := e.resolveVerifierAgentName(task)
+			if verifierAgentName != "" {
+				// LLM Verifier needed — spawn a role-specific Verifier agent.
+				verifierModel := ""
+				if e.team != nil && e.team.Config != nil {
+					verifierModel = e.team.Config.Model.VerifierDefault
+				}
+				v = NewVerifier(e.Whiteboard, e.Runner, e.Router, 0, verifierModel).WithAgentName(verifierAgentName)
+				verifyStart := time.Now()
+				if e.Loggers != nil { e.Loggers.Engine("task %s verifier START agent=%s", taskID[:8], verifierAgentName) }
+				passed, _, feedback, err = v.Verify(task)
+				verifyDur = time.Since(verifyStart)
+				if e.Loggers != nil { e.Loggers.Engine("task %s verifier DONE in %.1fs (pass=%v)", taskID[:8], verifyDur.Seconds(), passed) }
+				if err != nil {
+					return false, fmt.Errorf("verifier error: %w", err)
+				}
+			} else {
+				// No LLM Verifier needed — Checker is sufficient.
+				// (Deterministic task: formatter, evaluator, synthesizer, etc.)
+				feedback = chkFeedback
 				passed = true
-				feedback = "AUTO-PASS: output is substantive (" + fmt.Sprintf("%d", len(out)) + " chars)"
+				if e.Loggers != nil { e.Loggers.Engine("task %s no LLM verifier (role=%s) — checker is final", taskID[:8], task.Role) }
 			}
 		}
 
@@ -2539,7 +2503,8 @@ func (e *TeamEngine) runDWVerification(task *Task) (passed bool, retry bool, fee
 		wg.Add(1)
 		go func(idx int, perspective string) {
 			defer func() { <-sem; wg.Done() }()
-			v := NewVerifier(e.Whiteboard, e.Runner, e.Router, 0)
+			agentName := e.resolveVerifierAgentName(task)
+			v := NewVerifier(e.Whiteboard, e.Runner, e.Router, 0).WithAgentName(agentName)
 			// Set verifier focus for this perspective.
 			t := *task // shallow copy
 			t.VerifierFocus = strings.TrimSpace(perspective)
@@ -2581,7 +2546,7 @@ SYNTHESIS: brief explanation
 FINDINGS: key issues consolidated from all verifiers
 `)
 
-	synthOutput := e.Runner.RunVerifier(synthPrompt, task.Workdir, 120*time.Second, ProfileReadOnly, "")
+	synthOutput := e.Runner.RunVerifier(synthPrompt, task.Workdir, 120*time.Second, "", "")
 	synthVerdict := extractVerdict(synthOutput.Stdout, passCount, len(results))
 
 	// Write DW verification results to whiteboard.
@@ -2723,6 +2688,57 @@ func (e *TeamEngine) closePersistentSession(key string) {
 	if ws == nil { return }
 	e.shellSpawner.CloseSession(ws)
 	delete(e.persistentSessions, key)
+}
+
+// resolveVerifierAgentName resolves which agent definition to use for
+// verifying a task.  Two-level lookup; returns "" when no Verifier is needed.
+//
+//	Level 1: task.VerifierRole (Leader explicitly assigned)
+//	Level 2: Worker role → Verifier role mapping
+//
+// Returns "" for deterministic roles (formatter, evaluator, synthesizer)
+// where the Checker's mechanical checks are sufficient.
+func (e *TeamEngine) resolveVerifierAgentName(task *Task) string {
+	// Level 1: Leader explicitly set VerifierRole.
+	// An explicitly empty string means "no Verifier needed".
+	if task.VerifierRole != "" {
+		return task.VerifierRole
+	}
+	// If Leader explicitly set VerifierRole to "" on the PlanTask,
+	// the task.VerifierRole will be "" and we skip the fallback.
+	// (PlanTask always initialises the field; Leader must set it.)
+
+	// Level 2: Worker role → Verifier role mapping.
+	// Only roles with inherent ambiguity or quality risk get a Verifier.
+	roleMap := map[AgentRole]string{
+		RoleDeveloper:  "review",   // code needs code review
+		RoleTester:     "review",   // test code needs review
+		RoleReviewer:   "review",   // reviewer output needs meta-review
+		RoleResearcher: "verifier", // research has factual risk
+		RoleWriter:     "verifier", // writing has accuracy risk
+		// formatter, evaluator, synthesizer: deterministic/factual —
+		// Checker is sufficient, no LLM Verifier needed.
+	}
+	if agentName := roleMap[task.Role]; agentName != "" {
+		return agentName
+	}
+
+	// Level 3: Team auto-match.  Scan the team's roles for a
+	// verifier-candidate agent (QA, tester, reviewer).  This covers
+	// team-specific roles like "software-engineer" that aren't in the
+	// standard roleMap — they get paired with "software-qa-engineer".
+	if e.team != nil {
+		for _, name := range e.team.Roles {
+			lower := strings.ToLower(name)
+			for _, kw := range []string{"qa", "test", "review", "verifier"} {
+				if strings.Contains(lower, kw) {
+					return name
+				}
+			}
+		}
+	}
+
+	return "" // no LLM Verifier — Checker is sufficient
 }
 
 func (e *TeamEngine) recordLesson(role AgentRole, title, lesson string) {

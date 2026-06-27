@@ -221,23 +221,25 @@ func (ar *AgentRunner) Run(prompt, workdir, tools string, timeout time.Duration,
 	return ar.RunWithContext(context.Background(), prompt, workdir, tools, timeout, nil, nil, nil, model...)
 }
 
-// RunVerifier is a convenience wrapper for running a verifier subagent.
-// When profile is empty, defaults to ProfileVerify (read + shell) so the
-// verifier can actually run tests/linters instead of being limited to
-// read-only operations.
-func (ar *AgentRunner) RunVerifier(prompt, workdir string, timeout time.Duration, profile ToolProfile, model ...string) *RunResult {
-	if profile == "" {
-		profile = ProfileVerify
-	}
-	toolNames := ProfileToToolNames(profile)
+// RunVerifier spawns a verifier subagent.  When agentName is set, the
+// agent definition (from .md file or builtin) provides tools, system prompt,
+// and skills — no hand-crafted tool list needed.  When agentName is empty,
+// falls back to ProfileVerify tools so the verifier can still run
+// tests/linters.
+func (ar *AgentRunner) RunVerifier(prompt, workdir string, timeout time.Duration, agentName string, model ...string) *RunResult {
 	req := SubagentRequest{
 		Task:      prompt,
 		Role:      "verifier",
-		Tools:     toolNames,
+		AgentName: agentName,
 		Workdir:   workdir,
 		Timeout:   timeout,
 		MaxIters:  15,
 		MaxCalls:  50,
+	}
+	// When no agent definition is available, fall back to ProfileVerify tools
+	// so the verifier can at least run tests and read files.
+	if agentName == "" {
+		req.Tools = ProfileToToolNames(ProfileVerify)
 	}
 	if len(model) > 0 && model[0] != "" {
 		req.Model = model[0]
@@ -308,6 +310,7 @@ func (ar *AgentRunner) RunDecomposer(prompt, workdir string, timeout time.Durati
 							"depends_on_batch":   map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
 							"depends_on_index":   map[string]any{"type": "integer"},
 							"verifier_focus":     map[string]any{"type": "string"},
+								"verifier_role":      map[string]any{"type": "string"},
 							"use_dw":             map[string]any{"type": "boolean"},
 							"max_cycles":         map[string]any{"type": "integer"},
 						},

@@ -892,7 +892,7 @@ func TestIntegration_SimpleCodeTask(t *testing.T) {
 // TestIntegration_TeamCodeTask verifies the full pipeline with a team config
 // and a Verifier that uses emoji in its verdict (reverse.go case).
 func TestIntegration_TeamCodeTask(t *testing.T) {
-	planJSON := `[{"title":"Implement reverse.go","description":"Write reverse.go with Reverse(s string) string using rune slice","role":"software-engineer","batch_id":"batch-1","batch_label":"Implementation","verifier_focus":"correctness","use_dw":false,"max_cycles":1}]`
+	planJSON := `[{"title":"Research reverse algorithm","description":"Research and document the best approach for string reversal in Go","role":"researcher","verifier_role":"verifier","batch_id":"batch-1","batch_label":"Research","verifier_focus":"correctness,sources","use_dw":false,"max_cycles":1}]`
 
 	workerOutput := `package reverse
 
@@ -1237,5 +1237,63 @@ func TestIntegration_SelfSplitPipeline(t *testing.T) {
 		t.Errorf("expected at least 2 children, got %d", childCount)
 	}
 	_ = batches
+}
+
+// TestIntegration_SoftwareTeam_AgentVerifier verifies the full pipeline using
+// software development team roles with an agent-definition-driven Verifier.
+// Worker="software-engineer", Verifier="software-qa-engineer" (via verifier_role).
+func TestIntegration_SoftwareTeam_AgentVerifier(t *testing.T) {
+	planJSON := `[{"title":"Implement gcd.go","description":"Write gcd.go with GCD(a,b int) int using Euclidean algorithm","role":"software-engineer","verifier_role":"software-qa-engineer","batch_id":"batch-1","batch_label":"Implementation","verifier_focus":"correctness","use_dw":false,"max_cycles":1}]`
+
+	workerOutput := "package gcd\n\n// GCD returns the greatest common divisor using Euclidean algorithm.\nfunc GCD(a, b int) int {\n\tfor b != 0 {\n\t\ta, b = b, a%b\n\t}\n\treturn a\n}\n"
+
+	verifierOutput := "TOOLS USED: read_file (gcd.go), shell_run (go build, go vet, go test -v -cover)\n**VERDICT: ✅ PASS**\nEVIDENCE: go build exit 0, go vet clean, go test all pass, coverage 100%\n## FINDINGS\n---json\n[]\n---"
+
+	eng := newMockEngine(t, map[string]string{
+		"planner":  planJSON,
+		"worker":   workerOutput,
+		"verifier": verifierOutput,
+	})
+	defer eng.Close()
+
+	eng.SetTeam(&TeamConfig{
+		Label: "software-dev-team",
+		Leader: TeamLeaderConfig{
+			Role:  "software-team-lead",
+			Model: "deepseek-v4-flash",
+		},
+		Roles:      []string{"software-engineer", "software-qa-engineer"},
+		RoleTitles: map[string]string{
+			"software-engineer":    "软件工程师",
+			"software-qa-engineer": "测试工程师",
+		},
+	})
+
+	workdir := t.TempDir()
+	mustWrite(t, workdir, "gcd.go", workerOutput)
+	mustWrite(t, workdir, "go.mod", "module test\n\ngo 1.21")
+
+	mt, err := eng.CreateMasterTask("write gcd.go", workdir, "")
+	if err != nil {
+		t.Fatalf("create master task: %v", err)
+	}
+
+	batches, err := eng.PlanAndRun(context.Background(), "write gcd.go", workdir, mt.ID)
+	if err != nil {
+		t.Fatalf("plan and run: %v", err)
+	}
+
+	for _, b := range batches {
+		for _, task := range b.Tasks {
+			if task.State != TaskStateDone {
+				t.Errorf("task %s (%s): expected DONE, got %s (retries=%d, feedback=%s)",
+					task.ID[:8], task.Title, task.State, task.RetryCount, truncateStr(task.VerifierFeedback, 200))
+			}
+			if task.VerifierRole != "software-qa-engineer" {
+				t.Errorf("task %s: expected VerifierRole=software-qa-engineer, got %q",
+					task.ID[:8], task.VerifierRole)
+			}
+		}
+	}
 }
 
