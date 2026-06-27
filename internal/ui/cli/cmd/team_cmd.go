@@ -239,8 +239,11 @@ Subcommands:
 					md.WriteString(fmt.Sprintf("%d. **%s** (%s)\n   %s\n\n", i+1, pt.Title, pt.Role, pt.Description))
 				}
 				os.WriteFile(planPath, []byte(md.String()), 0644)
+				jsonPath := filepath.Join(whiteboardDir, "plan.json")
+				planJSON, _ := json.MarshalIndent(planTasks, "", "  ")
+				os.WriteFile(jsonPath, planJSON, 0644)
 				fmt.Printf("📋 Decomposed %d tasks in %.1fs\n   spec → %s\n   plan → %s\n%s\n",
-					len(planTasks), time.Since(start).Seconds(), specPath, planPath, rawJSON)
+					len(planTasks), time.Since(start).Seconds(), specPath, planPath, jsonPath, rawJSON)
 				return nil
 			}
 

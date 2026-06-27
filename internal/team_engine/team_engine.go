@@ -1579,7 +1579,7 @@ func (e *TeamEngine) PlanAndRun(ctx context.Context, goal, workdir, masterTaskID
 		if defaultTeamLog != nil {
 			Log("plan", "plan: decompose OK: %d tasks in %d batches", len(planTasks), countBatches(planTasks))
 		}
-		e.writePlanJSON(workdir, planTasks)
+		e.writePlanJSON(masterTaskID, planTasks)
 	}
 
 	// Step 1: Group PlanTasks into batches by batch_id.
@@ -1677,7 +1677,7 @@ func (e *TeamEngine) PlanAndRun(ctx context.Context, goal, workdir, masterTaskID
 	}
 
 	// Write plan.md — structured overview of the goal and all batches/tasks.
-	e.writePlanMarkdown(goal, batches, workdir)
+	e.writePlanMarkdown(masterTaskID, goal, batches)
 
 	// Notify dashboard that tasks have been created.
 	e.fireEvent(TaskEvent{Type: EventStateChanged})
@@ -3057,9 +3057,9 @@ func countBatches(tasks []PlanTask) int {
 	return len(seen)
 }
 
-// writePlanMarkdown writes plan.md to the whiteboard, not the workspace.
-func (e *TeamEngine) writePlanMarkdown(goal string, batches []*Batch, workdir string) {
-	path := filepath.Join(e.Whiteboard.BaseDir(), "plan.md")
+// writePlanMarkdown writes plan.md under the master task directory.
+func (e *TeamEngine) writePlanMarkdown(masterTaskID, goal string, batches []*Batch) {
+	path := filepath.Join(e.Whiteboard.BaseDir(), "masters", masterTaskID, "plan.md")
 	f, err := os.Create(path)
 	if err != nil {
 		return
@@ -3170,7 +3170,7 @@ func (e *TeamEngine) appendTeamMemory(role AgentRole, lesson string) {
 
 	// writePlanJSON writes the decomposition plan as plan.json.
 	// plan.json is the authoritative record of how a task was decomposed.
-	func (e *TeamEngine) writePlanJSON(workdir string, planTasks []PlanTask) {
+	func (e *TeamEngine) writePlanJSON(masterTaskID string, planTasks []PlanTask) {
 		type planEntry struct {
 			ID          string   `json:"id"`
 			Title       string   `json:"title"`
@@ -3196,7 +3196,7 @@ func (e *TeamEngine) appendTeamMemory(role AgentRole, lesson string) {
 			"tasks":     entries,
 		}
 		data, _ := json.MarshalIndent(plan, "", "  ")
-		path := filepath.Join(workdir, ".whale", "plan.json")
+		path := filepath.Join(e.Whiteboard.BaseDir(), "masters", masterTaskID, "plan.json")
 		os.MkdirAll(filepath.Dir(path), 0755)
 		os.WriteFile(path, data, 0644)
 		if defaultTeamLog != nil {
