@@ -42,6 +42,40 @@ func (p *Planner) WithOnLog(fn func()) *Planner {
 	return p
 }
 
+// needsElaboration returns true when a raw goal is too vague to decompose
+// directly.  Goals that are short, concrete, and technically specific
+// (function signatures, language, file names) are already complete.
+func needsElaboration(goal string) bool {
+	goal = strings.TrimSpace(goal)
+	if len(goal) < 50 {
+		return false // too short to be vague
+	}
+	vagueTerms := []string{"常用", "一些", "几个", "等等", "相关", "之类", "等"}
+	for _, t := range vagueTerms {
+		if strings.Contains(goal, t) {
+			return true
+		}
+	}
+	concreteMarkers := []string{"func ", "package ", "go test", "go vet", "function signature", "table-driven"}
+	count := 0
+	for _, m := range concreteMarkers {
+		if strings.Contains(goal, m) {
+			count++
+		}
+	}
+	if count >= 2 {
+		return false // technically specific
+	}
+	return len(goal) > 200
+}
+
+func extractFirstModel(models ...string) string {
+	if len(models) > 0 {
+		return models[0]
+	}
+	return ""
+}
+
 // DecomposePrompt returns the prompt template for task decomposition.
 func DecomposePrompt(goal string) string {
 	return fmt.Sprintf(`Decompose this goal into tasks. Output pure JSON, no markdown.
@@ -142,9 +176,24 @@ ELABORATION: SKIP
 }
 
 // Elaborate runs goal elaboration and returns the elaborated (or original) goal.
+// Skips elaboration entirely for simple, fully-specified goals — this avoids
+// wasting an LLM round on goals like "Write a GCD function in Go".
 func (p *Planner) Elaborate(rawGoal string, workdir string, timeout time.Duration, model ...string) (string, error) {
 	if timeout <= 0 {
 		timeout = 120 * time.Second
+	}
+
+	// Fast path: goals that are short, concrete, and technically specific
+	// don't need elaboration.  They're already complete on all 6 dimensions.
+	if !needsElaboration(rawGoal) {
+		if defaultTeamLog != nil {
+			Log("plan", "plan: elaborate SKIP — goal already complete")
+		}
+		return rawGoal, nil
+	}
+
+	if defaultTeamLog != nil {
+		Log("plan", "plan: elaborate START model=%s", extractFirstModel(model...))
 	}
 	prompt := ElaborationPrompt(rawGoal)
 	if p.team != nil {
