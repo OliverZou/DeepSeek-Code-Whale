@@ -108,6 +108,38 @@ explore — look for recently created/modified files.
 `, len(workerOutput), workdir))
 	}
 
+
+		// Append required output format — agent .md prompts may not include it.
+	promptBuilder.WriteString(`
+
+OUTPUT FORMAT (REQUIRED):
+TOOLS USED: [list every tool you ran, with 1-line result]
+VERDICT: PASS | FAIL | RETRY
+EVIDENCE: [what your tools proved]
+ISSUES:
+- [specific issues, or "none" if PASS]
+
+
+
+## FINDINGS (structured JSON — MUST match your ISSUES list)
+
+---json
+
+[
+
+  {"id": "unique", "title": "one-line summary", "severity": "critical|major|minor", "evidence": "tool output"}
+
+]
+
+---
+
+
+
+CRITICAL: If you reported issues above, the FINDINGS JSON array MUST contain
+
+those issues. An empty [] array means "no issues" and the task will auto-pass.
+- [specific issues, or "none" if PASS]
+`)
 	prompt := promptBuilder.String()
 
 	// Resolve timeout via router.
