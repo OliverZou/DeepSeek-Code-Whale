@@ -1035,7 +1035,7 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 			// Persistent session retry: send Verifier feedback to existing
 			// Worker session instead of re-spawning.
 			if ws := e.persistentSessions[workerKey]; ws != nil && e.shellSpawner != nil {
-				fbPrompt := fmt.Sprintf("\n[Verifier]:\n%s\n\nFix the issues and re-output.", task.VerifierFeedback)
+				fbPrompt := verifierFeedbackForWorker(task.VerifierFeedback)
 				if e.Loggers != nil { e.Loggers.Engine("task %s worker CONTINUE retry=%d", taskID[:8], attempt) }
 				workerStart := time.Now()
 				resp := e.shellSpawner.ContinueSession(ws, fbPrompt)
@@ -1161,7 +1161,7 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 		// Persistent session: on retry, send Verifier feedback to the
 		// existing Worker session instead of restarting from scratch.
 		if ws := e.persistentSessions[workerKey]; ws != nil && e.shellSpawner != nil {
-			fbPrompt := fmt.Sprintf("\n[Verifier]:\n%s\n\nFix the issues identified above and re-output your work.", task.VerifierFeedback)
+			fbPrompt := verifierFeedbackForWorker(task.VerifierFeedback)
 			if e.Loggers != nil { e.Loggers.Engine("task %s worker CONTINUE session (retry=%d)", taskID[:8], attempt) }
 			resp := e.shellSpawner.ContinueSession(ws, fbPrompt)
 			result = &RunResult{
@@ -2807,6 +2807,38 @@ func (e *TeamEngine) resolveVerifierAgentName(task *Task) string {
 
 	// Level 4: Builtin verifier (always available).
 	return "verifier"
+}
+
+// verifierFeedbackForWorker strips tool details from the Verifier's full
+// output, leaving only the verdict and issues — what the Worker needs to fix.
+// The Worker's session should not see the Verifier's internal conversation.
+func verifierFeedbackForWorker(fullOutput string) string {
+	// Extract VERDICT line.
+	verdict := ""
+	if idx := strings.Index(fullOutput, "VERDICT:"); idx >= 0 {
+		end := strings.Index(fullOutput[idx:], "\n")
+		if end < 0 {
+			end = len(fullOutput[idx:])
+		}
+		verdict = strings.TrimSpace(fullOutput[idx : idx+end])
+	}
+	// Extract ISSUES block.
+	issues := ""
+	if idx := strings.Index(fullOutput, "ISSUES:"); idx >= 0 {
+		rest := fullOutput[idx:]
+		// Stop at next section heading or FINDINGS.
+		end := len(rest)
+		for _, marker := range []string{"\n## ", "\nEVIDENCE:", "\nFINDINGS"} {
+			if i := strings.Index(rest, marker); i >= 0 && i < end {
+				end = i
+			}
+		}
+		issues = strings.TrimSpace(rest[:end])
+	}
+	if verdict == "" && issues == "" {
+		return "Verifier: see verify.md for details"
+	}
+	return fmt.Sprintf("[Verifier]: %s\n%s", verdict, issues)
 }
 
 func (e *TeamEngine) recordLesson(role AgentRole, title, lesson string) {
