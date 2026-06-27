@@ -11,23 +11,19 @@ import (
 )
 
 // Verifier is an LLM agent that performs semantic verification of a task's
-// output.  It runs AFTER the deterministic Checker passes and has shell_run
-// access so it can execute tests and inspect actual code behaviour.
-//
-// The Verifier checks: requirements coverage, logic correctness, security,
-// professional quality, and whether the output meets the original task intent.
+// output.  The agent definition (from .md or builtin) provides methodology,
+// persona, tools, and skills.
 type Verifier struct {
 	runner     *AgentRunner
 	whiteboard *Whiteboard
 	router     *Router
 	timeout    time.Duration
 	model      string
-	agentName  string // agent definition name (e.g. "review", "verifier")
+	agentName  string
 	LastPrompt string
 }
 
-// NewVerifier creates a Verifier that spawns an LLM agent for semantic
-// verification.  The router is used to resolve timeouts.
+// NewVerifier creates a Verifier.
 func NewVerifier(wb *Whiteboard, runner *AgentRunner, router *Router, timeout time.Duration, model ...string) *Verifier {
 	if timeout <= 0 {
 		timeout = 300 * time.Second
@@ -45,30 +41,20 @@ func NewVerifier(wb *Whiteboard, runner *AgentRunner, router *Router, timeout ti
 }
 
 // WithAgentName sets the agent definition name for the verifier.
-// When set, the agent definition's system prompt, tools, and skills
-// are injected by the spawner.  When empty, falls back to ProfileVerify tools.
 func (v *Verifier) WithAgentName(name string) *Verifier {
 	v.agentName = name
 	return v
 }
 
 // ---------------------------------------------------------------------------
-// Verify — LLM-based semantic verification
+// BuildPrompt — task context for the Verifier agent
 // ---------------------------------------------------------------------------
 
-// Verify spawns an LLM agent to semantically verify the task's Worker output.
-// The agent has shell_run access (ProfileVerify) so it can execute tests,
-// run linters, and inspect actual code behaviour.
-//
-// Returns (passed, retry, feedback, err).  passed=true means the output
-// meets all requirements semantically.
-func (v *Verifier) Verify(task *Task) (passed bool, retry bool, feedback string, err error) {
-	workerOutput, err := v.whiteboard.ReadOutput(task.ID)
-	if err != nil {
-		return false, false, "", fmt.Errorf("read worker output: %w", err)
-	}
-	// Read the full inbox so the Verifier sees upstream outputs, templates,
-	// and team memory — not just the one-line task description.
+// BuildPrompt constructs the Verifier's task prompt from Worker output and
+// task context.  The agent's system prompt (from .md or builtin) provides
+// verification methodology and persona — this is task-context only.
+func (v *Verifier) BuildPrompt(task *Task) string {
+	workerOutput, _ := v.whiteboard.ReadOutput(task.ID)
 	inbox, _ := v.whiteboard.ReadInput(task.ID)
 
 	workdir := task.Workdir
@@ -76,12 +62,9 @@ func (v *Verifier) Verify(task *Task) (passed bool, retry bool, feedback string,
 		workdir = "."
 	}
 
-	// Build the Verifier prompt — task context only.
-	// The agent's system prompt (from .md or builtin) provides verification
-	// methodology, persona, and output format instructions.
 	desc := stripVerifierFeedback(task.Description)
-	var promptBuilder strings.Builder
-	promptBuilder.WriteString(fmt.Sprintf(`TASK:
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf(`TASK:
 %s
 
 WORKER OUTPUT (%d chars):
@@ -89,28 +72,25 @@ WORKER OUTPUT (%d chars):
 `, desc, len(workerOutput), truncateStr(workerOutput, 8000)))
 
 	if inbox != "" {
-		promptBuilder.WriteString(fmt.Sprintf(`
+		b.WriteString(fmt.Sprintf(`
 UPSTREAM CONTEXT:
 %s
 `, inbox))
 	}
 
 	if task.VerifierFocus != "" {
-		promptBuilder.WriteString(buildFocusSection(task.VerifierFocus))
+		b.WriteString(buildFocusSection(task.VerifierFocus))
 	}
 
-	// If the Worker output is short, the real deliverable is on disk.
 	if len(workerOutput) < 500 {
-		promptBuilder.WriteString(fmt.Sprintf(`
+		b.WriteString(fmt.Sprintf(`
 NOTE: The worker output is very short (%d chars).  The actual deliverable
 was likely written to files in %s.  Use list_dir and read_file to
 explore — look for recently created/modified files.
 `, len(workerOutput), workdir))
 	}
 
-
-		// Append required output format — agent .md prompts may not include it.
-	promptBuilder.WriteString(`
+	b.WriteString(`
 
 OUTPUT FORMAT (REQUIRED):
 TOOLS USED: [list every tool you ran, with 1-line result]
@@ -119,40 +99,43 @@ EVIDENCE: [what your tools proved]
 ISSUES:
 - [specific issues, or "none" if PASS]
 
-
-
 ## FINDINGS (structured JSON — MUST match your ISSUES list)
-
 ---json
-
 [
-
   {"id": "unique", "title": "one-line summary", "severity": "critical|major|minor", "evidence": "tool output"}
-
 ]
-
 ---
 
-
-
 CRITICAL: If you reported issues above, the FINDINGS JSON array MUST contain
-
 those issues. An empty [] array means "no issues" and the task will auto-pass.
-- [specific issues, or "none" if PASS]
 `)
-	prompt := promptBuilder.String()
 
-	// Resolve timeout via router.
+	v.LastPrompt = b.String()
+	return v.LastPrompt
+}
+
+// ---------------------------------------------------------------------------
+// Verify — LLM-based semantic verification
+// ---------------------------------------------------------------------------
+
+// Verify spawns an LLM agent to semantically verify the task's Worker output.
+// Returns (passed, retry, feedback, err).
+func (v *Verifier) Verify(task *Task) (passed bool, retry bool, feedback string, err error) {
+	prompt := v.BuildPrompt(task)
+	workdir := task.Workdir
+	if workdir == "" {
+		workdir = "."
+	}
+
 	timeout := time.Duration(v.router.ResolveTimeout(task.Role, true)) * time.Second
 	model := v.model
 
-	// Spawn the Verifier LLM agent.
 	v.LastPrompt = prompt
 	result := v.runner.RunVerifier(prompt, workdir, timeout, v.agentName, model)
 
 	output := result.Stdout
 
-	// Lazy verdict detection: if the Verifier didn't actually run tools, retry.
+	// Lazy verdict detection.
 	if v.isLazyVerdict(output) {
 		hardenedPrompt := "YOUR PREVIOUS RESPONSE WAS REJECTED — it lacked tool evidence. " +
 			"You MUST run at least 2 tools (read_file + shell_run or grep) and report " +
@@ -167,9 +150,7 @@ those issues. An empty [] array means "no issues" and the task will auto-pass.
 		return false, false, output, fmt.Errorf("write verifier result: %w", err)
 	}
 
-	// Parse verdict.
 	passed, retry = parseVerdict(output)
-
 	return passed, retry, output, nil
 }
 
@@ -198,7 +179,6 @@ func (v *Verifier) isLazyVerdict(output string) bool {
 // ---------------------------------------------------------------------------
 
 func parseVerdict(output string) (passed bool, retry bool) {
-	// Handle "VERDICT: PASS", "**VERDICT: ✅ PASS**", "VERDICT:  PASS", etc.
 	verdictMatch := regexp.MustCompile(`(?i)VERDICT:\s*\*{0,2}[\s\p{S}\p{P}]*?(PASS|FAIL|RETRY)`).FindStringSubmatch(output)
 	if len(verdictMatch) >= 2 {
 		switch verdictMatch[1] {
@@ -210,8 +190,6 @@ func parseVerdict(output string) (passed bool, retry bool) {
 			return false, false
 		}
 	}
-	// Fallback: search for PASS/FAIL/RETRY after VERDICT, skipping
-	// up to 30 chars of formatting (emoji, bold markers, spaces).
 	upper := strings.ToUpper(output)
 	if idx := strings.Index(upper, "VERDICT"); idx >= 0 {
 		tail := upper[idx:]

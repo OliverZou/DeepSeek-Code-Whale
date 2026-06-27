@@ -1323,15 +1323,53 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 			if e.team != nil && e.team.Config != nil {
 				verifierModel = e.team.Config.Model.VerifierDefault
 			}
-			v = NewVerifier(e.Whiteboard, e.Runner, e.Router, 0, verifierModel).WithAgentName(verifierAgentName)
 			verifyStart := time.Now()
+		vKey := "verifier:" + taskID
+
+		// Persistent Verifier session: reuse process across retries.
+		if ws := e.persistentSessions[vKey]; ws != nil && e.shellSpawner != nil {
+			if e.Loggers != nil { e.Loggers.Engine("task %s verifier CONTINUE session", taskID[:8]) }
+			v = NewVerifier(e.Whiteboard, e.Runner, e.Router, 0, verifierModel).WithAgentName(verifierAgentName)
+			prompt := v.BuildPrompt(task)
+			resp := e.shellSpawner.ContinueSession(ws, prompt)
+			verifyDur = time.Since(verifyStart)
+			passed, _ = parseVerdict(resp.Output)
+			feedback = resp.Output
+		} else if e.shellSpawner != nil {
+			if e.Loggers != nil { e.Loggers.Engine("task %s verifier SPAWN persistent agent=%s", taskID[:8], verifierAgentName) }
+			v = NewVerifier(e.Whiteboard, e.Runner, e.Router, 0, verifierModel).WithAgentName(verifierAgentName)
+			prompt := v.BuildPrompt(task)
+			req := SubagentRequest{
+				Task:      prompt,
+				Role:      "verifier",
+				AgentName: verifierAgentName,
+				Workdir:   task.Workdir,
+				Timeout:   time.Duration(e.Router.ResolveTimeout(task.Role, true)) * time.Second,
+				MaxIters:  15,
+				MaxCalls:  50,
+				MaxTokens: effectiveMaxTokens(0, verifierModel),
+			}
+			if verifierModel != "" {
+				req.Model = verifierModel
+			}
+			ws, resp := e.shellSpawner.SpawnPersistent(context.Background(), req)
+			if ws != nil {
+				e.persistentSessions[vKey] = ws
+			}
+			verifyDur = time.Since(verifyStart)
+			passed, _ = parseVerdict(resp.Output)
+			feedback = resp.Output
+		} else {
+			// Fallback: normal spawn via Runner.
+			v = NewVerifier(e.Whiteboard, e.Runner, e.Router, 0, verifierModel).WithAgentName(verifierAgentName)
 			if e.Loggers != nil { e.Loggers.Engine("task %s verifier START agent=%s", taskID[:8], verifierAgentName) }
 			passed, _, feedback, err = v.Verify(task)
 			verifyDur = time.Since(verifyStart)
-			if e.Loggers != nil { e.Loggers.Engine("task %s verifier DONE in %.1fs (pass=%v)", taskID[:8], verifyDur.Seconds(), passed) }
 			if err != nil {
 				return false, fmt.Errorf("verifier error: %w", err)
 			}
+		}
+		if e.Loggers != nil { e.Loggers.Engine("task %s verifier DONE in %.1fs (pass=%v)", taskID[:8], verifyDur.Seconds(), passed) }
 		}
 
 		// Log verifier output for dashboard dialogue.
