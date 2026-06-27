@@ -1255,6 +1255,21 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 			e.closePersistentSession("worker:" + taskID)
 			return true, nil
 		}
+		if chkPassed && task.Role.IsContentRole() {
+			if e.Loggers != nil { e.Loggers.Engine("task %s content verify", taskID[:8]) }
+			cv := NewContentVerifier(e.Runner)
+			workerOut, _ := e.Whiteboard.ReadOutput(taskID)
+			cvResult := cv.Verify(task, workerOut)
+			e.mu.Lock()
+			e.Store.TransitionState(taskID, TaskStateDone, "", "content-verified")
+			e.mu.Unlock()
+			if task.Output != "" { os.WriteFile(filepath.Join(e.Whiteboard.TaskDir(taskID), "verify.md"), []byte(cvResult), 0644) }
+			cvPassed, _ := parseVerdict(cvResult)
+			if cvPassed { return true, nil }
+			feedback = cvResult
+			passed = false
+			isRetry = false
+		}
 		if chkErr != nil {
 			return false, fmt.Errorf("checker error: %w", chkErr)
 		}
