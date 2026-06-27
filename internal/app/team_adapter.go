@@ -46,7 +46,7 @@ func teamEngineSpawnAdapter(runner *tasks.Runner, library *tasks.AgentDefinition
 					// Strip "团队协作" section — WorkBuddy
 					// SendMessage/shutdown protocols conflict with
 					// Team Engine stdout-capture mode.
-					tasksReq.Task = stripTeamworkSection(def.Prompt) + "\n\n---\n\n" + tasksReq.Task
+					tasksReq.Task = stripWorkbuddySections(def.Prompt) + "\n\n---\n\n" + tasksReq.Task
 				}
 			}
 		}
@@ -110,15 +110,28 @@ func teamEngineSpawnAdapter(runner *tasks.Runner, library *tasks.AgentDefinition
 	}
 }
 
-// stripTeamworkSection removes the "团队协作" section from an agent .md prompt.
-// This section (usually "## 团队协作（回传机制）" or "## 团队协作机制（铁律）")
-// contains WorkBuddy orchestration instructions (SendMessage, shutdown_request,
-// TeamCreate) that conflict with Team Engine's subagent stdout-capture model.
-// In Team Engine, subagent output is captured via stdout, not SendMessage.
-func stripTeamworkSection(prompt string) string {
-	idx := strings.Index(prompt, "\n## 团队协作")
-	if idx < 0 {
-		return prompt
+// stripWorkbuddySections removes WorkBuddy-specific sections from an agent
+// .md prompt that don't apply in Team Engine.  Team Engine handles retry,
+// routing, and output format itself — the agent doesn't need these instructions.
+//
+// Stripped sections:
+//   - Smart Routing / Send To: Engineer/QA/NoOne
+//   - Test Round Control (STRICT — MAX N ROUNDS)
+//   - Test Report Format (engine provides OUTPUT FORMAT)
+//   - 团队协作 / SendMessage / shutdown_request
+func stripWorkbuddySections(prompt string) string {
+	markers := []string{
+		"\n### 3. Run Tests and Smart Routing",
+		"\n#### Smart Routing Decision",
+		"\n## Test Round Control",
+		"\n## Test Report Format",
+		"\n## Input\n\nYou will receive:",
+		"\n## 团队协作",
 	}
-	return prompt[:idx]
+	for _, m := range markers {
+		if idx := strings.Index(prompt, m); idx >= 0 {
+			prompt = prompt[:idx]
+		}
+	}
+	return prompt
 }
