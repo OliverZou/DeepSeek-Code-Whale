@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -132,9 +134,48 @@ Subcommands:
 		},
 	}
 
+	// --- spec subcommand ---
+	specCmd := &cobra.Command{
+		Use:   "spec --goal GOAL [--team TEAM]",
+		Short: "Run Goal Elaboration only and print the spec",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			goal, _ := cmd.Flags().GetString("goal")
+			if goal == "" {
+				return fmt.Errorf("--goal is required")
+			}
+			eng, err := newTeamEngine(dbPath, whiteboardDir, configPath)
+			if err != nil {
+				return fmt.Errorf("init engine: %w", err)
+			}
+			defer eng.Close()
+			if teamName, _ := cmd.Flags().GetString("team"); teamName != "" {
+				roots := team_engine.DefaultTeamRoots(workdir)
+				tc, err := team_engine.FindTeamInRoots(roots, teamName)
+				if err != nil {
+					return fmt.Errorf("load team %q: %w", teamName, err)
+				}
+				eng.SetTeam(tc)
+			}
+			leader := team_engine.NewLeader(eng.Runner).WithTeam(eng.Team())
+			elaborated, err := leader.Elaborate(goal, workdir, 120*time.Second)
+			if err != nil {
+				return fmt.Errorf("elaborate: %w", err)
+			}
+			if elaborated == goal {
+				fmt.Println("✅ Goal already fully specified — no elaboration needed.")
+			} else {
+				fmt.Println("📋 Elaborated Spec:\n---")
+				fmt.Println(elaborated)
+			}
+			return nil
+		},
+	}
+	specCmd.Flags().String("goal", "", "The goal to elaborate")
+	specCmd.Flags().String("team", "", "Team name for domain context")
+
 	// --- plan subcommand ---
 	planCmd := &cobra.Command{
-		Use:   "plan --goal GOAL",
+		Use:   "plan --goal GOAL [--stop-at spec|decompose]",
 		Short: "Decompose a goal and run all subtasks",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			goal, _ := cmd.Flags().GetString("goal")
@@ -160,6 +201,30 @@ Subcommands:
 			}
 
 			fmt.Printf("📋 Planning goal: %s\n", goal)
+
+			stopAt := strings.ToLower(strings.TrimSpace(cmd.Flag("stop-at").Value.String()))
+			if stopAt == "spec" || stopAt == "decompose" {
+				leader := team_engine.NewLeader(eng.Runner).WithTeam(eng.Team())
+				elaborated, err := leader.Elaborate(goal, workdir, 120*time.Second)
+				if err != nil {
+					return fmt.Errorf("elaborate: %w", err)
+				}
+				if stopAt == "spec" {
+					if elaborated == goal {
+						fmt.Println("✅ Goal already fully specified.")
+					} else {
+						fmt.Println(elaborated)
+					}
+					return nil
+				}
+				planTasks, rawJSON, err := leader.DecomposeFull(elaborated, workdir, time.Duration(eng.Router.ResolveDecomposerTimeout())*time.Second)
+				if err != nil {
+					return fmt.Errorf("decompose: %w", err)
+				}
+				fmt.Printf("Decomposed into %d tasks:\n%s\n", len(planTasks), rawJSON)
+				return nil
+			}
+
 			masterTask, mtErr := eng.CreateMasterTask(goal, workdir, "")
 			if mtErr != nil {
 				return fmt.Errorf("create master task: %w", mtErr)
@@ -208,6 +273,7 @@ Subcommands:
 	}
 	planCmd.Flags().String("goal", "", "The goal to decompose into subtasks")
 	planCmd.Flags().String("team", "", "Team name to use for decomposition")
+	planCmd.Flags().String("stop-at", "", "Stop after: 'spec' (elaboration) or 'decompose' (plan, no execution)")
 
 	// --- status subcommand ---
 	statusCmd := &cobra.Command{
@@ -361,6 +427,7 @@ Subcommands:
 
 	teamCmd.AddCommand(createCmd)
 	teamCmd.AddCommand(runCmd)
+	teamCmd.AddCommand(specCmd)
 	teamCmd.AddCommand(planCmd)
 	teamCmd.AddCommand(statusCmd)
 	teamCmd.AddCommand(listCmd)
