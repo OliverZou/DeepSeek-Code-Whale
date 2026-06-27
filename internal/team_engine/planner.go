@@ -42,41 +42,6 @@ func (p *Planner) WithOnLog(fn func()) *Planner {
 	return p
 }
 
-// needsElaboration returns true when a raw goal is too vague to decompose
-// directly.  Goals that are short, concrete, and technically specific
-// (function signatures, language, file names) are already complete.
-func needsElaboration(goal string) bool {
-	goal = strings.TrimSpace(goal)
-	// Vague terms indicate under-specification regardless of length.
-	vagueTerms := []string{"常用", "一些", "几个", "等等", "相关", "之类", "等", "指标库", "工具包", "系统"}
-	for _, t := range vagueTerms {
-		if strings.Contains(goal, t) {
-			return true
-		}
-	}
-	// Concrete technical details suggest the goal is already specific.
-	concreteMarkers := []string{"func ", "package ", "go test", "go vet", "function signature", "table-driven"}
-	count := 0
-	for _, m := range concreteMarkers {
-		if strings.Contains(goal, m) {
-			count++
-		}
-	}
-	if count >= 2 {
-		return false // technically specific
-	}
-	// Short + no vague terms + no concrete markers → ambiguous.
-	// Long without concrete markers → likely needs elaboration.
-	return len(goal) < 30 || len(goal) > 200
-}
-
-func extractFirstModel(models ...string) string {
-	if len(models) > 0 {
-		return models[0]
-	}
-	return ""
-}
-
 // DecomposePrompt returns the prompt template for task decomposition.
 func DecomposePrompt(goal string) string {
 	return fmt.Sprintf(`Decompose this goal into tasks. Output pure JSON, no markdown.
@@ -186,18 +151,6 @@ func (p *Planner) Elaborate(rawGoal string, workdir string, timeout time.Duratio
 		timeout = 120 * time.Second
 	}
 
-	// Fast path: goals that are short, concrete, and technically specific
-	// don't need elaboration.  They're already complete on all 6 dimensions.
-	if !needsElaboration(rawGoal) {
-		if defaultTeamLog != nil {
-			Log("plan", "plan: elaborate SKIP — goal already complete")
-		}
-		return rawGoal, nil
-	}
-
-	if defaultTeamLog != nil {
-		Log("plan", "plan: elaborate START model=%s", extractFirstModel(model...))
-	}
 	prompt := ElaborationPrompt(rawGoal)
 	if p.team != nil {
 		prompt = p.team.BuildLeaderPrompt(prompt)
