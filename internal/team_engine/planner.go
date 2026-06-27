@@ -137,8 +137,10 @@ RULES:
    Call a domain-research LLM ONLY when your own knowledge is insufficient.
 3. Produce a YAML spec (NOT tasks, NOT JSON — just the spec).
 4. Explicitly list what's OUT of scope — this prevents Workers from going off-track.
-5. Only ask the user to confirm when there are genuinely ambiguous choices
-   (e.g. library vs CLI).  For industry-standard defaults, decide yourself.
+5. Do NOT read files, list directories, or explore the workspace.
+   Elaboration is pure goal-text analysis — no tools needed.
+6. This is non-interactive.  Output the spec directly.  Do NOT ask
+   the user to confirm decisions.  Make reasonable defaults and proceed.
 
 OUTPUT (when elaboration is needed):
 ---yaml

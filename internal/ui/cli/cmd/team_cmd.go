@@ -222,6 +222,13 @@ Subcommands:
 					return fmt.Errorf("decompose: %w", err)
 				}
 				fmt.Printf("Decomposed into %d tasks:\n%s\n", len(planTasks), rawJSON)
+				// Write plan.md for inspection.
+				var md strings.Builder
+				md.WriteString(fmt.Sprintf("# 项目计划\n\n## 目标\n\n%s\n\n## 任务列表 (%d)\n\n", goal, len(planTasks)))
+				for i, pt := range planTasks {
+					md.WriteString(fmt.Sprintf("%d. **%s** (%s)\n   %s\n\n", i+1, pt.Title, pt.Role, pt.Description))
+				}
+				os.WriteFile(filepath.Join(whiteboardDir, "plan.md"), []byte(md.String()), 0644)
 				return nil
 			}
 
