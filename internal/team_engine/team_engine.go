@@ -1542,11 +1542,28 @@ func (e *TeamEngine) PlanAndRun(ctx context.Context, goal, workdir, masterTaskID
 			Log("plan", "plan: using pre-decomposed plan: %d tasks in %d batches", len(planTasks), countBatches(planTasks))
 		}
 	} else {
+		// Phase 0: Goal Elaboration — expand fuzzy goals into concrete specs.
+		if defaultTeamLog != nil {
+			Log("plan", "plan: elaborate START model=%s", leaderModel)
+		}
+		elaboratedGoal, elabErr := leader.Elaborate(goal, workdir, time.Duration(e.Router.ResolveDecomposerTimeout())*time.Second, leaderModel)
+		if elabErr != nil {
+			if defaultTeamLog != nil {
+				Log("plan", "plan: elaborate FAIL: %v, continuing with raw goal", elabErr)
+			}
+			elaboratedGoal = goal
+		}
+		if elaboratedGoal != goal {
+			if defaultTeamLog != nil {
+				Log("plan", "plan: elaborate OK — %d chars", len(elaboratedGoal))
+			}
+		}
+
 		if defaultTeamLog != nil {
 			Log("plan", "plan: decompose START model=%s", leaderModel)
 		}
 		var err error
-		planTasks, err = leader.Decompose(goal, workdir, decomposerTimeout, leaderModel)
+		planTasks, err = leader.Decompose(elaboratedGoal, workdir, decomposerTimeout, leaderModel)
 		if err != nil {
 			if defaultTeamLog != nil {
 				Log("plan", "plan: decompose FAIL: %v", err)

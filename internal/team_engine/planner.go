@@ -71,6 +71,124 @@ OUTPUT:
 [{"title":"...","description":"detailed instructions","output":"mathutil.go, main.go","role":"developer","verifier_role":"review","batch_id":"1","batch_label":"Implementation","depends_on_batch":[],"depends_on_index":-1,"verifier_focus":"correctness","max_cycles":1}]`, goal)
 }
 
+// ---------------------------------------------------------------------------
+// Phase 0: Goal Elaboration
+// ---------------------------------------------------------------------------
+
+// ElaborationPrompt returns the prompt for elaborating a raw goal into a
+// fully-specified spec before decomposition.  For goals that are already
+// complete on all 6 dimensions (scope, interface, behaviour, quality,
+// dependencies, constraints), the Leader returns the goal unchanged.
+func ElaborationPrompt(rawGoal string) string {
+	return fmt.Sprintf(`You are a TeamLeader.  Elaborate this raw goal into a fully-specified
+executable spec before task decomposition.  Do NOT decompose into tasks yet.
+
+RAW GOAL: %s
+
+Check completeness across 6 dimensions:
+
+| Dimension    | Question                              | Complete when                     |
+|-------------|---------------------------------------|-----------------------------------|
+| Scope       | What's included?  What's excluded?     | Boundaries clear, no ambiguity    |
+| Interface   | Input/output signatures?  Data types?  | Describable as type definitions   |
+| Behaviour   | Core logic?  Algorithm?  Flow?         | Describable in ≤3 sentences       |
+| Quality     | Acceptance criteria?  Precision?       | Objectively verifiable            |
+| Dependencies| External resources?  Upstream inputs?  | Explicitly listed                 |
+| Constraints | Language?  Framework?  Platform?       | Explicitly listed                 |
+
+RULES:
+1. If ALL 6 complete → return "ELABORATION: SKIP" and the goal unchanged.
+2. If any incomplete → fill gaps using your domain knowledge.
+   Call a domain-research LLM ONLY when your own knowledge is insufficient.
+3. Produce a YAML spec (NOT tasks, NOT JSON — just the spec).
+4. Explicitly list what's OUT of scope — this prevents Workers from going off-track.
+5. Only ask the user to confirm when there are genuinely ambiguous choices
+   (e.g. library vs CLI).  For industry-standard defaults, decide yourself.
+
+OUTPUT (when elaboration is needed):
+---yaml
+goal_summary: <one sentence>
+
+scope:
+  included:
+    - <item>
+  excluded:
+    - <item>
+
+interface:
+  <signatures, types, package structure>
+
+behaviour:
+  <core algorithm, alignment target, edge cases>
+
+quality:
+  acceptance_criteria:
+    - <criterion>
+  precision: <requirement>
+
+dependencies:
+  external: <list or "none">
+
+constraints:
+  language: <version>
+  style: <convention>
+  platform: <target>
+---
+
+When the goal is already complete:
+ELABORATION: SKIP
+<original goal>
+`, rawGoal)
+}
+
+// Elaborate runs goal elaboration and returns the elaborated (or original) goal.
+func (p *Planner) Elaborate(rawGoal string, workdir string, timeout time.Duration, model ...string) (string, error) {
+	if timeout <= 0 {
+		timeout = 120 * time.Second
+	}
+	prompt := ElaborationPrompt(rawGoal)
+	if p.team != nil {
+		prompt = p.team.BuildLeaderPrompt(prompt)
+	}
+	if p.team != nil && p.team.Leader.Model != "" {
+		model = []string{p.team.Leader.Model}
+	}
+
+	mdl := ""
+	if len(model) > 0 {
+		mdl = model[0]
+	}
+
+	start := time.Now()
+	result := p.runner.RunDecomposer(prompt, workdir, timeout, model...)
+	dur := time.Since(start)
+
+	if p.loggers != nil {
+		p.loggers.Engine("leader.elaborate: model=%s dur=%.1fs output=%d chars success=%v",
+			mdl, dur.Seconds(), len(result.Stdout), result.Success)
+		p.loggers.LogLeader("elaborate", prompt, result.Stdout, dur, nil)
+	}
+	if p.onLog != nil {
+		p.onLog()
+	}
+
+	output := strings.TrimSpace(result.Stdout)
+	if !result.Success || output == "" {
+		// On failure, return the original goal — decomposition can still proceed.
+		if defaultTeamLog != nil {
+			defaultTeamLog.LeaderRetry(0, "elaboration failed, using raw goal")
+		}
+		return rawGoal, nil
+	}
+
+	// If elaboration was skipped (goal already complete), extract the original.
+	if strings.Contains(output, "ELABORATION: SKIP") {
+		return rawGoal, nil
+	}
+
+	return output, nil
+}
+
 // decomposeInternal runs the leader agent and returns both parsed tasks
 // and the raw AI output text.
 func (p *Planner) decomposeInternal(goal string, workdir string, timeout time.Duration, model ...string) ([]PlanTask, string, error) {

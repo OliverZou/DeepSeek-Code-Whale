@@ -52,6 +52,11 @@ func (l *Leader) WithOnLog(fn func()) *Leader {
 
 // --- Delegated methods ---
 
+// Elaborate delegates to Planner.
+func (l *Leader) Elaborate(goal string, workdir string, timeout time.Duration, model ...string) (string, error) {
+	return l.planner.Elaborate(goal, workdir, timeout, model...)
+}
+
 // Decompose delegates to Planner.
 func (l *Leader) Decompose(goal string, workdir string, timeout time.Duration, model ...string) ([]PlanTask, error) {
 	return l.planner.Decompose(goal, workdir, timeout, model...)
