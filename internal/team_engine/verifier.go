@@ -268,14 +268,18 @@ func findMissingRefs(output, workdir string) []string {
 }
 
 func ParseFindings(output string) []Finding {
-	idx := strings.Index(output, "## FINDINGS")
-	if idx < 0 {
-		idx = strings.Index(output, "FINDINGS")
+	// Look for FINDINGS section or bare ---json block.
+	section := ""
+	if idx := strings.Index(output, "## FINDINGS"); idx >= 0 {
+		section = output[idx:]
+	} else if idx := strings.Index(output, "FINDINGS"); idx >= 0 {
+		section = output[idx:]
+	} else if idx := strings.Index(output, "---json"); idx >= 0 {
+		section = output[idx:]
 	}
-	if idx < 0 {
+	if section == "" {
 		return nil
 	}
-	section := output[idx:]
 	jsonStr := extractJSON(section)
 	if jsonStr == "" {
 		return nil
