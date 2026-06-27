@@ -2,17 +2,19 @@
 // (Leader, Worker, Verifier) and the engine itself.  Logs are written to
 // the whiteboard directory under logs/ and separated by agent role and task.
 //
-// Directory layout:
+// Directory layout (rooted at master task dir):
 //
-//	team_tasks/logs/
-//	├── leader/
-//	│   ├── decompose_001.md
-//	│   └── review_batch-1_001.md
-//	├── tasks/<task_id>/
+//	{masterTaskID}/
+//	├── engine.log
+//	├── leader_decompose_001.md
+//	├── leader_elaborate_001.md
+//	├── {taskID}/
 //	│   ├── worker_001.md
 //	│   ├── verifier_001.md
 //	│   └── engine.md
-//	└── engine.log
+//	├── plan.json
+//	├── plan.md
+//	└── spec.md
 package log
 
 import (
@@ -34,14 +36,10 @@ type Loggers struct {
 	engineLog   *os.File
 }
 
-// New creates a Loggers rooted at whiteboardDir/logs.
-func New(whiteboardDir string) (*Loggers, error) {
-	baseDir := filepath.Join(whiteboardDir, "logs")
-	if err := os.MkdirAll(filepath.Join(baseDir, "leader"), 0755); err != nil {
-		return nil, fmt.Errorf("create leader log dir: %w", err)
-	}
-	if err := os.MkdirAll(filepath.Join(baseDir, "tasks"), 0755); err != nil {
-		return nil, fmt.Errorf("create tasks log dir: %w", err)
+// New creates a Loggers rooted at baseDir (usually the master task directory).
+func New(baseDir string) (*Loggers, error) {
+	if err := os.MkdirAll(baseDir, 0755); err != nil {
+		return nil, fmt.Errorf("create log dir: %w", err)
 	}
 
 	f, err := os.OpenFile(filepath.Join(baseDir, "engine.log"),
@@ -54,6 +52,33 @@ func New(whiteboardDir string) (*Loggers, error) {
 		baseDir:  baseDir,
 		engineLog: f,
 	}, nil
+}
+
+// SetBaseDir redirects all future log output to a new base directory.
+// Used when a master task begins — swaps from the global whiteboard dir
+// to the master-task-specific directory.
+func (l *Loggers) SetBaseDir(baseDir string) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	// Close old engine log.
+	if l.engineLog != nil {
+		l.engineLog.Close()
+	}
+
+	if err := os.MkdirAll(baseDir, 0755); err != nil {
+		return fmt.Errorf("create log dir: %w", err)
+	}
+
+	f, err := os.OpenFile(filepath.Join(baseDir, "engine.log"),
+		os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return fmt.Errorf("open engine.log: %w", err)
+	}
+
+	l.baseDir = baseDir
+	l.engineLog = f
+	return nil
 }
 
 // Close closes the engine log file.
@@ -109,11 +134,11 @@ func (l *Loggers) LogAgent(role, taskID string, round int, prompt, response stri
 
 	var dir, filename string
 	if role == "leader" {
-		dir = filepath.Join(l.baseDir, "leader")
+		dir = l.baseDir
 		seq := l.nextLeaderSeq()
-		filename = fmt.Sprintf("%s_%03d.md", taskID, seq)
+		filename = fmt.Sprintf("leader_%s_%03d.md", taskID, seq)
 	} else {
-		dir = filepath.Join(l.baseDir, "tasks", taskID)
+		dir = filepath.Join(l.baseDir, taskID)
 		os.MkdirAll(dir, 0755)
 		filename = fmt.Sprintf("%s_%03d.md", role, round)
 	}
@@ -155,7 +180,7 @@ func (l *Loggers) LogTaskFeedback(taskID, kind string, round int, content string
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	dir := filepath.Join(l.baseDir, "tasks", taskID)
+	dir := filepath.Join(l.baseDir, taskID)
 	os.MkdirAll(dir, 0755)
 	path := filepath.Join(dir, fmt.Sprintf("%s_feedback_%03d.md", kind, round))
 
@@ -177,7 +202,7 @@ func (l *Loggers) LogTaskEvent(taskID, event string, args ...interface{}) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	dir := filepath.Join(l.baseDir, "tasks", taskID)
+	dir := filepath.Join(l.baseDir, taskID)
 	os.MkdirAll(dir, 0755)
 
 	path := filepath.Join(dir, "engine.md")
@@ -197,7 +222,7 @@ func (l *Loggers) LogTaskEventHeader(taskID string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	dir := filepath.Join(l.baseDir, "tasks", taskID)
+	dir := filepath.Join(l.baseDir, taskID)
 	os.MkdirAll(dir, 0755)
 	path := filepath.Join(dir, "engine.md")
 

@@ -1529,6 +1529,14 @@ func (e *TeamEngine) PlanAndRun(ctx context.Context, goal, workdir, masterTaskID
 		e.mu.Unlock()
 	}()
 
+	// Switch logs to the master task directory.
+	if e.Loggers != nil {
+		masterDir := filepath.Join(e.Whiteboard.BaseDir(), masterTaskID)
+		if err := e.Loggers.SetBaseDir(masterDir); err != nil {
+			return nil, fmt.Errorf("set log dir: %w", err)
+		}
+	}
+
 	leader := NewLeader(e.Runner).WithLoggers(e.Loggers).WithTeam(e.team).WithOnLog(func() {
 		e.fireEvent(TaskEvent{Type: EventLeaderLog})
 	})
@@ -3059,7 +3067,7 @@ func countBatches(tasks []PlanTask) int {
 
 // writePlanMarkdown writes plan.md under the master task directory.
 func (e *TeamEngine) writePlanMarkdown(masterTaskID, goal string, batches []*Batch) {
-	path := filepath.Join(e.Whiteboard.BaseDir(), "masters", masterTaskID, "plan.md")
+	path := filepath.Join(e.Whiteboard.BaseDir(), masterTaskID, "plan.md")
 	f, err := os.Create(path)
 	if err != nil {
 		return
@@ -3196,7 +3204,7 @@ func (e *TeamEngine) appendTeamMemory(role AgentRole, lesson string) {
 			"tasks":     entries,
 		}
 		data, _ := json.MarshalIndent(plan, "", "  ")
-		path := filepath.Join(e.Whiteboard.BaseDir(), "masters", masterTaskID, "plan.json")
+		path := filepath.Join(e.Whiteboard.BaseDir(), masterTaskID, "plan.json")
 		os.MkdirAll(filepath.Dir(path), 0755)
 		os.WriteFile(path, data, 0644)
 		if defaultTeamLog != nil {

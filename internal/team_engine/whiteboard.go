@@ -77,6 +77,8 @@ func (wb *Whiteboard) TaskDir(taskID string) string {
 	return filepath.Join(wb.baseDir, taskID)
 }
 
+// MasterDir returns the directory for per-master-task artifacts
+// (plan.json, plan.md, spec.md, board.md, deliverable.md, logs).
 // InitTask creates the task directory and writes input.md.
 // NOTE: does NOT overwrite status.json — the caller is responsible for
 // updating task state via WriteStatus when the state machine transitions.
@@ -268,7 +270,7 @@ func (wb *Whiteboard) HasConfirmation(taskID string) bool {
 
 // MasterDir returns the directory for a master task.
 func (wb *Whiteboard) MasterDir(masterTaskID string) string {
-	return filepath.Join(wb.baseDir, "masters", masterTaskID)
+	return filepath.Join(wb.baseDir, masterTaskID)
 }
 
 // ChatDir returns the chat directory for a master task.
