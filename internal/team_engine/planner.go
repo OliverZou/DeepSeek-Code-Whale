@@ -47,15 +47,14 @@ func (p *Planner) WithOnLog(fn func()) *Planner {
 // (function signatures, language, file names) are already complete.
 func needsElaboration(goal string) bool {
 	goal = strings.TrimSpace(goal)
-	if len(goal) < 50 {
-		return false // too short to be vague
-	}
-	vagueTerms := []string{"常用", "一些", "几个", "等等", "相关", "之类", "等"}
+	// Vague terms indicate under-specification regardless of length.
+	vagueTerms := []string{"常用", "一些", "几个", "等等", "相关", "之类", "等", "指标库", "工具包", "系统"}
 	for _, t := range vagueTerms {
 		if strings.Contains(goal, t) {
 			return true
 		}
 	}
+	// Concrete technical details suggest the goal is already specific.
 	concreteMarkers := []string{"func ", "package ", "go test", "go vet", "function signature", "table-driven"}
 	count := 0
 	for _, m := range concreteMarkers {
@@ -66,7 +65,9 @@ func needsElaboration(goal string) bool {
 	if count >= 2 {
 		return false // technically specific
 	}
-	return len(goal) > 200
+	// Short + no vague terms + no concrete markers → ambiguous.
+	// Long without concrete markers → likely needs elaboration.
+	return len(goal) < 30 || len(goal) > 200
 }
 
 func extractFirstModel(models ...string) string {
