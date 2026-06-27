@@ -545,11 +545,6 @@ func safeSenderName(name string) string {
 			b.WriteString("\n")
 		}
 
-		if params.Output != "" {
-			b.WriteString("## 📤 产出文件\n\n")
-			b.WriteString(fmt.Sprintf("请将最终产出写入: `%s`\n\n", params.Output))
-		}
-
 		if params.Template != "" {
 			b.WriteString("## 📄 产出模板\n\n")
 			b.WriteString(params.Template)
@@ -562,23 +557,12 @@ func safeSenderName(name string) string {
 			b.WriteString("\n\n")
 		}
 
-		if params.AllowSelfSplit {
-			b.WriteString("## 🔀 自拆分\n\n")
-			b.WriteString("评估: 如果产出预计超过 ~200 行或 ~10 个章节，请拆分。\n\n")
-			b.WriteString("如需拆分: 不要产出部分内容。在产出开头输出 `[SPLIT_PLAN]`，后跟 JSON 数组（2-3 个子任务）。\n")
-			b.WriteString("每个子任务含: title, description, role, output 字段。\n\n")
-		}
 
 		if params.RetryFeedback != "" {
 			b.WriteString("## 🔄 上一轮审查反馈\n\n")
 			b.WriteString(params.RetryFeedback)
 			b.WriteString("\n\n")
 		}
-
-			b.WriteString("## ⚠️ 产出总结要求\n\n")
-			b.WriteString("- 只汇报**实际完成**的内容，禁止虚报测试数量、覆盖率等指标\n")
-			b.WriteString("- 引用具体文件名和行数，禁止模糊描述\n")
-			b.WriteString("\n")
 		return wb.writeFile(filepath.Join(taskDir, "input.md"), b.String())
 	}
 
