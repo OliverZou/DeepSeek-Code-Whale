@@ -1561,8 +1561,8 @@ func (e *TeamEngine) PlanAndRun(ctx context.Context, goal, workdir, masterTaskID
 		}
 		if defaultTeamLog != nil {
 			Log("plan", "plan: decompose OK: %d tasks in %d batches", len(planTasks), countBatches(planTasks))
-		e.writePlanJSON(workdir, planTasks)
 		}
+		e.writePlanJSON(workdir, planTasks)
 	}
 
 	// Step 1: Group PlanTasks into batches by batch_id.
