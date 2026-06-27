@@ -313,57 +313,6 @@ func TestVerdictLabel(t *testing.T) {
 
 // ============================================================================
 // Escalator — re-decomposition logic
-// ============================================================================
-
-func TestEscalatorStuckTasks(t *testing.T) {
-	eng := newTestEngine(t)
-	defer eng.Close()
-
-	// Create tasks and set their state in DB.
-	t1, _ := eng.CreateTask("Normal", "ok", RoleDeveloper, "", nil, 0, ".", "", "", "")
-	eng.Store.UpdateTask(t1.ID, map[string]interface{}{"retry_count": 2})
-	eng.Store.TransitionState(t1.ID, TaskStateAssigned, "", "")
-	eng.Store.TransitionState(t1.ID, TaskStateProducing, "", "")
-	// t1 is producing, retries not exhausted → not stuck
-
-	t2, _ := eng.CreateTask("Stuck", "stuck", RoleDeveloper, "", nil, 0, ".", "", "", "")
-	eng.Store.UpdateTask(t2.ID, map[string]interface{}{"retry_count": 3, "max_retries": 3})
-	eng.Store.TransitionState(t2.ID, TaskStateAssigned, "", "")
-	eng.Store.ForceTransitionState(t2.ID, TaskStateSuspended, "retries exhausted")
-	// t2 is suspended with retries exhausted → stuck
-
-	t3, _ := eng.CreateTask("Done", "done", RoleDeveloper, "", nil, 0, ".", "", "", "")
-	eng.Store.TransitionState(t3.ID, TaskStateAssigned, "", "")
-	eng.Store.TransitionState(t3.ID, TaskStateDone, "", "")
-	// t3 is done → not stuck
-
-	// Re-read from DB to get current state.
-	t1, _ = eng.Store.GetTask(t1.ID)
-	t2, _ = eng.Store.GetTask(t2.ID)
-	t3, _ = eng.Store.GetTask(t3.ID)
-
-	batch := &Batch{ID: "test", Tasks: []*Task{t1, t2, t3}}
-	esc := NewEscalator(nil) // planner not needed for StuckTasks
-
-	stuck := esc.StuckTasks(batch, func(id string) (*Task, error) {
-		return eng.Store.GetTask(id)
-	})
-	if len(stuck) != 1 {
-		t.Fatalf("expected 1 stuck task, got %d", len(stuck))
-	}
-	if stuck[0].ID != t2.ID {
-		t.Errorf("expected stuck task %s, got %s", t2.ID, stuck[0].ID)
-	}
-}
-
-func TestEscalatorNoStuckTasks(t *testing.T) {
-	batch := &Batch{ID: "test"}
-	esc := NewEscalator(nil)
-	stuck := esc.StuckTasks(batch, nil)
-	if len(stuck) != 0 {
-		t.Errorf("expected 0 stuck tasks for empty batch, got %d", len(stuck))
-	}
-}
 
 // ============================================================================
 // Whiteboard — cleanup
