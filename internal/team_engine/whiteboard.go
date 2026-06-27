@@ -52,7 +52,8 @@ type UpstreamRef struct {
 }
 
 type Whiteboard struct {
-	baseDir string
+	baseDir  string
+	masterID string // set via SetMaster to scope under a master task
 }
 
 // NewWhiteboard creates a Whiteboard rooted at baseDir.
@@ -65,6 +66,21 @@ func NewWhiteboard(baseDir string) (*Whiteboard, error) {
 		return nil, fmt.Errorf("create whiteboard dir %s: %w", abs, err)
 	}
 	return &Whiteboard{baseDir: abs}, nil
+}
+
+// SetMaster scopes subsequent Whiteboard operations under the given master task.
+// TaskDir, global files (board.md, deliverable.md), etc. are written under
+// baseDir/masterID/ instead of baseDir/.
+func (wb *Whiteboard) SetMaster(masterID string) {
+	wb.masterID = masterID
+}
+
+// taskRoot returns the root directory for task-level files.
+func (wb *Whiteboard) taskRoot() string {
+	if wb.masterID != "" {
+		return filepath.Join(wb.baseDir, wb.masterID)
+	}
+	return wb.baseDir
 }
 
 // BaseDir returns the absolute path to the whiteboard root.
@@ -107,12 +123,12 @@ func (wb *Whiteboard) InitTask(taskID, input string) error {
 
 // BoardPath returns the path to the global board.md file.
 func (wb *Whiteboard) BoardPath() string {
-	return filepath.Join(wb.baseDir, "board.md")
+	return filepath.Join(wb.taskRoot(), "board.md")
 }
 
 // DeliverablePath returns the path to the global deliverable.md file.
 func (wb *Whiteboard) DeliverablePath() string {
-	return filepath.Join(wb.baseDir, "deliverable.md")
+	return filepath.Join(wb.taskRoot(), "deliverable.md")
 }
 
 // WriteBoard writes/updates the global progress board.

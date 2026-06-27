@@ -1529,7 +1529,8 @@ func (e *TeamEngine) PlanAndRun(ctx context.Context, goal, workdir, masterTaskID
 		e.mu.Unlock()
 	}()
 
-	// Switch logs to the master task directory.
+	// Scope files and logs under the master task directory.
+	e.Whiteboard.SetMaster(masterTaskID)
 	if e.Loggers != nil {
 		masterDir := filepath.Join(e.Whiteboard.BaseDir(), masterTaskID)
 		if err := e.Loggers.SetBaseDir(masterDir); err != nil {

@@ -96,7 +96,7 @@ func (fs *FileTaskStore) DeriveState(dir string) TaskState {
 }
 
 func (fs *FileTaskStore) taskDir(id string) string  { return filepath.Join(fs.baseDir, id) }
-func (fs *FileTaskStore) masterDir(id string) string { return filepath.Join(fs.baseDir, "masters", id) }
+func (fs *FileTaskStore) masterDir(id string) string { return filepath.Join(fs.baseDir, id) }
 
 // ---------------------------------------------------------------------------
 // metadata — structural fields only, no state
