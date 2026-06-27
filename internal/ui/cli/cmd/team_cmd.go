@@ -157,15 +157,18 @@ Subcommands:
 				eng.SetTeam(tc)
 			}
 			leader := team_engine.NewLeader(eng.Runner).WithTeam(eng.Team())
+			start := time.Now()
 			elaborated, err := leader.Elaborate(goal, workdir, 120*time.Second)
+			dur := time.Since(start)
 			if err != nil {
 				return fmt.Errorf("elaborate: %w", err)
 			}
+			specPath := filepath.Join(whiteboardDir, "spec.md")
 			if elaborated == goal {
-				fmt.Println("✅ Goal already fully specified — no elaboration needed.")
+				fmt.Printf("✅ Goal already fully specified (%.1fs)\n", dur.Seconds())
 			} else {
-				fmt.Println("📋 Elaborated Spec:\n---")
-				fmt.Println(elaborated)
+				os.WriteFile(specPath, []byte(elaborated), 0644)
+				fmt.Printf("📋 Elaborated Spec → %s (%.1fs)\n", specPath, dur.Seconds())
 			}
 			return nil
 		},
@@ -205,15 +208,18 @@ Subcommands:
 			stopAt := strings.ToLower(strings.TrimSpace(cmd.Flag("stop-at").Value.String()))
 			if stopAt == "spec" || stopAt == "decompose" {
 				leader := team_engine.NewLeader(eng.Runner).WithTeam(eng.Team())
+				start := time.Now()
 				elaborated, err := leader.Elaborate(goal, workdir, 120*time.Second)
 				if err != nil {
 					return fmt.Errorf("elaborate: %w", err)
 				}
 				if stopAt == "spec" {
+					specPath := filepath.Join(whiteboardDir, "spec.md")
 					if elaborated == goal {
-						fmt.Println("✅ Goal already fully specified.")
+						fmt.Printf("✅ Goal already fully specified (%.1fs)\n", time.Since(start).Seconds())
 					} else {
-						fmt.Println(elaborated)
+						os.WriteFile(specPath, []byte(elaborated), 0644)
+						fmt.Printf("📋 Elaborated Spec → %s (%.1fs)\n", specPath, time.Since(start).Seconds())
 					}
 					return nil
 				}
@@ -221,14 +227,20 @@ Subcommands:
 				if err != nil {
 					return fmt.Errorf("decompose: %w", err)
 				}
-				fmt.Printf("Decomposed into %d tasks:\n%s\n", len(planTasks), rawJSON)
-				// Write plan.md for inspection.
+				// Write plan.md and plan.json.
+				specPath := filepath.Join(whiteboardDir, "spec.md")
+				if elaborated != goal {
+					os.WriteFile(specPath, []byte(elaborated), 0644)
+				}
+				planPath := filepath.Join(whiteboardDir, "plan.md")
 				var md strings.Builder
 				md.WriteString(fmt.Sprintf("# 项目计划\n\n## 目标\n\n%s\n\n## 任务列表 (%d)\n\n", goal, len(planTasks)))
 				for i, pt := range planTasks {
 					md.WriteString(fmt.Sprintf("%d. **%s** (%s)\n   %s\n\n", i+1, pt.Title, pt.Role, pt.Description))
 				}
-				os.WriteFile(filepath.Join(whiteboardDir, "plan.md"), []byte(md.String()), 0644)
+				os.WriteFile(planPath, []byte(md.String()), 0644)
+				fmt.Printf("📋 Decomposed %d tasks in %.1fs\n   spec → %s\n   plan → %s\n%s\n",
+					len(planTasks), time.Since(start).Seconds(), specPath, planPath, rawJSON)
 				return nil
 			}
 
