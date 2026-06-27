@@ -58,6 +58,14 @@ export default function ChatHistoryPanel({ open, onClose }: { open: boolean; onC
   };
 
   const handleSelect = (session: MasterTask) => {
+    // Ensure agent context matches the session's agent
+    const agentKey = session.agent || '';
+    if (useStore.getState().selAgentId !== agentKey) {
+      useStore.setState({ selAgentId: agentKey });
+    }
+    // Force directChatTaskId so DirectChatView loads this session's messages,
+    // not a stale previous session.
+    useStore.setState({ directChatTaskId: session.id });
     useStore.getState().addTab(session.id);
     selectMasterTask(session.id);
     onClose();

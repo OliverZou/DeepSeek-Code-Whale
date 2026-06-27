@@ -112,6 +112,9 @@ func ResolveAgentRuntimeConfigWithLibrary(req SpawnSubagentRequest, defaults Run
 	if tools == nil {
 		tools = def.Tools
 	}
+	if tools == nil {
+		tools = []string{CapabilityWorkspaceRead, CapabilityWorkspaceWrite, CapabilityShellRun}
+	}
 	mcpServers := normalizeAgentMCPServers(def.MCPServers)
 	hooks, err := ResolveAgentHooks(def)
 	if err != nil {

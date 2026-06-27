@@ -128,16 +128,20 @@ export default function Sidebar() {
     const controller = new AbortController();
     lastMsgAbortRef.current = controller;
 
+    // Capture current masterTasks so abort race doesn't use stale data.
+    const captured = masterTasks;
+
     const timer = setTimeout(async () => {
       const result: Record<string, string> = {};
       for (const item of allAgents) {
         if (controller.signal.aborted) break;
         const agentKey = item.type === 'whale' ? '' : item.type + ':' + item.name;
-        const tasks = masterTasks.filter(t => (t.agent || '') === agentKey);
-        const lastTask = tasks.length > 0 ? tasks[tasks.length - 1] : null;
-        if (!lastTask) continue;
+        const agentTasks = captured.filter(t => (t.agent || '') === agentKey);
+        // GetChatMessages returns tasks sorted by ModTime desc, so [0] is the most recent.
+        const recentTask = agentTasks.length > 0 ? agentTasks[0] : null;
+        if (!recentTask) continue;
         try {
-          const msgs = await api.getChatMessages(lastTask.id);
+          const msgs = await api.getChatMessages(recentTask.id);
           if (!controller.signal.aborted && msgs && msgs.length > 0) {
             result[agentKey] = msgs[msgs.length - 1].content;
           }
@@ -150,7 +154,7 @@ export default function Sidebar() {
       clearTimeout(timer);
       controller.abort();
     };
-  }, [masterTasks, summonedItems, allAgents]);
+  }, [allAgents]);
 
   const q = search.trim().toLowerCase();
   const filtered = q

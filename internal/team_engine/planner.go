@@ -43,69 +43,28 @@ func (p *Planner) WithOnLog(fn func()) *Planner {
 }
 
 // DecomposePrompt returns the prompt template for task decomposition.
-// Leader splits by domain/role only. Worker agents handle their own
-// size assessment and can self-split if a task is too large.
 func DecomposePrompt(goal string) string {
-	return fmt.Sprintf(`You are a Team Leader. Decompose the goal into a structured plan of subtasks assigned to specialized roles.
+	return fmt.Sprintf(`Decompose this goal into tasks. Output pure JSON, no markdown.
 
-GOAL:
-%s
+GOAL: %s
 
-RULES:
+CORE RULE: 1 goal = 1 task by default. Only split when a single worker cannot finish.
 
-0. ⚠️ MOST IMPORTANT — ASSESS BEFORE DECOMPOSING ⚠️
-   Simple goals that one worker can complete in a single pass do NOT need the full chain. Having multiple team members available does NOT mean you must use them all. Pick ONLY the most relevant role(s) — if 1 role is enough, use 1 role.
+ROLES (pick the best fit):
+- developer: writes code AND unit tests. Checker auto-runs build/lint/test.
+- writer: produces documents, reports, articles.
+- researcher: investigates, analyzes, compares options.
 
-   - Trivial (narrow scope, one deliverable)  → 1 task, 1 batch
-   - Moderate (2-3 distinct concerns)         → 2-3 tasks, 1-2 batches
-   - Complex (cross-role, multi-phase)        → full chain
+IMPORTANT: Do NOT create separate tester tasks for unit tests — the developer
+writes them and the Checker validates them automatically. Tester role is ONLY
+for complex software projects needing integration/performance/security testing
+that the Checker cannot do.
 
-   Examples: "调研 X 趋势" = researcher only. "写一个 add.go 函数" = developer only. Only use the full chain when the goal genuinely requires multiple roles and phases. OVER-DECOMPOSITION IS A BUG.
+OUTPUT field: concrete file path (e.g. "gcd.go"), NOT a description.
+Same-batch tasks run in parallel. Different batches run sequentially.
 
-1. DEVELOPMENT CHAIN (complex software projects only) — If a goal genuinely spans roles and phases:
-
-     Requirements → Architecture → API Design → Coding → Verification
-
-   Each phase feeds the next. Workers see ONLY the output of the previous phase, never the original goal. Produce EXACTLY ONE subtask per role per phase. If a phase needs multiple documents, assign ONE role and let the Worker self-split.
-
-2. ONE TASK PER ROLE — Never give the same role multiple tasks in one phase. A subtask is a unit of responsibility, not a unit of size. If the work is too large, the Worker will self-split into smaller pieces.
-
-3. NO SEPARATE REVIEW TASKS — Do NOT create subtasks for "审查", "验证", "review", "verification". Every task already has a built-in Checker that checks its output automatically. The Verification phase means Checker runs for each task — not a separate task.
-
-4. ORDER BY DEPENDENCY — Upstream phases before downstream. Foundation before implementation.
-
-4. BATCHES — A batch is a dependency barrier: all tasks in a batch must finish before the next batch starts. Put independent tasks in the same batch. Use "depends_on_batch" for cross-batch ordering.
-
-5. WITHIN-BATCH DEPENDENCIES — Use "depends_on_index" (-1 means no dependency).
-
-6. VERIFIER FOCUS — For each task, choose the verification lens:
-   - "correctness"   — output is accurate
-   - "completeness"  — covers all requirements
-   - "security"      — security review
-   - "style"         — code style / conventions
-
-7. MAX CYCLES — Default 1. Set higher (≤5) for exploratory/research tasks.
-
-OUTPUT FORMAT (pure JSON array, no markdown):
-[
-  {
-    "title": "subtask title",
-    "description": "detailed instructions for the worker agent. Include what inputs this task receives (from upstream tasks)",
-    "output": "the single deliverable this task produces — file path, document, code module, or decision record",
-    "role": "developer",
-    "batch_id": "phase-1",
-    "batch_label": "Foundation",
-    "depends_on_batch": [],
-    "depends_on_index": -1,
-    "verifier_focus": "correctness",
-    "use_dw": false,
-    "max_cycles": 1
-  }
-]
-
-Each task MUST have exactly one output. The output is the input for downstream tasks.
-
-CRITICAL: Verify your JSON — no trailing commas, proper quoting, outermost structure is a JSON array [ ... ].`, goal)
+OUTPUT:
+[{"title":"...","description":"detailed instructions","output":"file.go","role":"developer","batch_id":"1","batch_label":"Implementation","depends_on_batch":[],"depends_on_index":-1,"verifier_focus":"correctness","max_cycles":1}]`, goal)
 }
 
 // decomposeInternal runs the leader agent and returns both parsed tasks

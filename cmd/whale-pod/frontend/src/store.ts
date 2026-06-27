@@ -113,6 +113,7 @@ interface PodState {
   cancelSubtask: (taskId: string) => Promise<void>;
   handleTaskEvent: (event: TaskEvent) => void;
   handleStreamChunk: (chunk: StreamChunk) => void;
+  handleChatAction: (data: { sessionId: string; mode: string; role?: string; goal: string }) => Promise<void>;
   regenerateLast: (deepThink?: boolean) => Promise<void>;
   deleteMessage: (index: number) => Promise<void>;
   openWorkspace: (dir: string) => Promise<void>;

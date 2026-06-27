@@ -93,6 +93,8 @@ type TeamEngine struct {
 
 	// Current team configuration (optional).
 	team *TeamConfig
+		shellSpawner       *ShellSubagentSpawner
+		persistentSessions map[string]*PersistentSession
 }
 
 // OnEvent 注册一个事件回调函数。
@@ -160,6 +162,7 @@ func New(_, whiteboardDir, configPath string, spawner SubagentSpawner) (*TeamEng
 		activeStdinWriters: make(map[string]io.WriteCloser),
 	masterTaskCancels: make(map[string]context.CancelFunc),
 		shutdownCtx:    shutdownCtx,
+		persistentSessions: make(map[string]*PersistentSession),
 		shutdownCancel: shutdownCancel,
 	}
 
@@ -167,6 +170,7 @@ func New(_, whiteboardDir, configPath string, spawner SubagentSpawner) (*TeamEng
 	// Engine instances created for sync/dashboard must never modify state.
 	_ = spawner
 
+	if ss, ok := spawner.(*ShellSubagentSpawner); ok { eng.shellSpawner = ss }
 	return eng, nil
 }
 
@@ -1127,8 +1131,10 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 			e.mu.Unlock()
 		}
 		workerStart := time.Now()
+			if e.Loggers != nil { e.Loggers.Engine("task %s worker START role=%s", taskID[:8], task.Role) }
 			result := e.Runner.RunWithContext(taskCtx, prompt, agentWorkdir, toolsStr, taskTimeout, liveOutput, onPID, onStdin)
 			Log("timing", "task %s worker done in %.1fs (success=%v)", taskID[:8], time.Since(workerStart).Seconds(), result.Success)
+			if e.Loggers != nil { e.Loggers.Engine("task %s worker DONE in %.1fs (success=%v exit=%d)", taskID[:8], time.Since(workerStart).Seconds(), result.Success, result.ExitCode) }
 			// Clean up nested .whale created by whale exec in the agent sandbox.
 		_ = os.RemoveAll(filepath.Join(agentWorkdir, ".whale"))
 		e.mu.Lock()
@@ -1234,28 +1240,20 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 
 		chk := NewChecker(e.Whiteboard, 60*time.Second)
 		chkStart := time.Now()
+		if e.Loggers != nil { e.Loggers.Engine("task %s mech START", taskID[:8]) }
 		chkPassed, _, chkFeedback, chkErr := chk.Check(task)
 		Log("timing", "task %s checker done in %.1fs (pass=%v)", taskID[:8], time.Since(chkStart).Seconds(), chkPassed)
+		if e.Loggers != nil { e.Loggers.Engine("task %s mech DONE in %.1fs (pass=%v)", taskID[:8], time.Since(chkStart).Seconds(), chkPassed) }
 		if chkErr != nil {
 			return false, fmt.Errorf("checker error: %w", chkErr)
 		}
 
-		if !chkPassed {
-			// Checker found deterministic issues.  Skip Verifier (saves
-			// tokens) and feed back to Worker for retry.
-			if e.Loggers != nil {
-				e.Loggers.LogAgent("checker", taskID, attempt+1, "Deterministic check", fmt.Sprintf("[FAIL] %s", chkFeedback), 0, 0, nil)
-				e.fireEvent(TaskEvent{Type: EventAgentLog, TaskID: taskID})
-			}
-			// Reuse the verification-failure retry path below.
-			feedback = chkFeedback
-			passed = false
-			isRetry = false
+		if !chkPassed && e.Loggers != nil {
+			e.Loggers.Engine("task %s checker issue (verifier will handle): %s", taskID[:8], chkFeedback)
 		}
 
 
-		if chkPassed {
-			// Checker passed — ready for semantic verification.
+		// Checker done, proceeding to Verifier
 			e.mu.Lock()
 			if err := e.Store.TransitionState(taskID, TaskStateChecked, "", ""); err != nil {
 				e.mu.Unlock()
@@ -1272,6 +1270,7 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 		e.mu.Unlock()
 
 
+			var v *Verifier
 		if task.UseDW {
 			// Dynamic Workflow mode: N verifiers in parallel + Synthesizer.
 			passed, isRetry, feedback = e.runDWVerification(task)
@@ -1289,10 +1288,13 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 			if e.team != nil && e.team.Config != nil {
 				verifierModel = e.team.Config.Model.VerifierDefault
 			}
-			v := NewVerifier(e.Whiteboard, e.Runner, e.Router, 0, verifierModel).WithCustomPrompt(verifierPrompt)
+			var v *Verifier
+			v = NewVerifier(e.Whiteboard, e.Runner, e.Router, 0, verifierModel).WithCustomPrompt(verifierPrompt)
 			verifyStart := time.Now()
+			if e.Loggers != nil { e.Loggers.Engine("task %s verifier START", taskID[:8]) }
 			passed, isRetry, feedback, err = v.Verify(task)
 			verifyDur = time.Since(verifyStart)
+			if e.Loggers != nil { e.Loggers.Engine("task %s verifier DONE in %.1fs (pass=%v)", taskID[:8], verifyDur.Seconds(), passed) }
 			if err != nil {
 				return false, fmt.Errorf("verifier error: %w", err)
 			}
@@ -1315,7 +1317,8 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 			if !passed {
 				verdict = "FAIL"
 			}
-			verifierPrompt := fmt.Sprintf("Verify output of task %q (role: %s)", task.Title, task.Role)
+			var verifierPrompt string
+			if v != nil { verifierPrompt = v.LastPrompt } else { verifierPrompt = "mechanical" }
 			e.Loggers.LogAgent("verifier", taskID, attempt+1, verifierPrompt, fmt.Sprintf("[%s] %s", verdict, feedback), 0, verifyDur, nil)
 			e.fireEvent(TaskEvent{Type: EventAgentLog, TaskID: taskID})
 		}
@@ -1346,7 +1349,6 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 			return true, nil
 		}
 
-		}
 		// Verification failed — prepare retry.
 		e.mu.Lock()
 		task, err = e.Store.GetTask(taskID)
@@ -1389,9 +1391,16 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 			return false, fmt.Errorf("update task for retry: %w", err)
 		}
 
-		// Early escalation: if the verifier reported the same findings for
-		// 2 consecutive rounds, suspend now so the escalator can re-decompose
-		// the task into smaller pieces — no point wasting another retry.
+		// 0 issues → pass immediately.
+		currCount := len(ParseFindings(feedback))
+		if currCount == 0 {
+			e.mu.Unlock()
+			e.closePersistentSession("worker:" + taskID)
+			if task.Output != "" { os.WriteFile(filepath.Join(e.Whiteboard.TaskDir(taskID), "verify.md"), []byte(feedback), 0644) }
+			e.recordLesson(task.Role, task.Title, truncateLesson(feedback, 80))
+			return true, nil
+		}
+		// Stagnation: same findings 2 rounds → suspend.
 		if attempt >= 2 {
 			prevFindings := ParseFindings(task.VerifierFeedback)
 			currFindings := ParseFindings(feedback)
@@ -2679,6 +2688,15 @@ func truncateLesson(s string, n int) string {
 	}
 	return s
 }
+// closePersistentSession closes and removes a persistent subprocess session.
+func (e *TeamEngine) closePersistentSession(key string) {
+	if e.shellSpawner == nil { return }
+	ws := e.persistentSessions[key]
+	if ws == nil { return }
+	e.shellSpawner.CloseSession(ws)
+	delete(e.persistentSessions, key)
+}
+
 func (e *TeamEngine) recordLesson(role AgentRole, title, lesson string) {
 	if e.Store == nil {
 		return

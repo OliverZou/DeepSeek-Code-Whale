@@ -1,12 +1,16 @@
 package team_engine
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
+	"strings"
 	"sync"
+	"time"
 
 	teampglog "github.com/usewhale/whale/internal/team_engine/log"
 )
@@ -239,10 +243,14 @@ func (s *ShellSubagentSpawner) SpawnSubagent(ctx context.Context, req SubagentRe
 
 	cmd := exec.CommandContext(ctx, whaleBin, args...)
 	cmd.Dir = cwd
+		cmd.Env = append(os.Environ(),
+			"WHALE_NO_DASHBOARD=1",
+			fmt.Sprintf("WHALE_MAX_TOKENS=%d", req.MaxTokens),
+		)
 
-	stdinPipe, err := cmd.StdinPipe()
+		stdinPipe, err := cmd.StdinPipe()
 	if err != nil {
-		return SubagentResponse{SpawnerType: "shell", ExitCode: -1, Success: false}, nil
+		return SubagentResponse{SpawnerType: "shell", Diagnostic: "stdin pipe error", ExitCode: -1, Success: false}, nil
 	}
 
 	var stdout, stderr bytes.Buffer
@@ -250,26 +258,34 @@ func (s *ShellSubagentSpawner) SpawnSubagent(ctx context.Context, req SubagentRe
 	cmd.Stderr = &stderr
 
 	if err := cmd.Start(); err != nil {
-		return SubagentResponse{SpawnerType: "shell", ExitCode: -1, Success: false}, nil
+		return SubagentResponse{SpawnerType: "shell", Diagnostic: fmt.Sprintf("start error: %v", err), ExitCode: -1, Success: false}, nil
 	}
 	pid := cmd.Process.Pid
 	if req.OnPID != nil {
 		req.OnPID(pid)
 	}
 
-	// Write initial prompt to stdin, then close it so the
-	// subprocess sees EOF and starts processing.  whale exec
-	// reads the entire stdin before acting; keeping it open
-	// causes a deadlock.
-	// The OnStdin callback is still called so the engine can
-	// track the pipe for external kill signals, but stdin is
-	// always closed after writing — ShellSubagentSpawner does
-	// not support mid-execution interactive input.
-	stdinPipe.Write([]byte(prompt))
-	if req.OnStdin != nil {
-		req.OnStdin(stdinPipe)
-	}
-	stdinPipe.Close()
+	// Write prompt to stdin in a background goroutine so the main
+	// goroutine is never blocked on the pipe buffer.  A large
+	// decompose prompt (>4 KB) will fill the OS pipe buffer if the
+	// subprocess hasn't started reading yet (e.g. it is still
+	// initializing the LLM provider), creating a circular wait:
+	// parent blocks on Write → context timeout unreachable → both
+	// sides stuck.  Writing in a goroutine breaks the circle:
+	// the select below can always respond to ctx cancellation and
+	// kill the subprocess, which unblocks the write via broken pipe.
+	//
+	// The OnStdin callback is still called so the engine can track
+	// the pipe for external kill signals.  Stdin is always closed
+	// after writing — ShellSubagentSpawner does not support
+	// mid-execution interactive input.
+	go func() {
+		stdinPipe.Write([]byte(prompt))
+		if req.OnStdin != nil {
+			req.OnStdin(stdinPipe)
+		}
+		stdinPipe.Close()
+	}()
 
 	done := make(chan error, 1)
 	go func() { done <- cmd.Wait() }()
@@ -283,14 +299,184 @@ func (s *ShellSubagentSpawner) SpawnSubagent(ctx context.Context, req SubagentRe
 			} else {
 				exitCode = -1
 			}
-			return SubagentResponse{SpawnerType: "shell", Output: stdout.String(), ExitCode: exitCode, Success: false, PID: pid}, nil
+			return SubagentResponse{SpawnerType: "shell", Output: stdout.String(), Diagnostic: stderr.String(), ExitCode: exitCode, Success: false, PID: pid}, nil
 		}
-		return SubagentResponse{SpawnerType: "shell", Output: stdout.String(), ExitCode: 0, Success: true, PID: pid}, nil
+		return SubagentResponse{SpawnerType: "shell", Output: stdout.String(), Diagnostic: stderr.String(), ExitCode: 0, Success: true, PID: pid}, nil
 
 	case <-ctx.Done():
-		stdinPipe.Close()
 		cmd.Process.Kill()
-		return SubagentResponse{Output: stdout.String(), ExitCode: -2, Success: false, PID: pid}, ctx.Err()
+		return SubagentResponse{Output: stdout.String(), Diagnostic: stderr.String(), ExitCode: -2, Success: false, PID: pid}, ctx.Err()
+	}
+}
+
+// ---------------------------------------------------------------------------
+// PersistentSession — long-lived subprocess for worker/verifier retries
+// ---------------------------------------------------------------------------
+
+const (
+	whaleEOP = "\n__WHALE_EOP__\n"
+	whaleEOT = "\n__WHALE_EOT__\n"
+)
+
+// PersistentSession wraps a long-running whale exec --persist subprocess.
+// The parent writes prompts delimited by __WHALE_EOP__ and reads responses
+// delimited by __WHALE_EOT__.  The session is reused across retries instead
+// of spawning a new process each time.
+type PersistentSession struct {
+	cmd   *exec.Cmd
+	stdin io.WriteCloser
+
+	// stdoutBuf wraps cmd's stdout pipe for line-by-line scanning.
+	stdoutBuf *bufio.Scanner
+
+	// stderr accumulates stderr output.
+	stderr *bytes.Buffer
+
+	pid int
+	mu  sync.Mutex // serialises writes to stdin
+}
+
+// SpawnPersistent starts a whale exec --persist subprocess, writes the
+// initial prompt, and reads the first response.  The session remains
+// alive after this call returns — use ContinueSession for retries and
+// CloseSession when the task is done.
+func (s *ShellSubagentSpawner) SpawnPersistent(ctx context.Context, req SubagentRequest) (*PersistentSession, *SubagentResponse) {
+	whaleBin := s.whaleBin
+	if whaleBin == "" {
+		if exe, err := os.Executable(); err == nil {
+			whaleBin = exe
+		} else {
+			whaleBin = "whale"
+		}
+	}
+
+	args := []string{
+		"exec",
+		"--dangerously-skip-permissions",
+		"--persist",
+	}
+	if req.Model != "" {
+		args = append(args, "--model", req.Model)
+	}
+
+	prompt := req.Task
+	if req.Role != "" {
+		prompt = fmt.Sprintf("[Role: %s]\n\n%s", req.Role, prompt)
+	}
+
+	cwd := req.Workdir
+	if cwd == "" {
+		cwd = "."
+	}
+
+	cmd := exec.CommandContext(context.Background(), whaleBin, args...)
+	cmd.Dir = cwd
+		cmd.Env = append(os.Environ(),
+			"WHALE_NO_DASHBOARD=1",
+			fmt.Sprintf("WHALE_MAX_TOKENS=%d", req.MaxTokens),
+		)
+
+		stdinPipe, err := cmd.StdinPipe()
+	if err != nil {
+		r := SubagentResponse{SpawnerType: "shell", ExitCode: -1, Success: false}
+		return nil, &r
+	}
+
+	stdoutPipe, err := cmd.StdoutPipe()
+	if err != nil {
+		stdinPipe.Close()
+		r := SubagentResponse{SpawnerType: "shell", ExitCode: -1, Success: false}
+		return nil, &r
+	}
+
+	var sessionStderr bytes.Buffer
+	cmd.Stderr = &sessionStderr
+
+	if err := cmd.Start(); err != nil {
+		r := SubagentResponse{SpawnerType: "shell", ExitCode: -1, Success: false}
+		return nil, &r
+	}
+
+	session := &PersistentSession{
+		cmd:       cmd,
+		stdin:     stdinPipe,
+		stdoutBuf: bufio.NewScanner(stdoutPipe),
+		stderr:    &sessionStderr,
+		pid:       cmd.Process.Pid,
+	}
+	// Large buffer — agent output can be large.
+	session.stdoutBuf.Buffer(make([]byte, 0, 256*1024), 4*1024*1024)
+
+	if req.OnPID != nil {
+		req.OnPID(session.pid)
+	}
+
+	// Write initial prompt + EOP.
+	resp := session.sendAndReceive(prompt)
+	return session, resp
+}
+
+// ContinueSession sends a follow-up prompt (typically checker/verifier
+// feedback) to a persistent session and reads the response.
+func (s *ShellSubagentSpawner) ContinueSession(session *PersistentSession, prompt string) *SubagentResponse {
+	return session.sendAndReceive(prompt)
+}
+
+// CloseSession writes EOF to stdin, waits for graceful exit, then
+// force-kills if the subprocess hasn't exited within 5 seconds.
+func (s *ShellSubagentSpawner) CloseSession(session *PersistentSession) {
+	if session == nil {
+		return
+	}
+	session.mu.Lock()
+	if session.stdin != nil {
+		session.stdin.Close()
+		session.stdin = nil
+	}
+	session.mu.Unlock()
+
+	// Wait with a timeout, then force-kill.
+	done := make(chan struct{})
+	go func() {
+		session.cmd.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		session.cmd.Process.Kill()
+	}
+}
+
+// sendAndReceive writes a prompt + EOP to stdin, then reads stdout until
+// EOT.  Thread-safe via session.mu.
+func (ps *PersistentSession) sendAndReceive(prompt string) *SubagentResponse {
+	ps.mu.Lock()
+	defer ps.mu.Unlock()
+
+	// Write prompt + EOP.
+	_, err := io.WriteString(ps.stdin, prompt+whaleEOP)
+	if err != nil {
+		return &SubagentResponse{SpawnerType: "shell", ExitCode: -1, Success: false}
+	}
+
+	// Read until EOT.
+	var lines []string
+	for ps.stdoutBuf.Scan() {
+		line := ps.stdoutBuf.Text()
+		if strings.TrimSpace(line) == "__WHALE_EOT__" {
+			break
+		}
+		lines = append(lines, line)
+	}
+	output := strings.Join(lines, "\n")
+
+	return &SubagentResponse{
+		SpawnerType: "shell",
+		Output:      output,
+		ExitCode:    0,
+		Success:     true, // files may have been produced without stdout
+		PID:         ps.pid,
 	}
 }
 

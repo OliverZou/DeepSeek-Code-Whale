@@ -23,6 +23,7 @@ type Verifier struct {
 	timeout      time.Duration
 	model        string
 	customPrompt string
+	LastPrompt   string
 }
 
 // NewVerifier creates a Verifier that spawns an LLM agent for semantic
@@ -103,6 +104,7 @@ those files against the requirements, not the empty output above.
 	model := v.model
 
 	// Spawn the Verifier LLM agent.
+	v.LastPrompt = prompt
 	result := v.runner.RunVerifier(prompt, workdir, timeout, profile, model)
 
 	output := result.Stdout
@@ -191,62 +193,24 @@ func parseVerdict(output string) (passed bool, retry bool) {
 // The deterministic Checker has already verified build/lint/file-existence,
 // so the Verifier focuses on SEMANTIC concerns.
 func BuildVerifierSemanticPrompt(task *Task, workerOutput, inbox string) string {
-	// Include the full inbox if available — it contains upstream outputs,
-	// templates, team memory, and other context the Worker was given.
-	var inboxSection string
-	if inbox != "" {
-		inboxSection = fmt.Sprintf("\n\nFULL TASK INBOX (what the Worker was given):\n%s", inbox)
-	}
+	desc := stripVerifierFeedback(task.Description)
+	return fmt.Sprintf(`Mechanical checks passed. Find at most 5 issues.
 
-	return fmt.Sprintf(`You are a Semantic Verifier. The deterministic Checker has already verified:
-- Output files exist
-- Code compiles / builds
-- Format / lint checks pass
-- All referenced files exist
-
-Your job is to check DEEPER, SEMANTIC concerns that mechanical checks cannot catch.  Read
-the FULL TASK INBOX below — it contains upstream outputs, templates, and team memory that
-the Worker was expected to read and follow.  Verify that the Worker's output satisfies ALL
-of it, not just the one-line task description.
-
-ORIGINAL TASK:
-%s%s
-
-WORKER OUTPUT:
+TASK:
 %s
 
-SEMANTIC CHECKLIST:
-1. INBOX REQUIREMENTS: Read the inbox carefully. Does the output satisfy every requirement
-   stated there? Note any upstream outputs the Worker was told to read — did they actually
-   read and incorporate them?
-2. LOGIC CORRECTNESS: Is the logic correct? Are edge cases handled?
-3. SECURITY: Any vulnerabilities? (injection, auth bypass, leaked secrets, unsafe patterns)
-4. PROFESSIONAL QUALITY: Is this production-ready? Error handling? Documentation? Tests?
-5. CONSISTENCY: Does the output contradict itself, the inbox templates, or established conventions?
+WORKER SUMMARY (%d chars):
 %s
 
-IMPORTANT — TOOL-GROUNDED VERIFICATION:
-- Use shell_run to execute tests (go test, pytest, npm test, cargo test)
-- Use shell_run to run the actual code and verify its behaviour
-- Use grep / search_files to find patterns (security issues, missing error handling)
-- Use read_file to inspect actual code, not just the Worker's summary
-- Report ACTUAL command output as evidence — NOT your opinion
+Check: requirements met? edge cases? false claims?
+If numbers claimed, count them yourself.
 
-OUTPUT FORMAT:
-TOOLS USED: [list all commands you ran, e.g. "shell_run: go test ./..."]
-VERDICT: PASS|FAIL|RETRY
-EVIDENCE: [actual tool output excerpts]
+OUTPUT:
+VERDICT:PASS|FAIL
+COUNT:<N>
 ISSUES:
-- [list specific issues found, or "none" if all pass]
-
-## FINDINGS (structured JSON array)
----json
-[
-  {"id": "unique-key", "title": "one-line summary", "severity": "critical|major|minor", "evidence": "specific reason"}
-]
----
-Use stable IDs for cross-round comparison (e.g. "missing-requirement-3" not "issue-1").
-`, task.Description, inboxSection, workerOutput, buildFocusSection(task.VerifierFocus))
+- <issue>
+... up to 5`, desc, len(workerOutput), truncateStr(workerOutput, 2000))
 }
 
 // BuildVerifierContentPrompt creates a Verifier prompt for content roles

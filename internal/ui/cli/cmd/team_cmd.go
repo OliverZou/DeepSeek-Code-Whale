@@ -164,6 +164,25 @@ Subcommands:
 			if mtErr != nil {
 				return fmt.Errorf("create master task: %w", mtErr)
 			}
+
+			// Subscribe to engine events for real-time progress output.
+			cancel := eng.OnEvent(func(event team_engine.TaskEvent) {
+				switch event.Type {
+				case team_engine.EventStateChanged:
+					if event.TaskID != "" {
+						icon := statusIcon(team_engine.TaskState(event.NewState))
+						fmt.Fprintf(cmd.ErrOrStderr(), "  %s %s: %s -> %s\n",
+							icon, event.TaskID[:8], event.OldState, event.NewState)
+					}
+				case team_engine.EventTaskDone:
+					fmt.Fprintf(cmd.ErrOrStderr(), "  done %s\n", event.TaskID[:8])
+				case team_engine.EventAgentLog:
+					fmt.Fprint(cmd.ErrOrStderr(), ".")
+				}
+			})
+			defer cancel()
+
+
 			batches, err := eng.PlanAndRun(cmd.Context(), goal, workdir, masterTask.ID)
 			if err != nil {
 				return fmt.Errorf("plan and run: %w", err)

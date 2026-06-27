@@ -8,9 +8,38 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
-	"strconv"
+
 	"strings"
+
+	"gopkg.in/yaml.v3"
 )
+
+type yamlStringList []string
+
+func (l *yamlStringList) UnmarshalYAML(value *yaml.Node) error {
+	if value.Kind == yaml.SequenceNode {
+		var items []string
+		if err := value.Decode(&items); err != nil {
+			return err
+		}
+		*l = items
+		return nil
+	}
+	var s string
+	if err := value.Decode(&s); err != nil {
+		return err
+	}
+	parts := strings.Split(s, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	*l = out
+	return nil
+}
 
 const AgentDefinitionFileExt = ".md"
 
@@ -293,85 +322,87 @@ func parseMarkdownAgentDefinition(content, filename, _ string) (AgentDefinition,
 	if err != nil || !ok {
 		return AgentDefinition{}, false, err
 	}
-	values := parseAgentFrontmatter(frontmatter)
-	name := stringFrontmatterValue(values, "name")
+
+	var raw struct {
+		Name            string         `yaml:"name"`
+		Role            string         `yaml:"role"`
+		Description     string         `yaml:"description"`
+		WhenToUse       string         `yaml:"whenToUse"`
+		Tools           yamlStringList `yaml:"tools"`
+		DisallowedTools yamlStringList `yaml:"disallowedTools"`
+		Skills          yamlStringList `yaml:"skills"`
+		MCPServers      yamlStringList `yaml:"mcpServers"`
+		Model           string         `yaml:"model"`
+		Effort          string         `yaml:"effort"`
+		PermissionMode  string         `yaml:"permissionMode"`
+		MaxTurns        int            `yaml:"maxTurns"`
+		InitialPrompt   string         `yaml:"initialPrompt"`
+		Memory          string         `yaml:"memory"`
+		Background      bool           `yaml:"background"`
+		Isolation       string         `yaml:"isolation"`
+		DisplayName     map[string]string `yaml:"displayName"`
+		Profession      map[string]string `yaml:"profession"`
+		Generation      struct {
+			AssistantPrefix  string `yaml:"assistantPrefix"`
+			PrefixCompletion bool   `yaml:"prefixCompletion"`
+		} `yaml:"generation"`
+		Hooks any `yaml:"hooks"`
+	}
+
+	if err := yaml.Unmarshal([]byte(frontmatter), &raw); err != nil {
+		return AgentDefinition{}, false, fmt.Errorf("parse frontmatter: %w", err)
+	}
+
+	name := raw.Name
 	if name == "" {
 		name = strings.TrimSuffix(filename, filepath.Ext(filename))
 	}
-	desc := stringFrontmatterValue(values, "description")
+	desc := raw.Description
 	if desc == "" {
 		return AgentDefinition{}, false, fmt.Errorf("description is required")
 	}
+
+	role := raw.Role
+	if role == "" {
+		if raw.Profession != nil {
+			if zh, ok := raw.Profession["zh"]; ok && zh != "" {
+				role = zh
+			} else if en, ok := raw.Profession["en"]; ok && en != "" {
+				role = en
+			}
+		}
+	}
+	if raw.DisplayName != nil {
+		if zh, ok := raw.DisplayName["zh"]; ok && zh != "" && role == "" {
+			role = zh
+		}
+	}
+
 	def := AgentDefinition{
 		Name:            name,
-		Role:            stringFrontmatterValue(values, "role"),
+		Role:            role,
 		Description:     desc,
-		WhenToUse:       stringFrontmatterValue(values, "whenToUse"),
+		WhenToUse:       raw.WhenToUse,
 		Prompt:          strings.TrimSpace(body),
-		Tools:           stringListFrontmatterValue(values, "tools"),
-		DisallowedTools: stringListFrontmatterValue(values, "disallowedTools"),
-		Skills:          stringListFrontmatterValue(values, "skills"),
-		MCPServers:      stringListFrontmatterValue(values, "mcpServers"),
-		Model:           stringFrontmatterValue(values, "model"),
-		Effort:          stringFrontmatterValue(values, "effort"),
-		PermissionMode:  stringFrontmatterValue(values, "permissionMode"),
-		MaxTurns:        intFrontmatterValue(values, "maxTurns"),
-		InitialPrompt:   stringFrontmatterValue(values, "initialPrompt"),
-		Memory:          stringFrontmatterValue(values, "memory"),
-		Hooks:           hooksFrontmatterValue(frontmatter),
-		Background:      boolFrontmatterValue(values, "background"),
-		Isolation:       stringFrontmatterValue(values, "isolation"),
-		Generation:      generationFrontmatterValue(frontmatter, values),
+		Tools:           raw.Tools,
+		DisallowedTools: raw.DisallowedTools,
+		Skills:          raw.Skills,
+		MCPServers:      raw.MCPServers,
+		Model:           raw.Model,
+		Effort:          raw.Effort,
+		PermissionMode:  raw.PermissionMode,
+		MaxTurns:        raw.MaxTurns,
+		InitialPrompt:   raw.InitialPrompt,
+		Memory:          raw.Memory,
+		Hooks:           raw.Hooks,
+		Background:      raw.Background,
+		Isolation:       raw.Isolation,
+		Generation: AgentGenerationConfig{
+			AssistantPrefix:  raw.Generation.AssistantPrefix,
+			PrefixCompletion: raw.Generation.PrefixCompletion,
+		},
 	}
 	return validateLoadedAgentDefinition(def)
-}
-
-func generationFrontmatterValue(frontmatter string, values map[string]any) AgentGenerationConfig {
-	cfg := AgentGenerationConfig{
-		AssistantPrefix:  exactStringFrontmatterValue(values, "generationAssistantPrefix"),
-		PrefixCompletion: boolFrontmatterValue(values, "generationPrefixCompletion"),
-	}
-	lines := strings.Split(frontmatter, "\n")
-	start := -1
-	for i, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "" || strings.HasPrefix(trimmed, "#") || isIndentedYAMLLine(line) {
-			continue
-		}
-		key, raw, ok := strings.Cut(line, ":")
-		if !ok || strings.TrimSpace(key) != "generation" {
-			continue
-		}
-		if strings.TrimSpace(raw) != "" {
-			return cfg
-		}
-		start = i + 1
-		break
-	}
-	if start < 0 {
-		return cfg
-	}
-	for i := start; i < len(lines); i++ {
-		line := strings.TrimRight(lines[i], " \t")
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
-			continue
-		}
-		if yamlIndent(line) == 0 {
-			break
-		}
-		key, raw, ok := strings.Cut(trimmed, ":")
-		if !ok {
-			continue
-		}
-		switch strings.TrimSpace(key) {
-		case "assistantPrefix":
-			cfg.AssistantPrefix = exactStringFromScalar(parseAgentScalar(raw))
-		case "prefixCompletion":
-			cfg.PrefixCompletion = boolFromScalar(parseAgentScalar(raw))
-		}
-	}
-	return cfg
 }
 
 func validateLoadedAgentDefinition(def AgentDefinition) (AgentDefinition, bool, error) {
@@ -407,248 +438,6 @@ func splitAgentFrontmatter(content string) (frontmatter, body string, ok bool, e
 	return frontmatter, body, true, nil
 }
 
-func parseAgentFrontmatter(frontmatter string) map[string]any {
-	values := map[string]any{}
-	lines := strings.Split(frontmatter, "\n")
-	for i := 0; i < len(lines); i++ {
-		line := strings.TrimRight(lines[i], " \t")
-		if strings.TrimSpace(line) == "" || strings.HasPrefix(strings.TrimSpace(line), "#") {
-			continue
-		}
-		if strings.HasPrefix(line, " ") || strings.HasPrefix(line, "\t") {
-			continue
-		}
-		key, raw, ok := strings.Cut(line, ":")
-		if !ok {
-			continue
-		}
-		key = strings.TrimSpace(key)
-		raw = strings.TrimSpace(raw)
-		if key == "" {
-			continue
-		}
-		if raw == "" {
-			var list []string
-			for j := i + 1; j < len(lines); j++ {
-				next := strings.TrimSpace(lines[j])
-				if next == "" {
-					continue
-				}
-				if !strings.HasPrefix(lines[j], " ") && !strings.HasPrefix(lines[j], "\t") {
-					break
-				}
-				if strings.HasPrefix(next, "- ") {
-					list = append(list, cleanScalar(next[2:]))
-					i = j
-				}
-			}
-			if list != nil {
-				values[key] = list
-			}
-			continue
-		}
-		values[key] = parseAgentScalar(raw)
-	}
-	return values
-}
-
-func hooksFrontmatterValue(frontmatter string) any {
-	lines := strings.Split(frontmatter, "\n")
-	start := -1
-	for i, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "" || strings.HasPrefix(trimmed, "#") || isIndentedYAMLLine(line) {
-			continue
-		}
-		key, raw, ok := strings.Cut(line, ":")
-		if !ok || strings.TrimSpace(key) != "hooks" {
-			continue
-		}
-		if strings.TrimSpace(raw) != "" {
-			return parseAgentScalar(raw)
-		}
-		start = i + 1
-		break
-	}
-	if start < 0 {
-		return nil
-	}
-	hooks := map[string]any{}
-	var currentEvent string
-	var current map[string]any
-	var nestedKey string
-	nestedIndent := 0
-	for i := start; i < len(lines); i++ {
-		line := strings.TrimRight(lines[i], " \t")
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
-			continue
-		}
-		indent := yamlIndent(line)
-		if indent == 0 {
-			break
-		}
-		if current != nil && nestedKey != "" && indent > nestedIndent {
-			if strings.HasPrefix(trimmed, "- ") {
-				appendNestedListValue(current, nestedKey, strings.TrimSpace(trimmed[2:]))
-				continue
-			}
-			if key, raw, ok := strings.Cut(trimmed, ":"); ok {
-				putNestedMapValue(current, nestedKey, strings.TrimSpace(key), strings.TrimSpace(raw))
-				continue
-			}
-		}
-		if current != nil && nestedKey != "" && indent <= nestedIndent {
-			nestedKey = ""
-			nestedIndent = 0
-		}
-		if indent <= 2 && !strings.HasPrefix(trimmed, "- ") && strings.HasSuffix(trimmed, ":") {
-			event := strings.TrimSpace(strings.TrimSuffix(trimmed, ":"))
-			if event == "" {
-				continue
-			}
-			currentEvent = event
-			if _, ok := hooks[currentEvent]; !ok {
-				hooks[currentEvent] = []any{}
-			}
-			current = nil
-			continue
-		}
-		if currentEvent == "" {
-			continue
-		}
-		if strings.HasPrefix(trimmed, "- ") {
-			current = map[string]any{}
-			hooks[currentEvent] = append(hooks[currentEvent].([]any), current)
-			nestedKey = ""
-			nestedIndent = 0
-			item := strings.TrimSpace(trimmed[2:])
-			if item == "" {
-				continue
-			}
-			key, raw, ok := strings.Cut(item, ":")
-			if !ok {
-				continue
-			}
-			key = strings.TrimSpace(key)
-			raw = strings.TrimSpace(raw)
-			if raw == "" {
-				current[key] = map[string]any{}
-				nestedKey = key
-				nestedIndent = indent
-			} else {
-				current[key] = parseAgentScalar(raw)
-			}
-			continue
-		}
-		if current == nil {
-			continue
-		}
-		key, raw, ok := strings.Cut(trimmed, ":")
-		if !ok {
-			continue
-		}
-		key = strings.TrimSpace(key)
-		raw = strings.TrimSpace(raw)
-		if raw == "" {
-			current[key] = map[string]any{}
-			nestedKey = key
-			nestedIndent = indent
-			continue
-		}
-		current[key] = parseAgentScalar(raw)
-	}
-	if len(hooks) == 0 {
-		return nil
-	}
-	return hooks
-}
-
-func isIndentedYAMLLine(line string) bool {
-	return strings.HasPrefix(line, " ") || strings.HasPrefix(line, "\t")
-}
-
-func yamlIndent(line string) int {
-	indent := 0
-	for _, ch := range line {
-		switch ch {
-		case ' ':
-			indent++
-		case '\t':
-			indent += 2
-		default:
-			return indent
-		}
-	}
-	return indent
-}
-
-func appendNestedListValue(target map[string]any, key, raw string) {
-	value := parseAgentScalar(raw)
-	switch existing := target[key].(type) {
-	case []any:
-		target[key] = append(existing, value)
-	case []string:
-		if s, ok := value.(string); ok {
-			target[key] = append(existing, s)
-			return
-		}
-		out := make([]any, 0, len(existing)+1)
-		for _, item := range existing {
-			out = append(out, item)
-		}
-		target[key] = append(out, value)
-	default:
-		target[key] = []any{value}
-	}
-}
-
-func putNestedMapValue(target map[string]any, key, nestedKey, raw string) {
-	if nestedKey == "" {
-		return
-	}
-	existing, ok := target[key].(map[string]any)
-	if !ok {
-		existing = map[string]any{}
-	}
-	existing[nestedKey] = parseAgentScalar(raw)
-	target[key] = existing
-}
-
-func parseAgentScalar(raw string) any {
-	raw = strings.TrimSpace(raw)
-	if strings.HasPrefix(raw, "[") && strings.HasSuffix(raw, "]") {
-		body := strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(raw, "["), "]"))
-		if body == "" {
-			return []string{}
-		}
-		parts := strings.Split(body, ",")
-		out := make([]string, 0, len(parts))
-		for _, part := range parts {
-			if value := cleanScalar(part); value != "" {
-				out = append(out, value)
-			}
-		}
-		return out
-	}
-	switch strings.ToLower(raw) {
-	case "true":
-		return true
-	case "false":
-		return false
-	}
-	if i, err := strconv.Atoi(raw); err == nil {
-		return i
-	}
-	return cleanScalar(raw)
-}
-
-func cleanScalar(raw string) string {
-	raw = strings.TrimSpace(raw)
-	raw = strings.Trim(raw, `"'`)
-	return strings.ReplaceAll(raw, `\n`, "\n")
-}
-
 func cloneAgentDefinitions(definitions []AgentDefinition) []AgentDefinition {
 	if len(definitions) == 0 {
 		return nil
@@ -664,107 +453,6 @@ func cloneAgentDefinitions(definitions []AgentDefinition) []AgentDefinition {
 		def.Skills = cloneStrings(def.Skills)
 		def.MCPServers = cloneStrings(def.MCPServers)
 		out = append(out, def)
-	}
-	return out
-}
-
-func stringFrontmatterValue(values map[string]any, key string) string {
-	if value, ok := values[key]; ok {
-		switch typed := value.(type) {
-		case string:
-			return strings.TrimSpace(typed)
-		case int:
-			return strconv.Itoa(typed)
-		}
-	}
-	return ""
-}
-
-func exactStringFrontmatterValue(values map[string]any, key string) string {
-	if value, ok := values[key]; ok {
-		return exactStringFromScalar(value)
-	}
-	return ""
-}
-
-func exactStringFromScalar(value any) string {
-	switch typed := value.(type) {
-	case string:
-		return typed
-	case int:
-		return strconv.Itoa(typed)
-	default:
-		return ""
-	}
-}
-
-func stringListFrontmatterValue(values map[string]any, key string) []string {
-	value, ok := values[key]
-	if !ok {
-		return nil
-	}
-	switch typed := value.(type) {
-	case []string:
-		return compactStrings(typed)
-	case string:
-		return compactStrings(strings.Split(typed, ","))
-	default:
-		return nil
-	}
-}
-
-func intFrontmatterValue(values map[string]any, key string) int {
-	value, ok := values[key]
-	if !ok {
-		return 0
-	}
-	switch typed := value.(type) {
-	case int:
-		return typed
-	case string:
-		i, _ := strconv.Atoi(strings.TrimSpace(typed))
-		return i
-	default:
-		return 0
-	}
-}
-
-func boolFrontmatterValue(values map[string]any, key string) bool {
-	value, ok := values[key]
-	if !ok {
-		return false
-	}
-	switch typed := value.(type) {
-	case bool:
-		return typed
-	case string:
-		return strings.EqualFold(strings.TrimSpace(typed), "true")
-	default:
-		return false
-	}
-}
-
-func boolFromScalar(value any) bool {
-	switch typed := value.(type) {
-	case bool:
-		return typed
-	case string:
-		return strings.EqualFold(strings.TrimSpace(typed), "true")
-	default:
-		return false
-	}
-}
-
-func compactStrings(values []string) []string {
-	if values == nil {
-		return nil
-	}
-	out := make([]string, 0, len(values))
-	for _, value := range values {
-		value = strings.TrimSpace(value)
-		if value != "" {
-			out = append(out, value)
-		}
 	}
 	return out
 }

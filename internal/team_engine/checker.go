@@ -70,34 +70,39 @@ func (c *Checker) Check(task *Task) (passed bool, retry bool, feedback string, e
 	result := &CheckResult{Passed: true}
 
 	// 1. Check output file exists (if task declares one).
-	if task.Output != "" {
+	// Search priority: workdir → taskDir → out/ (sandbox where Worker writes).
+	// Skip when task.Output is a description rather than a concrete path.
+	outDir := filepath.Join(taskDir, "out")
+	if task.Output != "" && looksLikePath(task.Output) {
 		outputPath := extractOutputPath(task.Output, workdir)
 		exists := fileExists(outputPath) || outputDirExists(outputPath)
 		if !exists {
 			outputPath = extractOutputPath(task.Output, taskDir)
 			exists = fileExists(outputPath) || outputDirExists(outputPath)
 		}
+		if !exists {
+			outputPath = extractOutputPath(task.Output, outDir)
+			exists = fileExists(outputPath) || outputDirExists(outputPath)
+		}
 		if exists {
 			result.OutputExists = true
 			result.Evidence = append(result.Evidence, fmt.Sprintf("output file exists: %s", outputPath))
 		} else {
-			result.Passed = false
-			result.Issues = append(result.Issues, fmt.Sprintf("output file/dir not found: %s", outputPath))
+			// output-file-only issue — build/lint/test checks below are authoritative
+			result.Issues = append(result.Issues, fmt.Sprintf("output file/dir not found: %s (searched workdir, taskDir, out/)", outputPath))
 		}
 	}
 
-	// Use taskDir for build/lint/test if workdir lacks project files.
-	outDir := filepath.Join(taskDir, "out")
-		checkDir := outDir
-		if !hasProjectFiles(checkDir) {
-			if hasProjectFiles(taskDir) {
-				checkDir = taskDir
-			} else {
-				checkDir = workdir
-			}
+	// Choose the best directory for build/lint/test: prefer the out/
+	// sandbox (where the Worker actually writes), falling back to
+	// taskDir, then workdir.
+	checkDir := outDir
+	if !hasProjectFiles(checkDir) {
+		if hasProjectFiles(taskDir) {
+			checkDir = taskDir
+		} else {
+			checkDir = workdir
 		}
-	if !hasProjectFiles(checkDir) && hasProjectFiles(taskDir) {
-		checkDir = taskDir
 	}
 
 	// 2. Role-aware checks.
@@ -223,6 +228,22 @@ func detectProjectType(workdir string) string {
 			return c.lang
 		}
 	}
+	// Fallback: detect by source file extensions.
+	entries, _ := os.ReadDir(workdir)
+	for _, e := range entries {
+		switch filepath.Ext(e.Name()) {
+		case ".go":
+			return "go"
+		case ".rs":
+			return "rust"
+		case ".py":
+			return "python"
+		case ".js", ".ts":
+			return "node"
+		case ".java":
+			return "java"
+		}
+	}
 	return ""
 }
 
@@ -277,6 +298,18 @@ func (c *Checker) runLint(workdir string) (bool, []string) {
 
 func (c *Checker) runGoBuild(workdir string) (bool, []string) {
 	exitCode, stdout, stderr := runCheck(workdir, []string{"go", "build", "./..."}, c.timeout)
+	// If go build ./... fails (e.g. no go.mod), try building individual
+	// Go files — common for single-file tasks in a bare directory.
+	if exitCode != 0 && !fileExists(filepath.Join(workdir, "go.mod")) {
+		exitCode2, stdout2, stderr2 := runCheck(workdir, []string{"go", "build", "."}, c.timeout/2)
+		exitCode = exitCode2
+		if stdout2 != "" {
+			stdout = stdout2
+		}
+		if stderr2 != "" {
+			stderr = stderr2
+		}
+	}
 	evidence := []string{fmt.Sprintf("go build: exit=%d", exitCode)}
 	if stdout != "" {
 		evidence = append(evidence, "stdout: "+truncateStr(stdout, 200))
@@ -288,6 +321,7 @@ func (c *Checker) runGoBuild(workdir string) (bool, []string) {
 }
 
 func (c *Checker) runGofmt(workdir string) (bool, []string) {
+	// 1. gofmt -d (style diff).
 	exitCode, stdout, stderr := runCheck(workdir, []string{"gofmt", "-d", "."}, c.timeout)
 	evidence := []string{fmt.Sprintf("gofmt -d: exit=%d", exitCode)}
 	if stdout != "" {
@@ -296,11 +330,20 @@ func (c *Checker) runGofmt(workdir string) (bool, []string) {
 	if stderr != "" {
 		evidence = append(evidence, "stderr: "+truncateStr(stderr, 200))
 	}
-	// gofmt -d exits 0 even when diffs exist; we check output emptiness.
-	if strings.TrimSpace(stdout) != "" {
-		return false, evidence
+	gofmtOK := strings.TrimSpace(stdout) == ""
+
+	// 2. go vet (static analysis).
+	vetExit, _, vetStderr := runCheck(workdir, []string{"go", "vet", "./..."}, c.timeout)
+	if vetExit != 0 && !fileExists(filepath.Join(workdir, "go.mod")) {
+		vetExit, _, vetStderr = runCheck(workdir, []string{"go", "vet", "."}, c.timeout/2)
 	}
-	return true, evidence
+	evidence = append(evidence, fmt.Sprintf("go vet: exit=%d", vetExit))
+	if vetStderr != "" {
+		evidence = append(evidence, "vet stderr: "+truncateStr(vetStderr, 200))
+	}
+	vetOK := vetExit == 0
+
+	return gofmtOK && vetOK, evidence
 }
 
 func (c *Checker) runCargoCheck(workdir string) (bool, []string) {
@@ -436,6 +479,16 @@ func truncateStr(s string, maxLen int) string {
 
 func (c *Checker) runGoTest(workdir string) (bool, []string) {
 	exitCode, stdout, stderr := runCheck(workdir, []string{"go", "test", "./..."}, c.timeout)
+	if exitCode != 0 && !fileExists(filepath.Join(workdir, "go.mod")) {
+		exitCode2, stdout2, stderr2 := runCheck(workdir, []string{"go", "test", "."}, c.timeout/2)
+		exitCode = exitCode2
+		if stdout2 != "" {
+			stdout = stdout2
+		}
+		if stderr2 != "" {
+			stderr = stderr2
+		}
+	}
 	evidence := []string{fmt.Sprintf("go test: exit=%d", exitCode)}
 	if stdout != "" {
 		evidence = append(evidence, "stdout: "+truncateStr(stdout, 300))

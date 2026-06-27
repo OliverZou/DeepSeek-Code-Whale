@@ -3,6 +3,8 @@ package app
 import (
 	"fmt"
 	"path/filepath"
+	"os"
+	"strconv"
 	"strings"
 
 	"github.com/usewhale/whale/internal/core"
@@ -136,7 +138,7 @@ func initAppRuntime(cfg Config, sessionInit appSessionInit, toolInit appToolInit
 		AutoCompact:                cfg.AutoCompact,
 		AutoCompactThreshold:       cfg.AutoCompactThreshold,
 		DefaultModel:               defaults.DefaultModel,
-		DefaultMaxTokens:           tasks.DefaultMaxTokens,
+		DefaultMaxTokens:           maxTokensFromEnv(tasks.DefaultMaxTokens),
 		DefaultMaxToolIters:        tasks.DefaultMaxToolIters,
 		SummaryMaxChars:            tasks.DefaultSummaryMaxChar,
 		UsageLogPath:               filepath.Join(cfg.DataDir, "usage.jsonl"),
@@ -191,4 +193,16 @@ func initAppRuntime(cfg Config, sessionInit appSessionInit, toolInit appToolInit
 		workflowRunner:  workflowRunner,
 		toolRegistry:    toolRegistry,
 	}, nil
+}
+
+// maxTokensFromEnv reads WHALE_MAX_TOKENS from the environment.
+// ShellSubagentSpawner sets this on subprocesses so they receive a
+// proper token budget instead of the tiny default (800).
+func maxTokensFromEnv(fallback int) int {
+	if v := os.Getenv("WHALE_MAX_TOKENS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			return n
+		}
+	}
+	return fallback
 }

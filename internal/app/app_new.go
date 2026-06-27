@@ -2,8 +2,10 @@ package app
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/usewhale/whale/internal/core"
 	"github.com/usewhale/whale/internal/bridge"
@@ -15,23 +17,39 @@ import (
 
 func New(ctx context.Context, cfg Config, start StartOptions) (*App, error) {
 	workspaceRoot, _ := os.Getwd()
+
+	// Diagnostic: write timing to engine.log so we can pinpoint hangs.
+	diagLog := func(step string) {
+		logDir := filepath.Join(workspaceRoot, ".whale", "team_tasks", "logs")
+		os.MkdirAll(logDir, 0755)
+		f, err := os.OpenFile(filepath.Join(logDir, "engine.log"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+		if err == nil {
+			fmt.Fprintf(f, "[%s] app.New: %s pid=%d\n", time.Now().Format(time.RFC3339), step, os.Getpid())
+			f.Close()
+		}
+	}
+	diagLog("START")
 	var workflowOverlay workflowConfigOverlay
 	if !cfg.ConfigLoaded {
 		workflowOverlay = workflowConfigOverlayFromInput(cfg)
 	}
 	cfg, err := loadNewConfig(cfg, workspaceRoot)
+	diagLog("loadNewConfig done")
 	if err != nil {
 		return nil, err
 	}
 	sessionInit, err := initAppSession(cfg, start, workspaceRoot)
+	diagLog("initAppSession done")
 	if err != nil {
 		return nil, err
 	}
 	toolInit, err := initAppTools(cfg, start, workspaceRoot)
+	diagLog("initAppTools done")
 	if err != nil {
 		return nil, err
 	}
 	sessionInit, err = completeAppSessionState(sessionInit, start, workspaceRoot)
+	diagLog("completeAppSessionState done")
 	if err != nil {
 		return nil, err
 	}
@@ -52,6 +70,7 @@ func New(ctx context.Context, cfg Config, start StartOptions) (*App, error) {
 		}
 		return appRef.approvalFn(req)
 	})
+	diagLog("initAppRuntime done")
 	if err != nil {
 		return nil, err
 	}
@@ -99,6 +118,15 @@ func New(ctx context.Context, cfg Config, start StartOptions) (*App, error) {
 	}
 	appRef = app
 
+		// Initialize team-engine lifecycle logger (no-op without -tags teamlog).
+		team_engine.SetLogger(teampglog.NewTeamLog(workspaceRoot))
+
+		// Dashboard registration — only for the main CLI process.
+		// Subprocesses (whale exec --persist / whale exec subprocesses) skip
+		// registration to avoid a cascade: each subprocess registering
+		// triggers SyncDashboardState → new engine → another subprocess...
+		if os.Getenv("WHALE_NO_DASHBOARD") == "" {
+
 	// Initialize team-engine lifecycle logger (no-op without -tags teamlog).
 	team_engine.SetLogger(teampglog.NewTeamLog(workspaceRoot))
 
@@ -133,6 +161,7 @@ func New(ctx context.Context, cfg Config, start StartOptions) (*App, error) {
 			app.toolset.SyncDashboardState(app.dashboardClient, workspaceRoot)
 		}
 	}()
+}
 
 	// Clean up tasks left in transient states from a previous crash/exit.
 	team_engine.CleanupInterruptedTasks(filepath.Join(workspaceRoot, ".whale", "team_tasks"))

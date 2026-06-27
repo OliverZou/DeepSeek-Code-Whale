@@ -575,6 +575,10 @@ func safeSenderName(name string) string {
 			b.WriteString("\n\n")
 		}
 
+			b.WriteString("## ⚠️ 产出总结要求\n\n")
+			b.WriteString("- 只汇报**实际完成**的内容，禁止虚报测试数量、覆盖率等指标\n")
+			b.WriteString("- 引用具体文件名和行数，禁止模糊描述\n")
+			b.WriteString("\n")
 		return wb.writeFile(filepath.Join(taskDir, "input.md"), b.String())
 	}
 

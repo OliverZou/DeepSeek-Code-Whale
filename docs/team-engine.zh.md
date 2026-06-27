@@ -2,7 +2,102 @@
 
 ## 概述
 
-Team Engine 实现了 Leader-Worker-Verifier 多智能体协作模型，将复杂目标分解为子任务，通过专用 Worker 执行，再通过 Verifier 进行对抗性审查。
+Team Engine 实现了**递归的 Plan → Work → Verify 协作模型**。每个任务环节都满足 Plan → Work → Verify 的闭环。Plan 是主动的规划者——理解目标、规划方案、分解任务、分配工作。这个 loop 是递归的——总任务和子任务遵循同一个模式，只是规划者、执行者和验证者的身份随任务性质变化。
+
+### 核心设计哲学
+
+**Team Engine 是委托系统，不是工作流引擎。**
+
+- Leader 的智能是核心驱动力——它决定做什么、谁来做、怎么验收
+- Leader 根据目标自由编排，不受预设流程约束
+- 所有改进围绕一个目标：**让 Leader 拥有正确的知识和约束**
+
+### 递归的 Plan → Work → Verify Loop
+
+```
+总任务（Leader）
+├── Plan: Leader 理解用户目标、规划方案、分解任务、分配工作
+│   Verifier=用户确认目标 + 接收agent评估任务可执行性
+├── 子任务1
+│   ├── Plan: agent-A 理解任务、规划方案
+│   ├── Work: agent-A 执行
+│   └── Verify: agent-B 验证
+├── 子任务2
+│   ├── Plan: agent-C 理解任务、规划方案
+│   ├── Work: agent-C 执行
+│   └── Verify: agent-D 验证
+├── Work: Leader 收集子任务结果
+└── Verify: Checker + 用户确认
+```
+
+每一层都是同一个 loop，只是 worker 和 verifier 的身份随任务性质变化。**顶层 verifier 是用户，子任务 verifier 是 agent。**
+
+#### 总任务层（Leader 执行）
+
+| 环节 | Worker | Verifier | 说明 |
+|------|--------|----------|------|
+| 识别目标 | Leader 问用户 | **用户确认** | 来回几次对话确认目标 |
+| 分解任务 | Leader + LLM | **接收 agent 评估** | agent 评估任务是否可执行 |
+| 汇总交付 | Leader 收集子任务结果 | **Checker + 用户** | Checker 基础检查，用户最终确认 |
+
+Leader 完成总任务**不需要 agent 作为 verifier**——顶层 verifier 是用户。
+
+#### 子任务层（Agent 执行）
+
+| 环节 | Worker | Verifier | 说明 |
+|------|--------|----------|------|
+| 执行任务 | 专业 agent | **专业 agent** | 由 Leader 在分解时指定 `VerifierRole` |
+
+子任务的 worker 和 verifier 都是 agent。Verifier 不是通用检查器，而是**针对该任务产出的专业评判者**。
+
+### Verifier vs Checker
+
+| | Checker（系统机制） | Verifier（专业 agent） |
+|---|---|---|
+| 触发方式 | Engine 自动 | Leader 分配 |
+| 做什么 | 基础完整性检查：产出是否存在、是否为空、是否截断、引用文件是否存在 | 专业质量验证：用角色知识判断产出是否合格 |
+| 知识 | 通用规则 | 角色的核心能力 + 输出规范 |
+| 产出 | PASS/FAIL 裁决 | 结构化反馈（FINDINGS JSON） |
+| 位置 | Worker 产出后自动运行 | 作为一个子任务，由 Leader 编排 |
+
+### Verifier 是针对任务的，不是针对角色的
+
+同一个 tester，不同任务的 verifier 不同：
+
+| 任务 | Worker | Verifier |
+|------|--------|----------|
+| 为 API 模块写单元测试 | tester | api-designer（覆盖关键接口？） |
+| 执行集成测试 | tester | checker（跑一遍就知道） |
+| 设计测试策略 | tester | developer（方向对不对？） |
+| TDD 先写测试 spec | tester | — （测试本身就是 spec，developer 的代码过不过测试就是验证） |
+
+**Leader 在分解任务时决定每个任务的 verifier**——它知道这个任务的产出该由谁来评判。
+
+### 成员 Push Back 机制
+
+团队成员不是被动执行者，有权质疑 Leader 的决定：
+
+1. **Worker 接到任务后可以质疑**——"这个任务描述有歧义"、"上游产出还没到位，我无法开始"
+2. **Worker 产出时可以附条件**——"我完成了 A 部分，但 B 部分需要架构师先确认"
+3. **专业 Verifier 可以否决 Leader 的验收**——Leader 说"通过了"，代码审查员说"还有安全问题"
+
+实现方式：
+
+- **Worker Push Back**：Worker prompt 中注入 Push Back 指令，Worker 在产出中使用 `[PUSH_BACK]` 标记表示质疑。Engine 检测到 `[PUSH_BACK]` 后自动将任务转为 `pending_confirmation` 状态，等待用户确认后继续。
+- **Verifier 否决**：专业 Verifier 验证不通过时，反馈追加到 task.Description，触发重试或重新分解。
+- **Whiteboard 消息**：Worker 也可通过 Whiteboard 的 inbox/outbox 消息机制向 Leader 发送质疑消息。
+
+### 协作铁律（Leader 内部约束）
+
+所有 Leader 共有的行为约束，注入 Leader prompt：
+
+1. 你是编排者，不是执行者——禁止自己写代码、写文档、做专业分析
+2. 每个专业产出必须由对应角色输出后再采信，你只做编排与汇编
+3. 未完成前序任务不可跳到后续任务
+4. 验证不通过的任务必须回退重做，不可跳过
+5. 禁止自己代写任何团队成员的专业产出
+
+---
 
 ## 配置
 
@@ -74,7 +169,43 @@ routing:
 | `research` | 读文件 + 网页搜索 | 调研分析 |
 | `content` | 读文件 + 写文件（无 shell） | 文档写作 |
 | `test` | 读/写文件 + shell（测试命令） | 测试执行 |
-| `verify` | 读文件 + shell + 搜索（不能写） | Verifier |
+| `verify` | 读文件 + shell + 搜索（不能写） | Checker |
+
+---
+
+## 任务生命周期
+
+### 状态机
+
+```
+pending → assigned → producing → produced → checking → checked → done
+                                              ↓
+                                         verifying → verified → done
+                                              ↓
+                                         failed / suspended
+```
+
+- **checking**：Checker（系统自动）执行基础完整性检查
+- **verifying**：专业 Verifier（agent）执行质量验证（仅当 `task.VerifierRole` 指定时）
+
+### 状态说明
+
+| 状态 | 说明 | 是否可恢复 |
+|------|------|-----------|
+| `pending` | 等待执行 | — |
+| `assigned` | 已分配 | — |
+| `producing` | Worker 执行中 | — |
+| `produced` | Worker 完成 | — |
+| `checking` | Checker 基础检查中 | — |
+| `checked` | Checker 通过 | — |
+| `verifying` | 专业 Verifier 验证中 | — |
+| `verified` | 专业验证通过 | — |
+| `done` | 完成 | ❌ 终止状态 |
+| `failed` | 失败 | ❌ 终止状态 |
+| `suspended` | 用户主动停止 | ✅ 可通过 Resume 恢复 |
+| `pending_confirmation` | 等待用户确认 | ✅ 用户确认后继续 |
+
+---
 
 ## 暂停与恢复
 
@@ -98,19 +229,7 @@ routing:
 已暂停 → 点击恢复 → suspended 任务重置为 pending → 跳过已完成 batch → 继续执行
 ```
 
-### 状态说明
-
-| 状态 | 说明 | 是否可恢复 |
-|------|------|-----------|
-| `pending` | 等待执行 | — |
-| `assigned` | 已分配 | — |
-| `producing` | Worker 执行中 | — |
-| `produced` | Worker 完成 | — |
-| `verifying` | Verifier 审查中 | — |
-| `verified` | 审查通过 | — |
-| `done` | 完成 | ❌ 终止状态 |
-| `failed` | 失败 | ❌ 终止状态 |
-| `suspended` | 用户主动停止 | ✅ 可通过 Resume 恢复 |
+---
 
 ## Batch 并行执行
 
@@ -121,13 +240,15 @@ routing:
 
 ```
 Batch 1 (调研) ──┐
-                 ├── 同时执行
+                  ├── 同时执行
 Batch 2 (设计) ──┤
-                 │
+                  │
 Batch 3 (编码) ←──┘ 等待 Batch 1 + 2 完成后才开始
 ```
 
 同一 batch 内的任务也支持并发（通过 `concurrency` 参数控制）。
+
+---
 
 ## 事件推送
 
@@ -137,10 +258,15 @@ Engine 在任务状态变化时主动推送事件，替代轮询：
 |---------|---------|
 | `EventStateChanged` | 任何状态转换 |
 | `EventWorkerOutput` | Worker 产出完成 |
-| `EventVerifierResult` | Verifier 得出结论 |
+| `EventCheckerResult` | Checker 得出结论 |
+| `EventVerifierResult` | 专业 Verifier 得出结论 |
 | `EventTaskDone` | 任务最终完成或失败 |
+| `EventLeaderLog` | Leader 日志更新 |
+| `EventAgentLog` | Agent 日志更新 |
 
 Dashboard 通过 Wails `runtime.EventsEmit` 实时接收事件并更新界面。
+
+---
 
 ## 恢复流程（技术细节）
 
@@ -162,3 +288,145 @@ Dashboard 通过 Wails `runtime.EventsEmit` 实时接收事件并更新界面。
 
 3. 全部完成后写入 deliverable.md + 执行总结
 ```
+
+---
+
+## Whiteboard 通信机制
+
+### 任务目录结构
+
+```
+tasks/<task_id>/
+├── input.md        # Leader 写入的任务描述 + 上下文
+├── output.md       # Worker 写入的产出
+├── verifier.md     # Verifier 写入的检查结果
+├── confirmation.md # Agent 的确认请求（pending_confirmation 状态）
+├── status.json     # 当前状态元数据
+├── inbox/          # Agent 间通讯：发给本 Agent 的消息
+│   ├── 001_from_human.json
+│   └── 002_from_agent-B.json
+├── outbox/         # Agent 间通讯：本 Agent 发出的消息
+│   └── 001_to_agent-C.json
+└── artifacts/      # Worker 产出的具体文件（代码等）
+```
+
+### 消息流
+
+```
+Leader ──WriteInboxFile──→ Worker 的 input.md
+Worker ──WriteOutput───→ Worker 的 output.md
+Checker ──WriteVerifier──→ Worker 的 verifier.md（基础检查）
+Verifier ──WriteVerifier──→ Worker 的 verifier.md（专业验证）
+Worker ──WriteMessage──→ Leader 的 inbox（push back / 质疑）
+Leader ──WriteMessage──→ Worker 的 inbox（反馈 / 追加指令）
+```
+
+### Push Back 示例
+
+Worker 发现问题时的消息流：
+
+```
+1. Worker 读 input.md → 发现"上游产出还没到位"
+2. Worker 写 inbox 消息给 Leader："任务 #3 的上游依赖（任务 #1 产出）不存在，无法开始"
+3. Leader 收到消息 → 检查任务 #1 状态 → 回复"任务 #1 已完成，产出路径为 X"
+4. Worker 收到回复 → 重新开始执行
+```
+
+---
+
+## 团队定义（team.yaml）
+
+### 字段说明
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `label` | string | 团队名称 |
+| `roles` | []string | 角色 agent name 列表（对应 agents 目录下的 .md 文件名） |
+| `capabilities` | []string | 能力范围声明（范围+技术栈+工作流阶段） |
+| `routing` | []RoutingEntry | 意图路由表（可选） |
+
+### Routing Entry
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `intent` | string | 意图关键词（`|` 分隔） |
+| `roles` | []string | 匹配的角色列表 |
+| `mode` | string | `agent`（单角色直调）或 `team`（多角色协作） |
+
+### 示例
+
+```yaml
+label: 软件开发团队
+roles:
+  - product-manager
+  - requirements-analyst
+  - ux-architect
+  - ui-designer
+  - software-architect
+  - api-designer
+  - implementation-planner
+  - backend-engineer
+  - frontend-engineer
+  - coding-implementer
+  - tdd-tester
+  - code-reviewer
+  - architecture-guardian
+  - bug-analyst
+capabilities:
+  - "软件开发全流程：需求→设计→编码→测试→交付"
+  - "技术栈：Go, TypeScript, React, Wails"
+  - "工作流阶段：需求分析, 架构设计, API设计, 编码实施, 测试验证, 代码审查"
+routing:
+  - intent: "新功能|添加功能|新增|开发"
+    roles: [product-manager, requirements-analyst]
+    mode: team
+  - intent: "bug|缺陷|异常|报错|修复"
+    roles: [bug-analyst]
+    mode: agent
+  - intent: "API|接口设计|接口变更"
+    roles: [api-designer]
+    mode: agent
+  - intent: "代码审查|review|代码质量"
+    roles: [code-reviewer, architecture-guardian]
+    mode: team
+```
+
+### 成员能力清单（自动提取）
+
+Leader prompt 中的成员能力清单从 agent MD 文件自动提取，不需要在 team.yaml 中重复声明：
+
+| 提取源 | 提取内容 | 注入位置 |
+|--------|---------|---------|
+| agent MD 的 `role` 字段 | 角色中文名 | 成员能力清单 |
+| agent MD 的"核心能力"分区 | 擅长领域 | 成员能力清单 |
+| agent MD 的"输出规范"分区 | 验证标准 | Checker/Verifier prompt |
+
+---
+
+## 循环记忆（Loop Memory）
+
+理解债务管理机制，防止 Agent 在重试循环中重复犯相同错误：
+
+- **存储**：`loop.md` 文件，保存在 Whiteboard 的 master task 目录下
+- **写入时机**：RunTask 重试时，将前次失败原因摘要写入 loop.md
+- **读取时机**：RunTask 重试时，从 loop.md 读取循环记忆注入 Worker prompt 的 feedback
+- **注入方式**：当 `RetryCount > 0` 时，Worker prompt 中自动追加循环记忆内容
+
+```
+RunTask 重试流程：
+1. 检测 RetryCount > 0
+2. ReadLoopMemory() → 获取历史失败摘要
+3. 将循环记忆注入 Worker prompt 的 feedback 区域
+4. Worker 执行 → 产出
+5. 如果再次失败 → WriteLoopMemory() → 追加本次失败摘要
+```
+
+---
+
+## YAML Frontmatter 解析
+
+Agent 定义文件（`.md`）的 YAML frontmatter 使用 `gopkg.in/yaml.v3` 解析，替代了早期手写解析器：
+
+- 支持 YAML 标准列表格式和逗号分隔字符串格式（如 `tools: workspace.read, shell.run`）
+- 支持 WorkBuddy 的 `displayName`/`profession` 嵌套字段映射
+- 自定义 `yamlStringList` 类型处理逗号分隔字符串和 YAML 列表两种格式

@@ -685,7 +685,7 @@ func TestRunExecTextOutput(t *testing.T) {
 	var errOut bytes.Buffer
 	opts := &cliOptions{cfg: app.DefaultConfig()}
 	opts.cfg.DataDir = dir
-	if err := runExec(&out, &errOut, strings.NewReader(""), opts, []string{"hi"}, false, 0, nil); err != nil {
+	if err := runExec(&out, &errOut, strings.NewReader(""), opts, []string{"hi"}, false, 0, nil, false); err != nil {
 		t.Fatalf("runExec: %v", err)
 	}
 	if got := out.String(); got != "hello from exec\n" {
@@ -717,7 +717,7 @@ func TestRunExecJSONOutput(t *testing.T) {
 	var errOut bytes.Buffer
 	opts := &cliOptions{cfg: app.DefaultConfig()}
 	opts.cfg.DataDir = dir
-	if err := runExec(&out, &errOut, strings.NewReader("stdin prompt"), opts, nil, true, 0, nil); err != nil {
+	if err := runExec(&out, &errOut, strings.NewReader("stdin prompt"), opts, nil, true, 0, nil, false); err != nil {
 		t.Fatalf("runExec: %v", err)
 	}
 	var res app.ExecResult
@@ -779,7 +779,7 @@ func TestRunExecAttachSendsOpenAICompatibleFilePart(t *testing.T) {
 		BaseURL: srv.URL,
 		Model:   "gpt-4o",
 	}
-	if err := runExec(&out, &errOut, strings.NewReader(""), opts, []string{"inspect"}, false, 0, []string{attachment}); err != nil {
+	if err := runExec(&out, &errOut, strings.NewReader(""), opts, []string{"inspect"}, false, 0, []string{attachment}, false); err != nil {
 		t.Fatalf("runExec: %v", err)
 	}
 	var payload map[string]any

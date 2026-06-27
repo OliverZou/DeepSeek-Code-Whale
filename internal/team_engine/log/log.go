@@ -78,6 +78,7 @@ func (l *Loggers) Engine(format string, args ...interface{}) {
 	ts := time.Now().Format(time.RFC3339)
 	msg := fmt.Sprintf(format, args...)
 	fmt.Fprintf(l.engineLog, "[%s] %s\n", ts, msg)
+		l.engineLog.Sync()
 }
 
 // ---------------------------------------------------------------------------
