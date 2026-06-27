@@ -69,9 +69,14 @@ func (v *Verifier) BuildPrompt(task *Task) string {
 
 WORKER OUTPUT (%d chars):
 %s
-`, desc, len(workerOutput), truncateStr(workerOutput, 8000)))
+`, desc, len(workerOutput), truncateStr(workerOutput, 3000)))
 
-	if inbox != "" {
+	// Only include inbox when it carries upstream outputs, templates,
+	// or memory — not when it's just a duplicate of the TASK section.
+	if inbox != "" && (strings.Contains(inbox, "## 📥") ||
+		strings.Contains(inbox, "## 📄") ||
+		strings.Contains(inbox, "## 🧠") ||
+		strings.Contains(inbox, "## 🔄")) {
 		b.WriteString(fmt.Sprintf(`
 UPSTREAM CONTEXT:
 %s
