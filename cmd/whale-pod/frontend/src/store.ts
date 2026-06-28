@@ -273,7 +273,8 @@ export const useStore = create<PodState>((set, get) => ({
     if (!taskId) return;
     // Add user message immediately
     set(s => ({ directMessages: [...s.directMessages, { from: 'human', content: message, time: '' }] }));
-    // Start streaming
+    // Start streaming — reset done guard so new chunks are not ignored
+    (get() as any)[`_stream_done_${taskId}`] = false;
     (get() as any)._streamStart = Date.now();
     set({ isStreaming: true, streamingContent: '', streamingThinking: '' });
     await api.streamChat(taskId, message, deepThink);

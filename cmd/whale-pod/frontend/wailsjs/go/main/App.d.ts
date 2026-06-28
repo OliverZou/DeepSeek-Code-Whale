@@ -5,6 +5,8 @@ import {pod} from '../models';
 
 export function AbortChat(arg1:string):Promise<void>;
 
+export function ApplyOutput(arg1:string,arg2:string):Promise<string>;
+
 export function CancelSubtask(arg1:string):Promise<string>;
 
 export function ClearEmptySessions(arg1:string):Promise<string>;
@@ -45,6 +47,8 @@ export function GetWorkDir():Promise<string>;
 
 export function ListAgents():Promise<Array<pod.AgentInfoJSON>>;
 
+export function ListMCPServers():Promise<Array<main.MCPServerInfo>>;
+
 export function ListSessionsByAgent(arg1:string,arg2:number,arg3:number):Promise<Array<pod.MasterTaskJSON>>;
 
 export function ListTeamDetails():Promise<Array<pod.TeamDetailJSON>>;
@@ -70,6 +74,8 @@ export function SaveSummonedItems(arg1:Array<pod.SummonedItemJSON>):Promise<void
 export function SendFeedback(arg1:string,arg2:string):Promise<string>;
 
 export function SendTeamChat(arg1:string,arg2:string,arg3:string):Promise<string>;
+
+export function SetMCPServerEnabled(arg1:string,arg2:boolean):Promise<string>;
 
 export function SetWorkDir(arg1:string):Promise<string>;
 

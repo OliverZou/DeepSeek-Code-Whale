@@ -1,5 +1,5 @@
 // Wails bridge — wraps window.go.main.App.* calls
-import type { MasterTask, Subtask, DialogueEntry, ChatMessage, TeamInfo, AgentInfo, SummonedItem, TeamChatMessage, TaskConfirmation } from './types';
+import type { MasterTask, Subtask, DialogueEntry, ChatMessage, TeamInfo, AgentInfo, SummonedItem, TeamChatMessage, TaskConfirmation, MCPServerInfo } from './types';
 
 const go = () => (window as any).go?.main?.App;
 
@@ -49,4 +49,6 @@ export const api = {
   windowMaximize: () => go()?.WindowMaximize(),
   windowClose: () => go()?.WindowClose(),
   startWindowDrag: () => go()?.StartWindowDrag(),
+  listMCPServers: (): Promise<MCPServerInfo[]> => go()?.ListMCPServers() ?? [],
+  setMCPServerEnabled: (name: string, enabled: boolean): Promise<string> => go()?.SetMCPServerEnabled(name, enabled) ?? '',
 };

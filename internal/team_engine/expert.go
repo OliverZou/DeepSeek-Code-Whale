@@ -19,6 +19,48 @@ type ExpertEntry struct {
 	Skills      []string `yaml:"skills,omitempty"`
 }
 
+// UnmarshalYAML handles skills that may be plain strings (e.g. "UI设计")
+// or locale-keyed maps (e.g. {zh: "文化适配", en: "Cultural Adaptation"}).
+func (e *ExpertEntry) UnmarshalYAML(value *yaml.Node) error {
+	var raw struct {
+		Name        string      `yaml:"name"`
+		NameEn      string      `yaml:"name_en"`
+		Agent       string      `yaml:"agent"`
+		Icon        string      `yaml:"icon,omitempty"`
+		Description string      `yaml:"description"`
+		Domains     []string    `yaml:"domains,omitempty"`
+		Skills      []yaml.Node `yaml:"skills,omitempty"`
+	}
+	if err := value.Decode(&raw); err != nil {
+		return err
+	}
+	e.Name = raw.Name
+	e.NameEn = raw.NameEn
+	e.Agent = raw.Agent
+	e.Icon = raw.Icon
+	e.Description = raw.Description
+	e.Domains = raw.Domains
+	for _, node := range raw.Skills {
+		switch node.Kind {
+		case yaml.ScalarNode:
+			e.Skills = append(e.Skills, node.Value)
+		case yaml.MappingNode:
+			var zh string
+			for i := 0; i+1 < len(node.Content); i += 2 {
+				k := node.Content[i].Value
+				v := node.Content[i+1].Value
+				if k == "zh" || zh == "" {
+					zh = v
+				}
+			}
+			if zh != "" {
+				e.Skills = append(e.Skills, zh)
+			}
+		}
+	}
+	return nil
+}
+
 type ExpertFile struct {
 	Domain    string        `yaml:"domain"`
 	DomainEn  string        `yaml:"domain_en"`

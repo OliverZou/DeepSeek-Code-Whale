@@ -16,6 +16,36 @@ export namespace main {
 	        this.error = source["error"];
 	    }
 	}
+	export class MCPServerInfo {
+	    name: string;
+	    status: string;
+	    disabled: boolean;
+	    connected: boolean;
+	    tools: number;
+	    toolNames: string[];
+	    command?: string;
+	    url?: string;
+	    type?: string;
+	    error?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new MCPServerInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.status = source["status"];
+	        this.disabled = source["disabled"];
+	        this.connected = source["connected"];
+	        this.tools = source["tools"];
+	        this.toolNames = source["toolNames"];
+	        this.command = source["command"];
+	        this.url = source["url"];
+	        this.type = source["type"];
+	        this.error = source["error"];
+	    }
+	}
 	export class SettingsData {
 	    apiKey: string;
 	    model: string;

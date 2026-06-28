@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { api } from '../wails';
-import type { SettingsData } from '../types';
+import type { SettingsData, MCPServerInfo } from '../types';
 
 interface SettingsPanelProps {
   visible: boolean;
@@ -20,6 +20,8 @@ export default function SettingsPanel({ visible, onClose }: SettingsPanelProps) 
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState('');
   const [saveMsg, setSaveMsg] = useState('');
+  const [mcpServers, setMcpServers] = useState<MCPServerInfo[]>([]);
+  const [mcpToggling, setMcpToggling] = useState<string | null>(null);
 
   useEffect(() => {
     if (visible) {
@@ -28,6 +30,9 @@ export default function SettingsPanel({ visible, onClose }: SettingsPanelProps) 
       });
       setSaveMsg('');
       setTestResult('');
+      api.listMCPServers().then((servers: MCPServerInfo[]) => {
+        setMcpServers(servers || []);
+      });
     }
   }, [visible]);
 
@@ -211,6 +216,76 @@ export default function SettingsPanel({ visible, onClose }: SettingsPanelProps) 
                   {label}
                 </button>
               ))}
+            </div>
+          </div>
+
+          {/* MCP Servers */}
+          <div style={{ marginBottom: 20 }}>
+            <label style={labelStyle}>MCP 服务器</label>
+            <div style={{ maxHeight: 300, overflowY: 'auto', borderRadius: 8, border: '1px solid #333' }}>
+              {mcpServers.length === 0 && (
+                <div style={{ padding: 16, color: '#555', fontSize: 12, textAlign: 'center' }}>
+                  未找到 MCP 服务器配置
+                </div>
+              )}
+              {mcpServers.map(srv => (
+                <div
+                  key={srv.name}
+                  style={{
+                    display: 'flex', alignItems: 'center', gap: 10,
+                    padding: '8px 12px',
+                    borderBottom: '1px solid #2a2a2a',
+                  }}
+                >
+                  <button
+                    onClick={async () => {
+                      setMcpToggling(srv.name);
+                      const err = await api.setMCPServerEnabled(srv.name, srv.disabled);
+                      if (err) { alert(err); }
+                      const servers = await api.listMCPServers();
+                      setMcpServers(servers || []);
+                      setMcpToggling(null);
+                    }}
+                    disabled={mcpToggling === srv.name}
+                    style={{
+                      width: 36, height: 20, borderRadius: 10,
+                      border: 'none', cursor: 'pointer', flexShrink: 0,
+                      background: srv.disabled ? '#333' : '#4CAF50',
+                      position: 'relative', transition: 'background 0.2s',
+                    }}
+                  >
+                    <div style={{
+                      width: 16, height: 16, borderRadius: '50%', background: '#fff',
+                      position: 'absolute', top: 2,
+                      left: srv.disabled ? 2 : 18,
+                      transition: 'left 0.2s',
+                    }} />
+                  </button>
+                  <div style={{ flex: 1, overflow: 'hidden' }}>
+                    <div style={{ fontSize: 12, color: '#ddd', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                      {srv.name}
+                    </div>
+                    <div style={{ fontSize: 10, color: '#666', display: 'flex', gap: 6, alignItems: 'center' }}>
+                      <span style={{
+                        color: srv.status === 'connected' ? '#4CAF50' : srv.status === 'failed' ? '#f85149' : '#888',
+                      }}>
+                        {srv.status === 'connected' ? '●' : srv.status === 'failed' ? '✕' : srv.status === 'starting' ? '◐' : '○'}
+                      </span>
+                      {srv.url && <span style={{ color: '#555' }}>{srv.url.slice(0, 40)}</span>}
+                      {srv.command && <span style={{ color: '#555' }}>{srv.command}</span>}
+                      {srv.tools > 0 && <span style={{ color: '#4CAF50' }}>{srv.tools} 工具</span>}
+                    </div>
+                    {srv.error && (
+                      <div style={{ fontSize: 10, color: '#f85149', marginTop: 2, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                        {srv.error.slice(0, 80)}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+            <div style={{ fontSize: 11, color: '#555', marginTop: 4 }}>
+              配置文件：~/.whale/mcp.json
             </div>
           </div>
         </div>

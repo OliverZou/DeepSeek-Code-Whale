@@ -66,6 +66,25 @@ func LoadConfig(path string) (Config, error) {
 	return cfg, nil
 }
 
+func SaveConfig(cfg Config) error {
+	if cfg.Path == "" {
+		return fmt.Errorf("config path is empty")
+	}
+	raw := struct {
+		MCPServers map[string]ServerConfig `json:"mcpServers"`
+	}{
+		MCPServers: cfg.Servers,
+	}
+	b, err := json.MarshalIndent(raw, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal mcp config: %w", err)
+	}
+	if err := os.WriteFile(cfg.Path, b, 0644); err != nil {
+		return fmt.Errorf("write mcp config: %w", err)
+	}
+	return nil
+}
+
 func mergeServers(dst map[string]ServerConfig, src map[string]ServerConfig) {
 	for name, srv := range src {
 		name = strings.TrimSpace(name)

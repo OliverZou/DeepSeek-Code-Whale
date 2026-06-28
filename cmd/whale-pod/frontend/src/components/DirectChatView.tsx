@@ -270,7 +270,7 @@ export default function DirectChatView() {
                 )}
                 {agentLabel}
                 <span style={{ color: '#555', fontSize: 11, fontWeight: 400 }}>
-                  <span className="typing-dots">输出中</span>
+                  <span className="typing-dots">{streamingContent ? '输出中' : '思考中'}</span>
                 </span>
               </span>
             </div>
@@ -321,11 +321,7 @@ export default function DirectChatView() {
                 <ChatContent content={streamingContent} />
               </div>
             )}
-            {!streamingContent && !streamingThinking && (
-              <div style={{ color: '#666', fontSize: 12, padding: 8, marginLeft: 34 }}>
-                <span className="typing-dots">思考中</span>
-              </div>
-            )}
+
           </div>
         )}
         {/* action confirmation */}

@@ -178,6 +178,95 @@ func (m *Manager) ConfigPath() string {
 	return m.cfg.Path
 }
 
+func (m *Manager) GetServerConfig(name string) *ServerConfig {
+	if m == nil {
+		return nil
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if srv, ok := m.cfg.Servers[name]; ok {
+		cp := srv
+		return &cp
+	}
+	return nil
+}
+
+func (m *Manager) EnableServer(ctx context.Context, name string) error {
+	if m == nil {
+		return fmt.Errorf("mcp manager not initialized")
+	}
+	m.mu.Lock()
+	srv, ok := m.cfg.Servers[name]
+	if !ok {
+		m.mu.Unlock()
+		return fmt.Errorf("mcp server %q not found", name)
+	}
+	srv.Disabled = false
+	srv.Name = name
+	m.cfg.Servers[name] = srv
+	m.mu.Unlock()
+
+	if err := SaveConfig(m.cfg); err != nil {
+		return fmt.Errorf("save config: %w", err)
+	}
+
+	m.mu.Lock()
+	m.setState(ServerState{Name: name, Status: StatusStarting})
+	m.mu.Unlock()
+
+	sess, discovered, toolNames, err := m.startServer(ctx, srv)
+	if err != nil {
+		m.mu.Lock()
+		m.setState(ServerState{Name: name, Status: StatusFailed, Error: err.Error()})
+		m.mu.Unlock()
+		return fmt.Errorf("start mcp server %q: %w", name, err)
+	}
+
+	m.mu.Lock()
+	m.registerConnectedServer(srv, sess, discovered, toolNames)
+
+	m.mu.Unlock()
+	return nil
+}
+
+func (m *Manager) DisableServer(name string) error {
+	if m == nil {
+		return fmt.Errorf("mcp manager not initialized")
+	}
+	m.mu.Lock()
+	srv, ok := m.cfg.Servers[name]
+	if !ok {
+		m.mu.Unlock()
+		return fmt.Errorf("mcp server %q not found", name)
+	}
+	srv.Disabled = true
+	srv.Name = name
+	m.cfg.Servers[name] = srv
+
+	if sess, exists := m.sessions[name]; exists {
+		if sess.session != nil {
+			sess.session.Close()
+		}
+		if sess.cancel != nil {
+			sess.cancel()
+		}
+		delete(m.sessions, name)
+	}
+	delete(m.discovery, name)
+	m.setState(ServerState{Name: name, Status: StatusDisabled, Disabled: true})
+	m.tools = m.buildToolsLocked()
+	m.mu.Unlock()
+
+	if err := SaveConfig(m.cfg); err != nil {
+		return fmt.Errorf("save config: %w", err)
+	}
+	return nil
+}
+
+func (m *Manager) rebuildToolsLocked() {
+	m.tools = m.buildToolsLocked()
+}
+
 func (m *Manager) Close() error {
 	if m == nil {
 		return nil

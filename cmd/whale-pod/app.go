@@ -17,7 +17,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/usewhale/whale/internal/core"
+	"github.com/usewhale/whale/internal/mcp"
 	"github.com/usewhale/whale/internal/pod"
 	"github.com/usewhale/whale/internal/session"
 	"github.com/usewhale/whale/internal/store"
@@ -30,6 +32,7 @@ import (
 type App struct {
 	ctx          context.Context
 	workDir      string
+	podDataDir   string
 	teamsDir     string
 	expertsDir   string
 	sessionsDir  string
@@ -45,6 +48,8 @@ type App struct {
 
 	abortMu     sync.Mutex
 	abortCancels map[string]context.CancelFunc
+
+	mcpManager *mcp.Manager
 }
 
 func NewApp() *App {
@@ -76,6 +81,8 @@ func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
 	// Initialize global sessions store (CLI-compatible)
 	dataDir := store.DefaultDataDir()
+	a.podDataDir = filepath.Join(dataDir, "pod")
+	os.MkdirAll(a.podDataDir, 0755)
 	a.sessionsDir = store.DefaultSessionsDir(dataDir)
 	sessStore, err := store.NewJSONLStore(a.sessionsDir)
 	if err != nil {
@@ -99,6 +106,7 @@ func (a *App) startup(ctx context.Context) {
 
 	pod.Log("startup", "whale-pod workDir=%s teamsDir=%s expertsDir=%s sessionsDir=%s", a.workDir, a.teamsDir, a.expertsDir, a.sessionsDir)
 	a.openEngine()
+	a.initMCP()
 }
 
 func (a *App) openEngine() {
@@ -187,7 +195,7 @@ func (a *App) ListTeams() []string {
 }
 
 func (a *App) LoadSummonedItems() []pod.SummonedItemJSON {
-	data, err := os.ReadFile(filepath.Join(a.workDir, "summoned.json"))
+	data, err := os.ReadFile(filepath.Join(a.podDataDir, "summoned.json"))
 	if err != nil {
 		return []pod.SummonedItemJSON{}
 	}
@@ -205,7 +213,7 @@ func (a *App) SaveSummonedItems(items []pod.SummonedItemJSON) {
 		pod.Log("summoned", "marshal error: %v", err)
 		return
 	}
-	if err := os.WriteFile(filepath.Join(a.workDir, "summoned.json"), data, 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(a.podDataDir, "summoned.json"), data, 0644); err != nil {
 		pod.Log("summoned", "write error: %v", err)
 	}
 }
@@ -565,10 +573,10 @@ func (a *App) StartTask(goal, teamName, workDir string) string {
 		}
 
 		// Create session first
-		sessionID := fmt.Sprintf("pod-%d", time.Now().UnixMilli())
+		sessionID := newSessionID()
 		now := time.Now()
 		if err := session.SaveSessionMeta(a.sessionsDir, sessionID, session.SessionMeta{
-			Title: goal, Kind: "pod-chat", Workspace: taskWorkDir,
+			Title: goal, Workspace: taskWorkDir,
 			Agent: "team:" + teamName, Status: "active", StartedAt: now, UpdatedAt: now,
 		}); err != nil {
 			pod.Log("task", "save session meta: %v", err)
@@ -635,10 +643,10 @@ func (a *App) StartExpertTask(goal, agentName, workDir string) string {
 		eng.SetTeam(tc)
 
 		// Create session first
-		sessionID := fmt.Sprintf("pod-%d", time.Now().UnixMilli())
+		sessionID := newSessionID()
 		now := time.Now()
 		if err := session.SaveSessionMeta(a.sessionsDir, sessionID, session.SessionMeta{
-			Title: goal, Kind: "pod-chat", Workspace: taskWorkDir,
+			Title: goal, Workspace: taskWorkDir,
 			Agent: "expert:" + agentName, Status: "active", StartedAt: now, UpdatedAt: now,
 		}); err != nil {
 			pod.Log("task", "save session meta: %v", err)
@@ -817,13 +825,11 @@ func (a *App) CreateDirectTask(goal, workDir, agent string, deepThink bool) stri
 	// Keep empty if user chose no workspace (don't default to a.workDir)
 
 	// Create a session in ~/.whale/sessions/ (CLI-compatible)
-	sessionID := fmt.Sprintf("pod-%d", time.Now().UnixMilli())
+	sessionID := newSessionID()
 
-	// Save session metadata
 	now := time.Now()
 	if err := session.SaveSessionMeta(a.sessionsDir, sessionID, session.SessionMeta{
 		Title:     goal,
-		Kind:      "pod-chat",
 		Workspace: taskWorkDir,
 		Agent:     agent,
 		Status:    "active",
@@ -895,6 +901,14 @@ func (a *App) DirectChat(taskID, message string, deepThink bool) string {
 // isPodSession checks if a task ID is a pod session (stored in ~/.whale/sessions/).
 func isPodSession(id string) bool {
 	return strings.HasPrefix(id, "pod-")
+}
+
+func newSessionID() string {
+	u, err := uuid.NewV7()
+	if err != nil {
+		return time.Now().Format("20060102-150405")
+	}
+	return u.String()
 }
 
 // directChatSession handles chat via JSONL sessions store (CLI-compatible).
@@ -989,7 +1003,25 @@ func (a *App) StreamChat(sessionID, message string, deepThink bool) string {
 	// Try session store for any session that has a JSONL file on disk.
 	sessionFile := filepath.Join(a.sessionsDir, sessionID+".jsonl")
 	if _, statErr := os.Stat(sessionFile); statErr != nil || a.sessionStore == nil {
-		return a.directChatLegacy(sessionID, message, deepThink)
+		resultJSON := a.directChatLegacy(sessionID, message, deepThink)
+		// Emit chat-chunk events so frontend streaming state resolves properly.
+		var result DirectChatResult
+		if json.Unmarshal([]byte(resultJSON), &result) == nil {
+			if result.Thinking != "" {
+				runtime.EventsEmit(a.ctx, "chat-chunk", StreamChatChunk{
+					SessionID: sessionID, Thinking: result.Thinking, Done: false,
+				})
+			}
+			if result.Reply != "" {
+				runtime.EventsEmit(a.ctx, "chat-chunk", StreamChatChunk{
+					SessionID: sessionID, Content: result.Reply, Done: false,
+				})
+			}
+			runtime.EventsEmit(a.ctx, "chat-chunk", StreamChatChunk{
+				SessionID: sessionID, Done: true,
+			})
+		}
+		return resultJSON
 	}
 
 	// Cancel any existing stream for this session
@@ -1006,6 +1038,15 @@ func (a *App) StreamChat(sessionID, message string, deepThink bool) string {
 	}
 
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				pod.Log("chat", "panic in StreamChat goroutine: %v", r)
+				runtime.EventsEmit(a.ctx, "chat-chunk", StreamChatChunk{
+					SessionID: sessionID, Done: true,
+					Error: fmt.Sprintf("内部错误: %v", r),
+				})
+			}
+		}()
 		// Read full conversation history
 		msgs, _ := a.sessionStore.List(context.Background(), sessionID)
 		var history []chatMsg
@@ -1154,7 +1195,7 @@ func (a *App) callLLMStream(ctx context.Context, messages []chatMsg, deepThink b
 	req.Header.Set("Authorization", "Bearer "+apiKey)
 	req.Header.Set("Accept", "text/event-stream")
 
-	resp, err := (&http.Client{Timeout: 0}).Do(req) // No timeout — ctx handles cancellation
+	resp, err := (&http.Client{Timeout: 10 * time.Minute}).Do(req)
 	if err != nil {
 		if ctx.Err() != nil {
 			return reply, thinking, "" // cancelled
@@ -2434,4 +2475,83 @@ func updateMetaState(workDir, taskID, state string) {
 	if err := os.WriteFile(metaPath, newData, 0644); err != nil {
 		pod.Log("task", "write meta %s: %v", metaPath, err)
 	}
+}
+
+// ---------------------------------------------------------------------------
+// MCP Server Management
+// ---------------------------------------------------------------------------
+
+type MCPServerInfo struct {
+	Name      string   `json:"name"`
+	Status    string   `json:"status"`
+	Disabled  bool     `json:"disabled"`
+	Connected bool     `json:"connected"`
+	Tools     int      `json:"tools"`
+	ToolNames []string `json:"toolNames"`
+	Command   string   `json:"command,omitempty"`
+	URL       string   `json:"url,omitempty"`
+	Type      string   `json:"type,omitempty"`
+	Error     string   `json:"error,omitempty"`
+}
+
+func (a *App) initMCP() {
+	mcpConfigPath := filepath.Join(a.workDir, ".whale", "mcp.json")
+	cfg, err := mcp.LoadConfig(mcpConfigPath)
+	if err != nil {
+		pod.Log("mcp", "load config: %v", err)
+		return
+	}
+	a.mcpManager = mcp.NewManager(cfg, a.workDir)
+	go func() {
+		a.mcpManager.InitializeWithEvents(a.ctx, func(ev mcp.StartupEvent) {
+			if ev.Complete {
+				pod.Log("mcp", "all servers initialized")
+			} else {
+				pod.Log("mcp", "%s: %s (tools=%d)", ev.State.Name, ev.State.Status, ev.State.Tools)
+			}
+		})
+	}()
+}
+
+func (a *App) ListMCPServers() []MCPServerInfo {
+	if a.mcpManager == nil {
+		return make([]MCPServerInfo, 0)
+	}
+	states := a.mcpManager.States()
+	out := make([]MCPServerInfo, 0, len(states))
+	for _, st := range states {
+		srv := a.mcpManager.GetServerConfig(st.Name)
+		info := MCPServerInfo{
+			Name:      st.Name,
+			Status:    st.Status,
+			Disabled:  st.Disabled,
+			Connected: st.Connected,
+			Tools:     st.Tools,
+			ToolNames: st.ToolNames,
+			Error:     st.Error,
+		}
+		if srv != nil {
+			info.Command = srv.Command
+			info.URL = srv.URL
+			info.Type = srv.Type
+		}
+		out = append(out, info)
+	}
+	return out
+}
+
+func (a *App) SetMCPServerEnabled(name string, enabled bool) string {
+	if a.mcpManager == nil {
+		return "MCP manager not initialized"
+	}
+	if enabled {
+		if err := a.mcpManager.EnableServer(a.ctx, name); err != nil {
+			return err.Error()
+		}
+	} else {
+		if err := a.mcpManager.DisableServer(name); err != nil {
+			return err.Error()
+		}
+	}
+	return ""
 }

@@ -6,6 +6,10 @@ export function AbortChat(arg1) {
   return window['go']['main']['App']['AbortChat'](arg1);
 }
 
+export function ApplyOutput(arg1, arg2) {
+  return window['go']['main']['App']['ApplyOutput'](arg1, arg2);
+}
+
 export function CancelSubtask(arg1) {
   return window['go']['main']['App']['CancelSubtask'](arg1);
 }
@@ -86,6 +90,10 @@ export function ListAgents() {
   return window['go']['main']['App']['ListAgents']();
 }
 
+export function ListMCPServers() {
+  return window['go']['main']['App']['ListMCPServers']();
+}
+
 export function ListSessionsByAgent(arg1, arg2, arg3) {
   return window['go']['main']['App']['ListSessionsByAgent'](arg1, arg2, arg3);
 }
@@ -136,6 +144,10 @@ export function SendFeedback(arg1, arg2) {
 
 export function SendTeamChat(arg1, arg2, arg3) {
   return window['go']['main']['App']['SendTeamChat'](arg1, arg2, arg3);
+}
+
+export function SetMCPServerEnabled(arg1, arg2) {
+  return window['go']['main']['App']['SetMCPServerEnabled'](arg1, arg2);
 }
 
 export function SetWorkDir(arg1) {

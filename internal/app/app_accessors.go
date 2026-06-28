@@ -147,6 +147,21 @@ func (a *App) Close() error {
 		return nil
 	}
 	if a.dashboardClient != nil {
+		go a.dashboardClient.Deregister()
+	}
+	if a.mcpManager == nil {
+		return nil
+	}
+	return a.mcpManager.Close()
+}
+
+func (a *App) MCPManager() *whalemcp.Manager {
+	if a == nil {
+		return nil
+	}
+	return a.mcpManager
+}
+	if a.dashboardClient != nil {
 		// Best-effort deregister — don't block shutdown.
 		go a.dashboardClient.Deregister()
 	}

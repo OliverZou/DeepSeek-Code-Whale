@@ -144,3 +144,17 @@ export interface TaskConfirmation {
   content: string;
   state: string;
 }
+
+// Matches Go MCPServerInfo
+export interface MCPServerInfo {
+  name: string;
+  status: string;
+  disabled: boolean;
+  connected: boolean;
+  tools: number;
+  toolNames: string[];
+  command?: string;
+  url?: string;
+  type?: string;
+  error?: string;
+}
