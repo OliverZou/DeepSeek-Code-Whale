@@ -114,6 +114,8 @@ func (e *TeamEngine) OnEvent(cb TaskEventCallback) func() {
 func (e *TeamEngine) SetTeam(tc *TeamConfig) {
 	e.team = tc
 	e.Runner.WithTeam(tc)
+	// Resolve role display names and descriptions from the team's agent .md files.
+	ResolveTeamRoles(tc)
 }
 
 // Team returns the current team configuration, or nil if none is set.

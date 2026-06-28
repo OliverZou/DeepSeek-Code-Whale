@@ -282,6 +282,76 @@ func loadRuntimeConfig(path string) *TeamRuntimeConfig {
 	return &cfg
 }
 
+// agentInfoFromDir scans a team's agents/ directory and returns an
+// AgentInfoProvider backed by the agent .md files' YAML frontmatter.
+// Agent names are derived from the filename (e.g. "software-engineer.md" → "software-engineer").
+func agentInfoFromDir(teamDir string) AgentInfoProvider {
+	agentsDir := filepath.Join(teamDir, "agents")
+	entries, err := os.ReadDir(agentsDir)
+	if err != nil {
+		return nil
+	}
+	type agentMeta struct {
+		Name        string `yaml:"name"`
+		Description string `yaml:"description"`
+	}
+	titles := make(map[string]string)
+	descs := make(map[string]string)
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".md") {
+			continue
+		}
+		name := strings.TrimSuffix(e.Name(), ".md")
+		data, err := os.ReadFile(filepath.Join(agentsDir, e.Name()))
+		if err != nil {
+			continue
+		}
+		content := string(data)
+		if strings.HasPrefix(content, "---") {
+			if end := strings.Index(content[3:], "---"); end > 0 {
+				fm := content[3 : end+3]
+				var meta agentMeta
+				if yaml.Unmarshal([]byte(fm), &meta) == nil {
+					if meta.Description != "" {
+						descs[name] = meta.Description
+					}
+					if meta.Name != "" {
+						titles[name] = meta.Name
+					} else {
+						titles[name] = name
+					}
+				}
+			}
+		}
+	}
+	if len(descs) == 0 && len(titles) == 0 {
+		return nil
+	}
+	return &dirAgentInfo{titles: titles, descs: descs}
+}
+
+type dirAgentInfo struct {
+	titles map[string]string
+	descs  map[string]string
+}
+
+func (d *dirAgentInfo) AgentRole(name string) string         { return d.titles[name] }
+func (d *dirAgentInfo) AgentDesc(name string) string          { return d.descs[name] }
+func (d *dirAgentInfo) AgentCapabilities(name string) string  { return "" }
+func (d *dirAgentInfo) AgentOutputSpec(name string) string    { return "" }
+
+// ResolveTeamRoles populates team role display info from the team's agents/
+// directory.  Call this after LoadTeamConfig / FindTeamInRoots so that
+// BuildLeaderPrompt can include role descriptions in decomposition prompts.
+func ResolveTeamRoles(tc *TeamConfig) {
+	if tc == nil || tc.TeamDir == "" {
+		return
+	}
+	if p := agentInfoFromDir(tc.TeamDir); p != nil {
+		tc.ResolveRoles(p)
+	}
+}
+
 
 // DefaultTeamRoots returns the team discovery roots for a workspace.
 // Priority: workspace > global home > bundled (next to the executable).
