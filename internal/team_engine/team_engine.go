@@ -1042,6 +1042,7 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 				workerStart := time.Now()
 				resp := e.shellSpawner.ContinueSession(ws, fbPrompt)
 				contResult := &RunResult{
+					SessionID:       resp.SessionID,
 					ExitCode:        resp.ExitCode,
 					Stdout:          resp.Output,
 					Stderr:          resp.Diagnostic,
@@ -2911,6 +2912,9 @@ func (e *TeamEngine) recordLesson(role AgentRole, title, lesson string) {
 // into the agent's inbox so it learns from past successes and failures.
 // When key is non-empty, returns memories matching that key.  Otherwise
 // returns the 10 most recent memories for the role.
+//
+// Falls back to the legacy markdown file when no structured JSON memories
+// exist yet (e.g. after upgrading from a version that only wrote .md files).
 func (e *TeamEngine) BuildMemoryContext(role AgentRole, key string) (string, error) {
 	if e.Store == nil {
 		return "", nil
@@ -2923,13 +2927,37 @@ func (e *TeamEngine) BuildMemoryContext(role AgentRole, key string) (string, err
 		memories, err = e.Store.GetRecentMemories(role, 10)
 	}
 	if err != nil || len(memories) == 0 {
-		return "", nil
+		// Fallback: read legacy markdown file for backward compatibility.
+		return e.buildMemoryContextFromMarkdown(role)
 	}
 	var b strings.Builder
 	b.WriteString("\n\n## 🧠 历史经验（同角色）\n")
 	b.WriteString("以下是本角色在过去任务中的关键教训：\n\n")
 	for _, m := range memories {
 		b.WriteString(fmt.Sprintf("- %s: %s\n", m.CreatedAt[:10], m.Content))
+	}
+	b.WriteString("\n参考这些经验，避免重复错误。\n")
+	return b.String(), nil
+}
+
+// buildMemoryContextFromMarkdown reads the legacy markdown memory file.
+// This is a fallback for deployments that have .md files from before the
+// JSON memory store was introduced.
+func (e *TeamEngine) buildMemoryContextFromMarkdown(role AgentRole) (string, error) {
+	path := filepath.Join(e.Store.baseDir, "memory", string(role)+".md")
+	data, err := os.ReadFile(path)
+	if err != nil || len(data) == 0 {
+		return "", nil
+	}
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	if len(lines) > 10 {
+		lines = lines[len(lines)-10:]
+	}
+	var b strings.Builder
+	b.WriteString("\n\n## 🧠 历史经验（同角色）\n")
+	b.WriteString("以下是本角色在过去任务中的关键教训：\n\n")
+	for _, line := range lines {
+		b.WriteString(line + "\n")
 	}
 	b.WriteString("\n参考这些经验，避免重复错误。\n")
 	return b.String(), nil

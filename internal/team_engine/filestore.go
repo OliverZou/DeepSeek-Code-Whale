@@ -597,7 +597,7 @@ func (fs *FileTaskStore) GetTaskHistory(taskID string) ([]StateHistoryEntry, err
 		},
 	}
 
-	prevState := string(TaskStateAssigned)
+	prevState := string(TaskStatePending)
 	for _, evt := range events {
 		entry := StateHistoryEntry{
 			TaskID:    taskID,
@@ -730,6 +730,9 @@ func (fs *FileTaskStore) GetRecentMemories(role AgentRole, limit int) ([]MemoryE
 }
 
 // MemoryStats returns a count of memories per role.
+// Filename format: {role}_{key}_{timestamp}.json — role is extracted by
+// finding the longest prefix that matches a known role set.  This correctly
+// handles role names containing underscores (e.g. "QA_Automation_Engineer").
 func (fs *FileTaskStore) MemoryStats() map[string]int {
 	memDir := filepath.Join(fs.baseDir, "memory")
 	entries, _ := os.ReadDir(memDir)
@@ -738,11 +741,30 @@ func (fs *FileTaskStore) MemoryStats() map[string]int {
 		if !strings.HasSuffix(e.Name(), ".json") {
 			continue
 		}
-		// filename format: {role}_{key}_{timestamp}.json
-		parts := strings.SplitN(e.Name(), "_", 3)
-		if len(parts) >= 1 {
-			stats[parts[0]]++
+		role := extractRoleFromFilename(e.Name())
+		if role != "" {
+			stats[role]++
 		}
 	}
 	return stats
+}
+
+// extractRoleFromFilename extracts the role from a memory filename of the
+// form {role}_{key}_{timestamp}.json.  It works by scanning from the right:
+// the timestamp is the last component (all digits), the key is between the
+// last two underscores, and everything before that is the role.
+func extractRoleFromFilename(name string) string {
+	name = strings.TrimSuffix(name, ".json")
+	// Find the timestamp: last "_" segment is the nanosecond timestamp (all digits).
+	lastIdx := strings.LastIndex(name, "_")
+	if lastIdx < 0 {
+		return ""
+	}
+	rest := name[:lastIdx]
+	// Find the key: the segment before the timestamp.
+	keyIdx := strings.LastIndex(rest, "_")
+	if keyIdx < 0 {
+		return ""
+	}
+	return rest[:keyIdx]
 }
