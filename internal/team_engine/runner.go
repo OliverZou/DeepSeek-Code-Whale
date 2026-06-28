@@ -117,8 +117,9 @@ type SubagentResponse struct {
 
 // AgentRunner is a stateless wrapper around a SubagentSpawner.
 type AgentRunner struct {
-	spawner SubagentSpawner
-	team    *TeamConfig
+	spawner            SubagentSpawner
+	liteSpawner SubagentSpawner // optional fast path (no subprocess) for light calls
+	team               *TeamConfig
 }
 
 // NewRunner creates an AgentRunner backed by the given spawner.
@@ -130,6 +131,14 @@ func NewRunner(spawner SubagentSpawner) *AgentRunner {
 func (ar *AgentRunner) WithTeam(team *TeamConfig) *AgentRunner {
 	ar.team = team
 	return ar
+}
+
+// SetLiteSpawner sets an optional lightweight spawner used by fast-path
+// methods (e.g. RunElaborationStep).  When nil (default), callers fall back
+// to the main spawner.  Use this to bypass subprocess overhead for pure
+// prompt→response calls that don't need tools or multi-turn iteration.
+func (ar *AgentRunner) SetLiteSpawner(s SubagentSpawner) {
+	ar.liteSpawner = s
 }
 
 // RunWithContext spawns a worker subagent with cancellation support.  The
@@ -355,6 +364,69 @@ func (ar *AgentRunner) RunDecomposer(prompt, workdir string, timeout time.Durati
 		Stdout:          resp.Output,
 		SpawnerType:     resp.SpawnerType,
 			Stderr:          resp.Diagnostic,
+		DurationSeconds: round(elapsed, 2),
+		Success:         resp.Success,
+		Structured:      resp.Structured,
+		UsagePrompt:     resp.UsagePrompt,
+		UsageCompletion: resp.UsageCompletion,
+	}
+}
+
+// ---------------------------------------------------------------------------
+// RunElaborationStep runs a lightweight, one-shot LLM call for elaboration.
+// Unlike RunDecomposer, this has NO tools, NO OutputSchema, NO iteration budget —
+// it's a pure prompt→response call.  Elaboration steps (completeness check,
+// domain research, spec production) are text-in/text-out analysis that never
+// needs file I/O or multi-turn reasoning.
+func (ar *AgentRunner) RunElaborationStep(prompt, workdir string, timeout time.Duration, maxTokens int, model ...string) *RunResult {
+	req := SubagentRequest{
+		Task:     prompt,
+		Role:     "planner",
+		Tools:    nil, // no tools — pure text analysis
+		Workdir:  workdir,
+		Timeout:  timeout,
+		MaxIters: 1, // one-shot
+		MaxCalls: 1,
+		// No OutputSchema — elaboration returns free-text YAML or JSON,
+		// parsed by the caller.
+	}
+	if len(model) > 0 && model[0] != "" {
+		req.Model = model[0]
+	}
+	if maxTokens > 0 {
+		req.MaxTokens = maxTokens
+	} else {
+		req.MaxTokens = effectiveMaxTokens(0, req.Model)
+	}
+
+	spawner := ar.spawner
+	if ar.liteSpawner != nil {
+		spawner = ar.liteSpawner
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	start := time.Now()
+	resp, err := spawner.SpawnSubagent(ctx, req)
+	elapsed := time.Since(start).Seconds()
+
+	if err != nil {
+		return &RunResult{
+			ExitCode:        -1,
+			Stdout:          "",
+			Stderr:          fmt.Sprintf("elaboration subagent error: %v", err),
+			DurationSeconds: round(elapsed, 2),
+			Success:         false,
+			PID:             resp.PID,
+		}
+	}
+
+	return &RunResult{
+		ExitCode:        resp.ExitCode,
+		Stdout:          resp.Output,
+		SpawnerType:     resp.SpawnerType,
+		Stderr:          resp.Diagnostic,
 		DurationSeconds: round(elapsed, 2),
 		Success:         resp.Success,
 		Structured:      resp.Structured,

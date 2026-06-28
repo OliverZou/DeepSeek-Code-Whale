@@ -11,6 +11,9 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/usewhale/whale/internal/core"
+	"github.com/usewhale/whale/internal/llm"
+	"github.com/usewhale/whale/internal/llm/deepseek"
 	"github.com/usewhale/whale/internal/team_engine"
 	"github.com/usewhale/whale/internal/team_engine/server"
 )
@@ -148,6 +151,12 @@ Subcommands:
 				return fmt.Errorf("init engine: %w", err)
 			}
 			defer eng.Close()
+				// Use fast in-process LLM calls for elaboration (no subprocess).
+				if model, _ := cmd.Flags().GetString("model"); model != "" {
+					if lite := newLiteSpawner(model); lite != nil {
+						eng.Runner.SetLiteSpawner(lite)
+					}
+				}
 			if teamName, _ := cmd.Flags().GetString("team"); teamName != "" {
 				roots := team_engine.DefaultTeamRoots(workdir)
 				tc, err := team_engine.FindTeamInRoots(roots, teamName)
@@ -207,6 +216,11 @@ Subcommands:
 
 			stopAt := strings.ToLower(strings.TrimSpace(cmd.Flag("stop-at").Value.String()))
 			if stopAt == "spec" || stopAt == "decompose" {
+				// Use fast in-process LLM calls for elaboration (no subprocess).
+				// RunDecomposer ignores liteSpawner, so decompose still uses full isolation.
+				if lite := newLiteSpawner("deepseek-v4-flash"); lite != nil {
+					eng.Runner.SetLiteSpawner(lite)
+				}
 				leader := team_engine.NewLeader(eng.Runner).WithTeam(eng.Team())
 				start := time.Now()
 				elaborated, err := leader.Elaborate(goal, workdir, 120*time.Second)
@@ -557,6 +571,56 @@ Open http://localhost:8080 after starting.`,
 	teamCmd.AddCommand(dashboardCmd)
 
 	return teamCmd
+}
+
+// newLiteSpawner creates a fast FuncSpawner that calls the LLM API directly,
+// without forking a subprocess.  Returns nil if no API key is configured.
+// Only suitable for pure prompt→response calls (no tools, one-shot).
+func newLiteSpawner(fallbackModel string) team_engine.SubagentSpawner {
+	return team_engine.NewFuncSpawner(func(ctx context.Context, req team_engine.SubagentRequest) (team_engine.SubagentResponse, error) {
+		mdl := req.Model
+		if mdl == "" {
+			mdl = fallbackModel
+		}
+		maxTok := req.MaxTokens
+		if maxTok <= 0 {
+			maxTok = 4096
+		}
+		client, err := deepseek.New(
+			deepseek.WithModel(mdl),
+			deepseek.WithMaxTokens(maxTok),
+			deepseek.WithThinking(false),
+			deepseek.WithTemperature(0),
+		)
+		if err != nil {
+			return team_engine.SubagentResponse{
+				Success:    false,
+				Diagnostic: err.Error(),
+			}, nil
+		}
+		messages := []core.Message{
+			{Role: core.RoleUser, Text: req.Task},
+		}
+		events := client.StreamResponse(ctx, messages, nil)
+		var fullText string
+		for ev := range events {
+			switch ev.Type {
+			case llm.EventContentDelta:
+				fullText += ev.Content
+			case llm.EventError:
+				return team_engine.SubagentResponse{
+					Output:     fullText,
+					Success:    false,
+					Diagnostic: ev.Err.Error(),
+				}, nil
+			case llm.EventComplete:
+			}
+		}
+		return team_engine.SubagentResponse{
+			Output:  fullText,
+			Success: true,
+		}, nil
+	})
 }
 
 // newTeamEngine creates a TeamEngine with a default shell-based spawner.

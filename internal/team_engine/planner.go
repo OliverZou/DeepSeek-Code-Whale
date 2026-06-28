@@ -73,125 +73,160 @@ OUTPUT:
 
 // ---------------------------------------------------------------------------
 // Phase 0: Goal Elaboration
+//
+// Follows the 4-step process defined in goal-elaboration-methodology.md:
+//   Step 1+2 — merged completeness check + domain research (single call)
+//   Step 3   — spec production (YAML spec, only when gaps found)
+//   Step 4   — user confirmation (reserved — see below)
+//
+// Prompt templates live in elaboration_prompts.go.
+// Types live in elaboration_types.go.
 // ---------------------------------------------------------------------------
 
-// ElaborationPrompt returns the prompt for elaborating a raw goal into a
-// fully-specified spec before decomposition.  For goals that are already
-// complete on all 6 dimensions (scope, interface, behaviour, quality,
-// dependencies, constraints), the Leader returns the goal unchanged.
-func ElaborationPrompt(rawGoal string) string {
-	return fmt.Sprintf(`You are a TeamLeader.  Elaborate this raw goal into a fully-specified
-executable spec before task decomposition.  Do NOT decompose into tasks yet.
-
-RAW GOAL: %s
-
-Check completeness across 6 dimensions:
-
-| Dimension    | Question                              | Complete when                     |
-|-------------|---------------------------------------|-----------------------------------|
-| Scope       | What's included?  What's excluded?     | Boundaries clear, no ambiguity    |
-| Interface   | Input/output signatures?  Data types?  | Describable as type definitions   |
-| Behaviour   | Core logic?  Algorithm?  Flow?         | Describable in ≤3 sentences       |
-| Quality     | Acceptance criteria?  Precision?       | Objectively verifiable            |
-| Dependencies| External resources?  Upstream inputs?  | Explicitly listed                 |
-| Constraints | Language?  Framework?  Platform?       | Explicitly listed                 |
-
-RULES:
-1. If ALL 6 complete → return "ELABORATION: SKIP" and the goal unchanged.
-2. If any incomplete → fill gaps using your domain knowledge.
-   Call a domain-research LLM ONLY when your own knowledge is insufficient.
-3. Produce a YAML spec (NOT tasks, NOT JSON — just the spec).
-4. Explicitly list what's OUT of scope — this prevents Workers from going off-track.
-5. Do NOT read files, list directories, or explore the workspace.
-   Elaboration is pure goal-text analysis — no tools needed.
-6. This is non-interactive.  Output the spec directly.  Do NOT ask
-   the user to confirm decisions.  Make reasonable defaults and proceed.
-
-OUTPUT (when elaboration is needed):
----yaml
-goal_summary: <one sentence>
-
-scope:
-  included:
-    - <item>
-  excluded:
-    - <item>
-
-interface:
-  <signatures, types, package structure>
-
-behaviour:
-  <core algorithm, alignment target, edge cases>
-
-quality:
-  acceptance_criteria:
-    - <criterion>
-  precision: <requirement>
-
-dependencies:
-  external: <list or "none">
-
-constraints:
-  language: <version>
-  style: <convention>
-  platform: <target>
----
-
-When the goal is already complete:
-ELABORATION: SKIP
-<original goal>
-`, rawGoal)
-}
-
-// Elaborate runs goal elaboration and returns the elaborated (or original) goal.
-// Skips elaboration entirely for simple, fully-specified goals — this avoids
-// wasting an LLM round on goals like "Write a GCD function in Go".
+// Elaborate runs the multi-step goal elaboration pipeline and returns the
+// elaborated (or original) goal.  Fully-specified goals short-circuit after
+// the merged check+research step, avoiding wasted LLM rounds.
 func (p *Planner) Elaborate(rawGoal string, workdir string, timeout time.Duration, model ...string) (string, error) {
 	if timeout <= 0 {
 		timeout = 120 * time.Second
 	}
 
-	prompt := ElaborationPrompt(rawGoal)
-	if p.team != nil {
-		prompt = p.team.BuildLeaderPrompt(prompt)
-	}
 	// Elaboration is domain-knowledge gap-filling — flash is sufficient.
 	// Override any pro model setting for this phase only.
-	model = []string{"deepseek-v4-flash"}
+	flashModel := "deepseek-v4-flash"
 
-	mdl := ""
-	if len(model) > 0 {
-		mdl = model[0]
-	}
-
-	start := time.Now()
-	result := p.runner.RunDecomposer(prompt, workdir, timeout, model...)
-	dur := time.Since(start)
-
-	if p.loggers != nil {
-		p.loggers.Engine("leader.elaborate: model=%s dur=%.1fs output=%d chars success=%v",
-			mdl, dur.Seconds(), len(result.Stdout), result.Success)
-		p.loggers.LogLeader("elaborate", prompt, result.Stdout, dur, nil)
+	// ── Merged Step 1+2: Completeness check + domain research ──────
+	verdict, err := p.checkAndResearch(rawGoal, workdir, timeout, flashModel)
+	if err != nil && p.loggers != nil {
+		p.loggers.Engine("leader.elaborate.check: check failed: %v, proceeding with elaboration", err)
 	}
 	if p.onLog != nil {
 		p.onLog()
 	}
 
-	output := strings.TrimSpace(result.Stdout)
-	if !result.Success || output == "" {
-		// On failure, return the original goal — decomposition can still proceed.
-		if defaultTeamLog != nil {
-			defaultTeamLog.LeaderRetry(0, "elaboration failed, using raw goal")
+	// If the check failed entirely (nil verdict), treat as incomplete
+	// and proceed to spec production with LLM's built-in domain knowledge.
+	if verdict == nil {
+		if p.loggers != nil {
+			p.loggers.Engine("leader.elaborate.check: nil verdict, proceeding with spec production")
+		}
+		elaborated, err := p.produceSpec(rawGoal, workdir, timeout, flashModel, nil, nil)
+		if err != nil || elaborated == "" {
+			return rawGoal, nil
+		}
+		return elaborated, nil
+	}
+
+	// Early exit: goal is already fully specified.
+	if verdict.IsComplete() {
+		if p.loggers != nil {
+			p.loggers.Engine("leader.elaborate: SKIP — all 6 dimensions complete, using raw goal")
 		}
 		return rawGoal, nil
 	}
 
-	// If elaboration was skipped (goal already complete), extract the original.
-	if strings.Contains(output, "ELABORATION: SKIP") {
+	gaps := verdict.Gaps()
+	if p.loggers != nil {
+		p.loggers.Engine("leader.elaborate.check: INCOMPLETE — %d gaps: %v", len(gaps), gapNames(gaps))
+	}
+
+	// ── Step 3: Produce concrete spec ───────────────────────────────
+	elaborated, err := p.produceSpec(rawGoal, workdir, timeout, flashModel, verdict.DomainFacts, gaps)
+	if err != nil || elaborated == "" {
+		if defaultTeamLog != nil {
+			defaultTeamLog.LeaderRetry(0, "elaboration spec production failed, using raw goal")
+		}
 		return rawGoal, nil
+	}
+	if p.onLog != nil {
+		p.onLog()
+	}
+
+	// ── Step 4: User confirmation (reserved) ────────────────────────
+	// TODO(stretch): When the elaborated spec contains genuinely ambiguous
+	// choices where user preference is the deciding factor (e.g. "library vs
+	// CLI", "Go vs Python" when neither was specified), prompt the user for
+	// confirmation before proceeding.
+	//
+	// Principle: don't ask what the TeamLeader can decide itself.
+	// Only ask when there are ≥2 reasonable options and no industry default.
+
+	return elaborated, nil
+}
+
+// checkAndResearch runs merged Step 1+2: ask a cheap model to judge the
+// raw goal against the 6 completeness dimensions AND fill domain facts
+// for any gaps.  Returns a structured verdict with optional DomainFacts.
+func (p *Planner) checkAndResearch(rawGoal, workdir string, timeout time.Duration, model string) (*CompletenessVerdict, error) {
+	prompt := CheckAndResearchPrompt(rawGoal)
+	// No team prompt injection — pure dimension analysis + domain facts.
+
+	start := time.Now()
+	result := p.runner.RunElaborationStep(prompt, workdir, timeout, 2048, model)
+	dur := time.Since(start)
+
+	if p.loggers != nil {
+		p.loggers.Engine("leader.elaborate.check: model=%s dur=%.1fs output=%d chars success=%v",
+			model, dur.Seconds(), len(result.Stdout), result.Success)
+		p.loggers.LogLeader("elaborate_check", prompt, result.Stdout, dur, nil)
+	}
+
+	output := strings.TrimSpace(result.Stdout)
+	if !result.Success || output == "" {
+		return nil, fmt.Errorf("completeness check failed: success=%v output_empty=%v", result.Success, output == "")
+	}
+
+	jsonStr := extractJSONObject(output)
+	if jsonStr == "" {
+		return nil, fmt.Errorf("no JSON found in completeness check output")
+	}
+
+	var verdict CompletenessVerdict
+	if err := json.Unmarshal([]byte(jsonStr), &verdict); err != nil {
+		return nil, fmt.Errorf("parse completeness verdict: %w\nRaw: %s", err, output)
+	}
+
+	if verdict.Verdict != "COMPLETE" && verdict.Verdict != "INCOMPLETE" {
+		return nil, fmt.Errorf("unknown verdict: %q", verdict.Verdict)
+	}
+
+	return &verdict, nil
+}
+
+// produceSpec runs Step 3: produce the final YAML spec by combining
+// the raw goal, domain research, and identified gaps.
+func (p *Planner) produceSpec(rawGoal, workdir string, timeout time.Duration, model string, research *DomainResearch, gaps []DimensionGap) (string, error) {
+	prompt := SpecProductionPrompt(rawGoal, research, gaps)
+	// Inject team context so the spec is aware of team capabilities.
+	if p.team != nil {
+		prompt = p.team.BuildLeaderPrompt(prompt)
+	}
+
+	start := time.Now()
+	result := p.runner.RunElaborationStep(prompt, workdir, timeout, 8192, model)
+	dur := time.Since(start)
+
+	if p.loggers != nil {
+		p.loggers.Engine("leader.elaborate.spec: model=%s dur=%.1fs output=%d chars success=%v",
+			model, dur.Seconds(), len(result.Stdout), result.Success)
+		p.loggers.LogLeader("elaborate_spec", prompt, result.Stdout, dur, nil)
+	}
+
+	output := strings.TrimSpace(result.Stdout)
+	if !result.Success || output == "" {
+		return "", fmt.Errorf("spec production failed: success=%v output_empty=%v", result.Success, output == "")
 	}
 
 	return output, nil
+}
+
+// gapNames returns a compact list of gap dimension names for logging.
+func gapNames(gaps []DimensionGap) []string {
+	names := make([]string, len(gaps))
+	for i, g := range gaps {
+		names[i] = g.Name
+	}
+	return names
 }
 
 // decomposeInternal runs the leader agent and returns both parsed tasks
