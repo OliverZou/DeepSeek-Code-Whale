@@ -44,31 +44,40 @@ func (p *Planner) WithOnLog(fn func()) *Planner {
 
 // DecomposePrompt returns the prompt template for task decomposition.
 func DecomposePrompt(goal string) string {
-	return fmt.Sprintf(`Decompose this goal into tasks. Output pure JSON, no markdown.
+	return fmt.Sprintf(`你是任务分解与角色分配器。将目标一次拆到底，输出的每个任务都必须是叶子
+（单个 Worker 一次可完成，单次输出约 150 行以内）。
+如果某个 concern 仍超出可吞性，在本次调用中继续分解——最终只输出叶子列表。
 
-GOAL: %s
+目标：%s
 
-CORE RULE: 1 goal = 1 task by default. Only split when a single worker cannot finish.
+## 分类与分解
 
-ROLES (pick the best fit):
-- developer: writes code AND unit tests. Checker auto-runs build/lint/test.
-- writer: produces documents, reports, articles.
-- researcher: investigates, analyzes, compares options.
+先判断结构再分解：
+SINGLE — 单一关注点 → 1 个任务
+MULTI  — 多个独立关注点 → 每个 concern 一个任务，用 depends_on 串联
+MANY   — 大量相同单元 → 每个单元一个任务，相同 role、相同 batch（并行）
 
-IMPORTANT: Do NOT create separate tester tasks for unit tests — the developer
-writes them and the Checker validates them automatically. Tester role is ONLY
-for complex software projects needing integration/performance/security testing
-that the Checker cannot do.
+## 可吞性判断
 
-OUTPUT field: comma-separated file paths for ALL deliverables (e.g. "gcd.go, main.go").
-Same-batch tasks run in parallel. Different batches run sequentially.
+按难度裁定，不只看体量：
+- 200 行 lock-free 队列 → 拆（需要形式化推理，难度高）
+- 500 行 CRUD handler → 留（机械重复，难度低）
 
-Set "verifier_role" to the agent name that should verify this task's output
-(e.g. "software-qa-engineer" or "review"). Omit for deterministic tasks where
-built-in Checker is sufficient.
+## 角色分配
 
-OUTPUT:
-[{"title":"...","description":"detailed instructions","output":"mathutil.go, main.go","role":"developer","verifier_role":"review","batch_id":"1","batch_label":"Implementation","depends_on_batch":[],"depends_on_index":-1,"verifier_focus":"correctness","max_cycles":1}]`, goal)
+每个任务必须分配：
+- role：与领域精确匹配的具体角色名（如 "Go Backend Developer"）
+- verifier_role：质量审查的 agent 名。主观任务（架构、安全、文档）
+  用真实 verifier agent。纯机械任务（算法实现、格式转换）留 ""。
+- verifier_focus：审查维度（correctness、security、performance…）
+
+## 输出
+
+纯 JSON 数组，不加 markdown 包裹。同 batch 并行，不同 batch 串行。
+
+[
+  {"title":"…","description":"≤3句话","output":"产物路径","role":"角色名","verifier_role":"agent名或空","batch_id":"1","batch_label":"阶段名","depends_on_batch":[],"depends_on_index":-1,"verifier_focus":"审查维度","max_cycles":1}
+]`, goal)
 }
 
 // ---------------------------------------------------------------------------
@@ -375,37 +384,19 @@ func stripVerifierFeedback(desc string) string {
 
 // DecomposeTask re-decomposes a single task that exhausted retries into smaller subtasks.
 func (p *Planner) DecomposeTask(task *Task, workdir string, timeout time.Duration, model ...string) ([]PlanTask, error) {
-	// Strip accumulated verifier feedback to keep the prompt lean —
-	// the original task requirements are all the Leader needs to re-decompose.
+	// Strip accumulated verifier feedback to keep the prompt lean.
 	cleanDesc := stripVerifierFeedback(task.Description)
-	prompt := fmt.Sprintf(`You are a Team Leader. The following task failed after multiple retries because it was too large to complete in a single pass.
+	prompt := fmt.Sprintf(`任务因过大而耗尽重试次数。拆成 2-3 个更小的子任务，
+每个一个具体产出，≤150 行。
 
-FAILED TASK:
-Title: %s
-Role: %s
-Description: %s
+失败任务：%s（角色：%s）
+描述：%s
+最后反馈：%s
 
-Last verifier feedback: %s
-
-The task failed because a Worker agent could not produce the full output in one pass —
-the output was truncated, the code was incomplete, or the file ended mid-statement.
-Workers have limited output capacity (~150 lines of code max per task).  The original
-task description likely asked for too much in a single pass.
-
-Break this task into 2-3 SMALLER subtasks that each stay under the ~150-line limit.
-Apply the same splitting strategies as the original decomposition:
-  - BY DOMAIN: split by module boundary if the task spans multiple packages
-  - BY FUNCTION: split by self-contained capability (one function or small set)
-  - BY DEPENDENCY: types/constants first, then algorithm, then integration
-
-Each subtask must produce ONE concrete, testable deliverable.
-
-OUTPUT FORMAT (pure JSON array, no markdown):
+输出纯 JSON 数组，无 markdown：
 [
-  {"title": "...", "description": "...", "role": "%s", "batch_id": "%s", "depends_on_batch": [], "verifier_focus": "%s", "max_cycles": 1}
-]
-
-CRITICAL: Verify your JSON syntax — no trailing commas, proper string quoting.`, task.Title, task.Role, cleanDesc, task.VerifierFeedback, task.Role, task.BatchID, task.VerifierFocus)
+  {"title":"…","description":"…","role":"%s","batch_id":"%s","depends_on_batch":[],"verifier_focus":"%s","max_cycles":1}
+]`, task.Title, task.Role, cleanDesc, task.VerifierFeedback, task.Role, task.BatchID, task.VerifierFocus)
 
 	tasks, _, err := p.decomposeInternal(prompt, workdir, timeout, model...)
 	return tasks, err
