@@ -67,11 +67,6 @@ func (l *Leader) DecomposeFull(goal string, workdir string, timeout time.Duratio
 	return l.planner.DecomposeFull(goal, workdir, timeout, model...)
 }
 
-// DecomposeTask delegates to Planner.
-func (l *Leader) DecomposeTask(task *Task, workdir string, timeout time.Duration, model ...string) ([]PlanTask, error) {
-	return l.planner.DecomposeTask(task, workdir, timeout, model...)
-}
-
 // ReviewCycle delegates to Reviewer.
 func (l *Leader) ReviewCycle(goal string, report *CycleReport, workdir string, timeout time.Duration, model ...string) (*CycleReview, error) {
 	return l.reviewer.ReviewCycle(goal, report, workdir, timeout, model...)

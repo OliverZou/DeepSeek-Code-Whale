@@ -382,26 +382,6 @@ func stripVerifierFeedback(desc string) string {
 	return desc
 }
 
-// DecomposeTask re-decomposes a single task that exhausted retries into smaller subtasks.
-func (p *Planner) DecomposeTask(task *Task, workdir string, timeout time.Duration, model ...string) ([]PlanTask, error) {
-	// Strip accumulated verifier feedback to keep the prompt lean.
-	cleanDesc := stripVerifierFeedback(task.Description)
-	prompt := fmt.Sprintf(`任务因过大而耗尽重试次数。拆成 2-3 个更小的子任务，
-每个一个具体产出，≤150 行。
-
-失败任务：%s（角色：%s）
-描述：%s
-最后反馈：%s
-
-输出纯 JSON 数组，无 markdown：
-[
-  {"title":"…","description":"…","role":"%s","batch_id":"%s","depends_on_batch":[],"verifier_focus":"%s","max_cycles":1}
-]`, task.Title, task.Role, cleanDesc, task.VerifierFeedback, task.Role, task.BatchID, task.VerifierFocus)
-
-	tasks, _, err := p.decomposeInternal(prompt, workdir, timeout, model...)
-	return tasks, err
-}
-
 // ConsensusDecompose runs decomposition with two models in parallel and
 // uses a third model (or the first) to select the best plan.
 func (p *Planner) ConsensusDecompose(goal, workdir string, timeout time.Duration, models []string) ([]PlanTask, string, error) {
