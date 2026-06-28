@@ -76,9 +76,10 @@ func teamEngineSpawnAdapter(runner *tasks.Runner, library *tasks.AgentDefinition
 		resp, err := runner.SpawnSubagent(ctx, tasksReq)
 		if err != nil {
 			return team_engine.SubagentResponse{
-				Output:   "",
-				ExitCode: -1,
-				Success:  false,
+				SessionID: resp.SessionID,
+				Output:    "",
+				ExitCode:  -1,
+				Success:   false,
 			}, fmt.Errorf("spawn subagent: %w", err)
 		}
 
@@ -98,6 +99,7 @@ func teamEngineSpawnAdapter(runner *tasks.Runner, library *tasks.AgentDefinition
 		}
 
 		return team_engine.SubagentResponse{
+			SessionID:       resp.SessionID,
 			SpawnerType:     "adapter",
 			Output:          resp.Summary,
 			Structured:      resp.StructuredResult,

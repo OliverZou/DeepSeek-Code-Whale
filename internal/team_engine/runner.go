@@ -51,6 +51,7 @@ func supportsStructuredOutput(model string) bool {
 
 // RunResult captures the outcome of a single agent run.
 type RunResult struct {
+	SessionID       string         `json:"session_id,omitempty"` // subagent session ID for traceability
 	ExitCode        int            `json:"exit_code"`
 	Stdout          string         `json:"stdout"`
 	Stderr          string         `json:"stderr"`
@@ -104,6 +105,7 @@ type SubagentRequest struct {
 
 // SubagentResponse contains the result of a subagent execution.
 type SubagentResponse struct {
+	SessionID       string         // Whale subagent session ID (empty for shell spawner)
 	SpawnerType     string         // "adapter" or "shell" — which spawner was used
 	Output          string         // Full agent output
 	Structured      any            // Structured output (when OutputSchema was set)
@@ -202,6 +204,7 @@ func (ar *AgentRunner) RunWithContext(ctx context.Context, prompt, workdir, tool
 
 	if err != nil {
 		return &RunResult{
+			SessionID:       resp.SessionID,
 			ExitCode:        -1,
 			Stdout:          "",
 			Stderr:          fmt.Sprintf("subagent error: %v", err),
@@ -212,6 +215,7 @@ func (ar *AgentRunner) RunWithContext(ctx context.Context, prompt, workdir, tool
 	}
 
 	return &RunResult{
+		SessionID:       resp.SessionID,
 		ExitCode:        resp.ExitCode,
 		Stdout:          resp.Output,
 		SpawnerType:     resp.SpawnerType,
@@ -264,6 +268,7 @@ func (ar *AgentRunner) RunVerifier(prompt, workdir string, timeout time.Duration
 
 	if err != nil {
 		return &RunResult{
+			SessionID:       resp.SessionID,
 			ExitCode:        -1,
 			Stdout:          "",
 			Stderr:          fmt.Sprintf("verifier subagent error: %v", err),
@@ -274,6 +279,7 @@ func (ar *AgentRunner) RunVerifier(prompt, workdir string, timeout time.Duration
 	}
 
 	return &RunResult{
+		SessionID:       resp.SessionID,
 		ExitCode:        resp.ExitCode,
 		Stdout:          resp.Output,
 		SpawnerType:     resp.SpawnerType,
@@ -350,6 +356,7 @@ func (ar *AgentRunner) RunDecomposer(prompt, workdir string, timeout time.Durati
 
 	if err != nil {
 		return &RunResult{
+			SessionID:       resp.SessionID,
 			ExitCode:        -1,
 			Stdout:          "",
 			Stderr:          fmt.Sprintf("decomposer subagent error: %v", err),
@@ -360,6 +367,7 @@ func (ar *AgentRunner) RunDecomposer(prompt, workdir string, timeout time.Durati
 	}
 
 	return &RunResult{
+		SessionID:       resp.SessionID,
 		ExitCode:        resp.ExitCode,
 		Stdout:          resp.Output,
 		SpawnerType:     resp.SpawnerType,
@@ -413,6 +421,7 @@ func (ar *AgentRunner) RunElaborationStep(prompt, workdir string, timeout time.D
 
 	if err != nil {
 		return &RunResult{
+			SessionID:       resp.SessionID,
 			ExitCode:        -1,
 			Stdout:          "",
 			Stderr:          fmt.Sprintf("elaboration subagent error: %v", err),
@@ -423,6 +432,7 @@ func (ar *AgentRunner) RunElaborationStep(prompt, workdir string, timeout time.D
 	}
 
 	return &RunResult{
+		SessionID:       resp.SessionID,
 		ExitCode:        resp.ExitCode,
 		Stdout:          resp.Output,
 		SpawnerType:     resp.SpawnerType,

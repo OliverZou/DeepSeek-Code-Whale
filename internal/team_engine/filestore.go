@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -442,6 +443,10 @@ func (fs *FileTaskStore) UpdateTask(id string, fields map[string]interface{}) er
 			t.RetryCount = int(n)
 		}
 	}
+	// session_id: persistence-only field (not on Task struct).
+	if v, ok := fields["session_id"]; ok {
+		meta.SessionID = fmt.Sprint(v)
+	}
 	return fs.writeMeta(dir, meta)
 }
 
@@ -533,7 +538,89 @@ func (fs *FileTaskStore) DeleteTask(id string) error {
 func (fs *FileTaskStore) Close() error                             { return nil }
 func (fs *FileTaskStore) Checkpoint() error                        { return nil }
 func (fs *FileTaskStore) checkpointAfterWrite()                     {}
-func (fs *FileTaskStore) GetTaskHistory(_ string) ([]StateHistoryEntry, error) { return nil, nil }
+
+// GetTaskHistory reconstructs the state-transition timeline from file
+// modification times.  Each milestone file (input.md, output.md, verify.md,
+// error.md, suspended.md, confirmation.md) is mapped to the corresponding
+// state, sorted by mtime, and returned as an ordered history.
+func (fs *FileTaskStore) GetTaskHistory(taskID string) ([]StateHistoryEntry, error) {
+	dir := fs.findTaskDir(taskID)
+	if dir == "" {
+		return nil, fmt.Errorf("task %q not found", taskID)
+	}
+
+	type fileEvent struct {
+		file  string
+		mtime time.Time
+		state TaskState
+	}
+
+	var events []fileEvent
+
+	// Milestone files => state mapping.
+	addEvent := func(filename string, state TaskState) {
+		if fi, err := os.Stat(filepath.Join(dir, filename)); err == nil {
+			events = append(events, fileEvent{filename, fi.ModTime(), state})
+		}
+	}
+
+	addEvent("input.md", TaskStateAssigned)
+	addEvent("output.md", TaskStateProduced)
+	addEvent("verify.md", TaskStateVerified)
+	addEvent("verifier.md", TaskStateVerified) // alias
+	addEvent("error.md", TaskStateFailed)
+	addEvent("suspended.md", TaskStateSuspended)
+	addEvent("confirmation.md", TaskStatePendingConfirmation)
+
+	if len(events) == 0 {
+		return nil, nil
+	}
+
+	sort.Slice(events, func(i, j int) bool {
+		return events[i].mtime.Before(events[j].mtime)
+	})
+
+	// Read meta.json for the creation timestamp.
+	var createdAt string
+	if meta, err := fs.readMeta(dir); err == nil && meta != nil {
+		createdAt = meta.CreatedAt
+	}
+
+	history := []StateHistoryEntry{
+		{
+			TaskID:    taskID,
+			OldState:  "",
+			NewState:  string(TaskStatePending),
+			Reason:    "task created",
+			ChangedAt: createdAt,
+			Timestamp: createdAt,
+		},
+	}
+
+	prevState := string(TaskStateAssigned)
+	for _, evt := range events {
+		entry := StateHistoryEntry{
+			TaskID:    taskID,
+			OldState:  prevState,
+			NewState:  string(evt.state),
+			ChangedAt: evt.mtime.Format(time.RFC3339),
+			Timestamp: evt.mtime.Format(time.RFC3339),
+		}
+		// Derive transition reason from the file name.
+		switch evt.file {
+		case "error.md":
+			entry.Reason = "task failed"
+		case "suspended.md":
+			entry.Reason = "task suspended"
+		case "confirmation.md":
+			entry.Reason = "pending confirmation"
+		}
+		history = append(history, entry)
+		prevState = string(evt.state)
+	}
+
+	return history, nil
+}
 
 // UpdateMasterTaskStatus updates the master task status in memory.
 func (fs *FileTaskStore) UpdateMasterTaskStatus(id, status string) error {
@@ -549,12 +636,36 @@ func (fs *FileTaskStore) UpdateMasterTaskStatus(id, status string) error {
 // memory
 // ---------------------------------------------------------------------------
 
+const maxMemoriesPerRole = 50
+
 func (fs *FileTaskStore) SaveMemory(memory *MemoryEntry) error {
 	memDir := filepath.Join(fs.baseDir, "memory")
 	os.MkdirAll(memDir, 0755)
 	data, _ := json.Marshal(memory)
 	name := fmt.Sprintf("%s_%s_%d.json", memory.AgentRole, memory.Key, time.Now().UnixNano())
-	return os.WriteFile(filepath.Join(memDir, name), data, 0644)
+	if err := os.WriteFile(filepath.Join(memDir, name), data, 0644); err != nil {
+		return err
+	}
+
+	// Eviction: keep at most maxMemoriesPerRole entries per role.
+	entries, _ := os.ReadDir(memDir)
+	prefix := memory.AgentRole + "_"
+	var roleEntries []os.DirEntry
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), prefix) && strings.HasSuffix(e.Name(), ".json") {
+			roleEntries = append(roleEntries, e)
+		}
+	}
+	if len(roleEntries) > maxMemoriesPerRole {
+		// Sort by name (contains timestamp), oldest first.
+		sort.Slice(roleEntries, func(i, j int) bool {
+			return roleEntries[i].Name() < roleEntries[j].Name()
+		})
+		for _, e := range roleEntries[:len(roleEntries)-maxMemoriesPerRole] {
+			os.Remove(filepath.Join(memDir, e.Name()))
+		}
+	}
+	return nil
 }
 
 func (fs *FileTaskStore) GetMemories(role AgentRole, key string) ([]MemoryEntry, error) {
@@ -575,4 +686,63 @@ func (fs *FileTaskStore) GetMemories(role AgentRole, key string) ([]MemoryEntry,
 		}
 	}
 	return memories, nil
+}
+
+// HasMemory checks whether a memory with the same role, key, and content
+// already exists.  Used to avoid saving duplicate lessons.
+func (fs *FileTaskStore) HasMemory(role AgentRole, key, content string) bool {
+	existing, _ := fs.GetMemories(role, key)
+	for _, m := range existing {
+		if m.Content == content {
+			return true
+		}
+	}
+	return false
+}
+
+// GetRecentMemories returns the most recent N memories for a role,
+// sorted by CreatedAt descending (newest first).  When limit is 0,
+// all memories are returned.
+func (fs *FileTaskStore) GetRecentMemories(role AgentRole, limit int) ([]MemoryEntry, error) {
+	memDir := filepath.Join(fs.baseDir, "memory")
+	entries, err := os.ReadDir(memDir)
+	if err != nil {
+		return nil, nil
+	}
+	var memories []MemoryEntry
+	prefix := string(role) + "_"
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), prefix) && strings.HasSuffix(e.Name(), ".json") {
+			data, _ := os.ReadFile(filepath.Join(memDir, e.Name()))
+			var mem MemoryEntry
+			if json.Unmarshal(data, &mem) == nil {
+				memories = append(memories, mem)
+			}
+		}
+	}
+	sort.Slice(memories, func(i, j int) bool {
+		return memories[i].CreatedAt > memories[j].CreatedAt
+	})
+	if limit > 0 && len(memories) > limit {
+		memories = memories[:limit]
+	}
+	return memories, nil
+}
+
+// MemoryStats returns a count of memories per role.
+func (fs *FileTaskStore) MemoryStats() map[string]int {
+	memDir := filepath.Join(fs.baseDir, "memory")
+	entries, _ := os.ReadDir(memDir)
+	stats := make(map[string]int)
+	for _, e := range entries {
+		if !strings.HasSuffix(e.Name(), ".json") {
+			continue
+		}
+		// filename format: {role}_{key}_{timestamp}.json
+		parts := strings.SplitN(e.Name(), "_", 3)
+		if len(parts) >= 1 {
+			stats[parts[0]]++
+		}
+	}
+	return stats
 }

@@ -210,6 +210,12 @@ func NewShellSubagentSpawner() *ShellSubagentSpawner {
 	return &ShellSubagentSpawner{}
 }
 
+// shellSessionID generates a synthetic session identifier for shell-spawned
+// subprocesses.  Format: "shell-<pid>-<nanotime>".
+func shellSessionID(pid int) string {
+	return fmt.Sprintf("shell-%d-%d", pid, time.Now().UnixNano())
+}
+
 func (s *ShellSubagentSpawner) SpawnSubagent(ctx context.Context, req SubagentRequest) (SubagentResponse, error) {
 	whaleBin := s.whaleBin
 	if whaleBin == "" {
@@ -250,7 +256,7 @@ func (s *ShellSubagentSpawner) SpawnSubagent(ctx context.Context, req SubagentRe
 
 		stdinPipe, err := cmd.StdinPipe()
 	if err != nil {
-		return SubagentResponse{SpawnerType: "shell", Diagnostic: "stdin pipe error", ExitCode: -1, Success: false}, nil
+		return SubagentResponse{SessionID: shellSessionID(0), SpawnerType: "shell", Diagnostic: "stdin pipe error", ExitCode: -1, Success: false}, nil
 	}
 
 	var stdout, stderr bytes.Buffer
@@ -258,7 +264,7 @@ func (s *ShellSubagentSpawner) SpawnSubagent(ctx context.Context, req SubagentRe
 	cmd.Stderr = &stderr
 
 	if err := cmd.Start(); err != nil {
-		return SubagentResponse{SpawnerType: "shell", Diagnostic: fmt.Sprintf("start error: %v", err), ExitCode: -1, Success: false}, nil
+		return SubagentResponse{SessionID: shellSessionID(0), SpawnerType: "shell", Diagnostic: fmt.Sprintf("start error: %v", err), ExitCode: -1, Success: false}, nil
 	}
 	pid := cmd.Process.Pid
 	if req.OnPID != nil {
@@ -299,13 +305,13 @@ func (s *ShellSubagentSpawner) SpawnSubagent(ctx context.Context, req SubagentRe
 			} else {
 				exitCode = -1
 			}
-			return SubagentResponse{SpawnerType: "shell", Output: stdout.String(), Diagnostic: stderr.String(), ExitCode: exitCode, Success: false, PID: pid}, nil
+			return SubagentResponse{SessionID: shellSessionID(pid), SpawnerType: "shell", Output: stdout.String(), Diagnostic: stderr.String(), ExitCode: exitCode, Success: false, PID: pid}, nil
 		}
-		return SubagentResponse{SpawnerType: "shell", Output: stdout.String(), Diagnostic: stderr.String(), ExitCode: 0, Success: true, PID: pid}, nil
+		return SubagentResponse{SessionID: shellSessionID(pid), SpawnerType: "shell", Output: stdout.String(), Diagnostic: stderr.String(), ExitCode: 0, Success: true, PID: pid}, nil
 
 	case <-ctx.Done():
 		cmd.Process.Kill()
-		return SubagentResponse{Output: stdout.String(), Diagnostic: stderr.String(), ExitCode: -2, Success: false, PID: pid}, ctx.Err()
+		return SubagentResponse{SessionID: shellSessionID(pid), Output: stdout.String(), Diagnostic: stderr.String(), ExitCode: -2, Success: false, PID: pid}, ctx.Err()
 	}
 }
 
@@ -378,14 +384,14 @@ func (s *ShellSubagentSpawner) SpawnPersistent(ctx context.Context, req Subagent
 
 		stdinPipe, err := cmd.StdinPipe()
 	if err != nil {
-		r := SubagentResponse{SpawnerType: "shell", ExitCode: -1, Success: false}
+		r := SubagentResponse{SessionID: shellSessionID(0), SpawnerType: "shell", ExitCode: -1, Success: false}
 		return nil, &r
 	}
 
 	stdoutPipe, err := cmd.StdoutPipe()
 	if err != nil {
 		stdinPipe.Close()
-		r := SubagentResponse{SpawnerType: "shell", ExitCode: -1, Success: false}
+		r := SubagentResponse{SessionID: shellSessionID(0), SpawnerType: "shell", ExitCode: -1, Success: false}
 		return nil, &r
 	}
 
@@ -393,7 +399,7 @@ func (s *ShellSubagentSpawner) SpawnPersistent(ctx context.Context, req Subagent
 	cmd.Stderr = &sessionStderr
 
 	if err := cmd.Start(); err != nil {
-		r := SubagentResponse{SpawnerType: "shell", ExitCode: -1, Success: false}
+		r := SubagentResponse{SessionID: shellSessionID(0), SpawnerType: "shell", ExitCode: -1, Success: false}
 		return nil, &r
 	}
 
@@ -457,7 +463,7 @@ func (ps *PersistentSession) sendAndReceive(prompt string) *SubagentResponse {
 	// Write prompt + EOP.
 	_, err := io.WriteString(ps.stdin, prompt+whaleEOP)
 	if err != nil {
-		return &SubagentResponse{SpawnerType: "shell", ExitCode: -1, Success: false}
+		return &SubagentResponse{SessionID: shellSessionID(ps.pid), SpawnerType: "shell", ExitCode: -1, Success: false}
 	}
 
 	// Read until EOT.
@@ -471,7 +477,9 @@ func (ps *PersistentSession) sendAndReceive(prompt string) *SubagentResponse {
 	}
 	output := strings.Join(lines, "\n")
 
+	// Re-generate session ID per call to distinguish retry attempts.
 	return &SubagentResponse{
+		SessionID:   shellSessionID(ps.pid),
 		SpawnerType: "shell",
 		Output:      output,
 		ExitCode:    0,
@@ -505,7 +513,8 @@ type SpawnOptions struct {
 
 // SpawnResult is the structured result from a subagent spawn.
 type SpawnResult struct {
-	Output          string // Full agent output text
+	SessionID       string         `json:"session_id,omitempty"` // subagent session ID
+	Output          string         // Full agent output text
 	Structured      map[string]any // Structured output (if OutputSchema was set)
 	Success         bool
 	ToolCalls       []string // Tools that were actually called
@@ -553,16 +562,18 @@ func (s *WhaleNativeSpawner) SpawnSubagent(ctx context.Context, req SubagentRequ
 	result, err := s.spawn(ctx, req.Task, opts)
 	if err != nil {
 		return SubagentResponse{
-			Output:   result.Output,
-			ExitCode: -1,
-			Success:  false,
+			SessionID: result.SessionID,
+			Output:    result.Output,
+			ExitCode:  -1,
+			Success:   false,
 		}, nil
 	}
 
 	return SubagentResponse{
-		Output:   result.Output,
-		ExitCode: 0,
-		Success:  result.Success,
+		SessionID: result.SessionID,
+		Output:    result.Output,
+		ExitCode:  0,
+		Success:   result.Success,
 	}, nil
 }
 
@@ -578,7 +589,8 @@ type RunnerSpawner interface {
 	// SpawnSubagentWithProgress spawns a child agent session with full
 	// context isolation.  The `progress` callback receives real-time
 	// tool execution events.
-	SpawnSubagentWithProgress(ctx context.Context, task string, tools []string, maxIters, maxCalls int, outputSchema map[string]any, progress func(status, summary, toolName string)) (string, map[string]any, error)
+	// Returns: output text, structured result, session ID, error.
+	SpawnSubagentWithProgress(ctx context.Context, task string, tools []string, maxIters, maxCalls int, outputSchema map[string]any, progress func(status, summary, toolName string)) (string, map[string]any, string, error)
 }
 
 // NewWhaleSpawnAdapter creates a SpawnSubagentFunc from a RunnerSpawner.
@@ -601,7 +613,7 @@ func NewWhaleSpawnAdapter(runner RunnerSpawner) SpawnSubagentFunc {
 			}
 		}
 
-		output, structured, err := runner.SpawnSubagentWithProgress(
+		output, structured, sessionID, err := runner.SpawnSubagentWithProgress(
 			ctx,
 			task,
 			opts.Tools,
@@ -612,12 +624,14 @@ func NewWhaleSpawnAdapter(runner RunnerSpawner) SpawnSubagentFunc {
 		)
 		if err != nil {
 			return SpawnResult{
+				SessionID:  sessionID,
 				Output:     output,
 				Structured: structured,
 				Success:    false,
 			}, err
 		}
 		return SpawnResult{
+			SessionID:  sessionID,
 			Output:     output,
 			Structured: structured,
 			Success:    true,

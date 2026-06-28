@@ -1192,6 +1192,7 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 				e.persistentSessions[workerKey] = ws
 			}
 			result = &RunResult{
+				SessionID:       resp.SessionID,
 				ExitCode:        resp.ExitCode,
 				Stdout:          resp.Output,
 				Stderr:          resp.Diagnostic,
@@ -1232,6 +1233,11 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 			}
 		}
 		if defaultTeamLog != nil { defaultTeamLog.WorkerDone(task.ID, result.DurationSeconds, result.ExitCode, len(result.Stdout), result.Success) }
+
+		// Persist subagent session ID for traceability.
+		if result.SessionID != "" {
+			_ = e.Store.UpdateTask(task.ID, map[string]interface{}{"session_id": result.SessionID})
+		}
 
 		// Self-split: only top-level tasks (no parents) can split.
 		// Children must complete without further splitting.
@@ -2871,6 +2877,7 @@ func (e *TeamEngine) recordLesson(role AgentRole, title, lesson string) {
 	if e.Store == nil {
 		return
 	}
+	// Keep markdown for backward compatibility.
 	line := fmt.Sprintf("- %s: %s — %s\n", time.Now().UTC().Format("2006-01-02"), title, lesson)
 	memDir := filepath.Join(e.Store.baseDir, "memory")
 	os.MkdirAll(memDir, 0755)
@@ -2881,29 +2888,45 @@ func (e *TeamEngine) recordLesson(role AgentRole, title, lesson string) {
 	}
 	defer f.Close()
 	f.WriteString(line)
+
+	// Also write structured JSON with dedup.
+	lesson = truncateLesson(lesson, 200)
+	if !e.Store.HasMemory(role, title, lesson) {
+		mem := &MemoryEntry{
+			ID:         uuid.New().String(),
+			AgentRole:  string(role),
+			Key:        title,
+			Content:    lesson,
+			SourceTask: "",
+			CreatedAt:  time.Now().UTC().Format(time.RFC3339),
+		}
+		_ = e.Store.SaveMemory(mem)
+	}
 }
 
 // BuildMemoryContext reads the role's historical lessons and injects them
 // into the agent's inbox so it learns from past successes and failures.
+// When key is non-empty, returns memories matching that key.  Otherwise
+// returns the 10 most recent memories for the role.
 func (e *TeamEngine) BuildMemoryContext(role AgentRole, key string) (string, error) {
 	if e.Store == nil {
 		return "", nil
 	}
-	path := filepath.Join(e.Store.baseDir, "memory", string(role)+".md")
-	data, err := os.ReadFile(path)
-	if err != nil || len(data) == 0 {
-		return "", nil
+	var memories []MemoryEntry
+	var err error
+	if key != "" {
+		memories, err = e.Store.GetMemories(role, key)
+	} else {
+		memories, err = e.Store.GetRecentMemories(role, 10)
 	}
-	// Only include last 10 lessons to avoid bloat.
-	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
-	if len(lines) > 10 {
-		lines = lines[len(lines)-10:]
+	if err != nil || len(memories) == 0 {
+		return "", nil
 	}
 	var b strings.Builder
 	b.WriteString("\n\n## 🧠 历史经验（同角色）\n")
 	b.WriteString("以下是本角色在过去任务中的关键教训：\n\n")
-	for _, line := range lines {
-		b.WriteString(line + "\n")
+	for _, m := range memories {
+		b.WriteString(fmt.Sprintf("- %s: %s\n", m.CreatedAt[:10], m.Content))
 	}
 	b.WriteString("\n参考这些经验，避免重复错误。\n")
 	return b.String(), nil
@@ -2966,6 +2989,11 @@ func (e *TeamEngine) ExportTaskLog(taskID string) (map[string]interface{}, error
 	// Board + deliverable paths.
 	result["board_path"] = e.Whiteboard.BoardPath()
 	result["deliverable_path"] = e.Whiteboard.DeliverablePath()
+
+	// Session ID — read from meta.json (persistence-only field).
+	if meta, err := e.Store.readMeta(e.Store.taskDir(taskID)); err == nil && meta.SessionID != "" {
+		result["session_id"] = meta.SessionID
+	}
 
 	return result, nil
 }
