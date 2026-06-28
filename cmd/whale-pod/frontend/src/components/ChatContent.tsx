@@ -1,3 +1,4 @@
+import { memo } from 'react';
 import MarkdownMessage from './MarkdownMessage';
 import ToolCallCard from './ToolCallCard';
 import { parseToolCalls } from './toolCallParser';
@@ -12,7 +13,7 @@ interface ChatContentProps {
  * command executions, or file reads are rendered as interactive cards;
  * everything else goes through standard markdown rendering.
  */
-export default function ChatContent({ content }: ChatContentProps) {
+const ChatContent = memo(function ChatContent({ content }: ChatContentProps) {
   const segments = parseToolCalls(content);
 
   // If no tool calls found, fall back to pure markdown
@@ -34,4 +35,6 @@ export default function ChatContent({ content }: ChatContentProps) {
       })}
     </div>
   );
-}
+});
+
+export default ChatContent;

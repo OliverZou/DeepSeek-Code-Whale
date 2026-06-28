@@ -1,10 +1,10 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, memo, useCallback } from 'react';
 import { useStore } from '../store';
 import { api } from '../wails';
 import ChatContent from './ChatContent';
 
 export default function DirectChatView() {
-  const { directMessages, directChatTaskId, sendDirectChat, selMasterTaskId, selAgentId, summonedItems, startDirectChat, masterTasks, isStreaming, streamingContent, streamingThinking, abortStreaming, regenerateLast, deleteMessage } = useStore();
+  const { directMessages, directChatTaskId, sendDirectChat, selMasterTaskId, selAgentId, summonedItems, startDirectChat, masterTasks, isStreaming, streamingContent, streamingThinking, abortStreaming, regenerateLast, deleteMessage, chatVersion } = useStore();
   const [input, setInput] = useState('');
   const [focused, setFocused] = useState(false);
   const [sending, setSending] = useState(false);
@@ -103,7 +103,7 @@ export default function DirectChatView() {
             {isNewChat ? `向 ${agentLabel} 发起对话` : '开始新对话'}
           </div>
         )}
-        {directMessages.map((m, i) => (
+        {directMessages.filter(m => m.from === 'human' || m.content || m.thinking).map((m, i) => (
           <div
             key={i}
             onMouseEnter={() => setHoveredMsg(i)}
@@ -229,6 +229,7 @@ export default function DirectChatView() {
                 {m.thinking}
               </div>
             )}
+            {m.content && (
             <div
               className={`chat-md ${m.from}`}
               style={{
@@ -244,6 +245,7 @@ export default function DirectChatView() {
             >
               <ChatContent content={m.content} />
             </div>
+            )}
           </div>
         ))}
         {sending && !isStreaming && (

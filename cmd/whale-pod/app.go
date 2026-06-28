@@ -928,7 +928,7 @@ func (a *App) directChatSession(sessionID, message string, deepThink bool) strin
 	var history []chatMsg
 	for _, m := range msgs {
 		from := "human"
-		if m.Role == core.RoleAssistant {
+		if m.Role == core.RoleAssistant || m.Role == core.RoleTool {
 			from = "agent"
 		}
 		history = append(history, chatMsg{From: from, Content: core.MessagePlainText(m)})
@@ -1000,11 +1000,9 @@ func (a *App) StreamChat(sessionID, message string, deepThink bool) string {
 		return ""
 	}
 
-	// Try session store for any session that has a JSONL file on disk.
-	sessionFile := filepath.Join(a.sessionsDir, sessionID+".jsonl")
-	if _, statErr := os.Stat(sessionFile); statErr != nil || a.sessionStore == nil {
+	// Always use streaming path — create JSONL session if needed
+	if a.sessionStore == nil {
 		resultJSON := a.directChatLegacy(sessionID, message, deepThink)
-		// Emit chat-chunk events so frontend streaming state resolves properly.
 		var result DirectChatResult
 		if json.Unmarshal([]byte(resultJSON), &result) == nil {
 			if result.Thinking != "" {
@@ -1052,7 +1050,7 @@ func (a *App) StreamChat(sessionID, message string, deepThink bool) string {
 		var history []chatMsg
 		for _, m := range msgs {
 			from := "human"
-			if m.Role == core.RoleAssistant {
+			if m.Role == core.RoleAssistant || m.Role == core.RoleTool {
 				from = "agent"
 			}
 			history = append(history, chatMsg{From: from, Content: core.MessagePlainText(m)})
@@ -2142,7 +2140,7 @@ func (a *App) GetChatMessages(taskID string) []pod.ChatMessageJSON {
 			result := make([]pod.ChatMessageJSON, 0, len(msgs))
 			for _, m := range msgs {
 				from := "human"
-				if m.Role == core.RoleAssistant {
+				if m.Role == core.RoleAssistant || m.Role == core.RoleTool {
 					from = "agent"
 				}
 				result = append(result, pod.ChatMessageJSON{

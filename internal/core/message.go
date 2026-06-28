@@ -116,10 +116,46 @@ func NormalizeMessageContent(msg Message) Message {
 }
 
 func MessagePlainText(msg Message) string {
-	if len(msg.Parts) == 0 {
-		return msg.Text
+	text := msg.Text
+	if len(msg.Parts) > 0 {
+		text = MessagePartsPlainText(msg.Parts)
 	}
-	return MessagePartsPlainText(msg.Parts)
+	// Tool messages carry results in ToolResults, not Text.
+	if msg.Role == RoleTool && text == "" && len(msg.ToolResults) > 0 {
+		text = FormatToolResults(msg.ToolResults)
+	}
+	return text
+}
+
+// FormatToolResults formats tool results as human-readable text for display.
+func FormatToolResults(results []ToolResult) string {
+	if len(results) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	for i, r := range results {
+		if i > 0 {
+			b.WriteString("\n")
+		}
+		icon := "✅"
+		if r.IsError() {
+			icon = "❌"
+		}
+		b.WriteString(icon)
+		b.WriteString(" ")
+		b.WriteString(r.Name)
+		if r.ModelText != "" {
+			b.WriteString(": ")
+			// Truncate long model text for display
+			if len(r.ModelText) > 500 {
+				b.WriteString(r.ModelText[:500])
+				b.WriteString("…")
+			} else {
+				b.WriteString(r.ModelText)
+			}
+		}
+	}
+	return b.String()
 }
 
 func MessagePartsPlainText(parts []MessagePart) string {

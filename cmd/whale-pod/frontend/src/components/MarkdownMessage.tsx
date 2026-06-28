@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, memo } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
@@ -131,7 +131,7 @@ interface MarkdownMessageProps {
   content: string;
 }
 
-export default function MarkdownMessage({ content }: MarkdownMessageProps) {
+export default memo(function MarkdownMessage({ content }: MarkdownMessageProps) {
   return (
     <ReactMarkdown
       remarkPlugins={[remarkGfm]}
@@ -252,4 +252,4 @@ export default function MarkdownMessage({ content }: MarkdownMessageProps) {
       {content}
     </ReactMarkdown>
   );
-}
+});

@@ -84,6 +84,7 @@ interface PodState {
   isStreaming: boolean;
   streamingContent: string;
   streamingThinking: string;
+  chatVersion: number;
   abortStreaming: () => void;
 
   init: () => Promise<void>;
@@ -153,6 +154,7 @@ export const useStore = create<PodState>((set, get) => ({
   isStreaming: false,
   streamingContent: '',
   streamingThinking: '',
+  chatVersion: 0,
 
   init: async () => {
     // Guard against double-init (StrictMode / HMR / multiple calls)
@@ -215,8 +217,19 @@ export const useStore = create<PodState>((set, get) => ({
       activeFunction: null,
       directChatTaskId: task && task.task_count === 0 ? id : get().directChatTaskId,
     });
-    // Direct chat task: skip subtask loading
+    // Direct chat task: load messages from history
     if (task && task.task_count === 0) {
+      const msgs = await api.getChatMessages(id);
+      if (msgs && msgs.length > 0) {
+        const displayMsgs: ChatMessage[] = msgs.map(m => ({
+          from: m.from === 'agent' ? 'agent' : 'human',
+          content: m.content,
+          time: m.time || '',
+          thinking: m.thinking || undefined,
+          durationMs: m.durationMs != null ? m.durationMs : undefined,
+        }));
+        set({ directMessages: displayMsgs, chatVersion: get().chatVersion + 1 });
+      }
       return;
     }
     await get().loadSubtasks(id);
@@ -272,9 +285,8 @@ export const useStore = create<PodState>((set, get) => ({
     const taskId = get().directChatTaskId;
     if (!taskId) return;
     // Add user message immediately
-    set(s => ({ directMessages: [...s.directMessages, { from: 'human', content: message, time: '' }] }));
-    // Start streaming — reset done guard so new chunks are not ignored
-    (get() as any)[`_stream_done_${taskId}`] = false;
+    set(s => ({ directMessages: [...s.directMessages, { from: 'human', content: message, time: '' }], chatVersion: s.chatVersion + 1 }));
+    // Start streaming for the initial AI reply
     (get() as any)._streamStart = Date.now();
     set({ isStreaming: true, streamingContent: '', streamingThinking: '' });
     await api.streamChat(taskId, message, deepThink);
@@ -290,27 +302,26 @@ export const useStore = create<PodState>((set, get) => ({
     const { directChatTaskId, isStreaming, directMessages } = get();
     if (chunk.sessionId !== directChatTaskId) return;
 
-    // Guard: ignore chunks after stream has been finalized for this session
-    const doneKey = `_stream_done_${chunk.sessionId}`;
-    if ((get() as any)[doneKey]) return;
+    // Guard: ignore chunks when not streaming (stream already finalized)
+    if (!get().isStreaming) return;
 
     if (chunk.error === 'cancelled') {
       set({ isStreaming: false });
-      (get() as any)[doneKey] = true;
       get().loadMasterTasks();
       return;
     }
 
     if (chunk.done) {
-      (get() as any)[doneKey] = true;
-      // Streaming complete — add final agent message to directMessages
+      // Use setTimeout to ensure React processes this state update
+      setTimeout(() => {
       const { streamingContent, streamingThinking } = get();
       if (streamingContent || streamingThinking) {
         const start = (get() as any)._streamStart || Date.now();
         const durationMs = Date.now() - start;
+        const displayContent = streamingContent || (streamingThinking ? '[仅含思考内容]' : '');
         const agentMsg: ChatMessage = {
           from: 'agent',
-          content: streamingContent,
+          content: displayContent,
           time: '',
           thinking: streamingThinking || undefined,
           durationMs,
@@ -320,12 +331,14 @@ export const useStore = create<PodState>((set, get) => ({
           isStreaming: false,
           streamingContent: '',
           streamingThinking: '',
+          chatVersion: s.chatVersion + 1,
         }));
       } else {
         set({ isStreaming: false });
       }
       // Reload session list to update preview
       setTimeout(() => get().loadMasterTasks(), 300);
+      }, 0);
       return;
     }
 
