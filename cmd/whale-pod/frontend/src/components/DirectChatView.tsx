@@ -129,7 +129,7 @@ export default function DirectChatView() {
                     }}>{agentLabel[0]}</div>
                   )}
                   {agentLabel}
-                  {m.durationMs != null && (
+                  {(m.durationMs != null || m.thinking) && (
                     <span
                       onClick={() => {
                         if (!m.thinking) return;
@@ -146,7 +146,7 @@ export default function DirectChatView() {
                       }}
                     >
                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: 1 }}>
-                        思考 {(m.durationMs / 1000).toFixed(1)}s
+                        思考{m.durationMs != null ? ` ${(m.durationMs / 1000).toFixed(1)}s` : ''}
                       </span>
                       {m.thinking && (
                         <svg width="8" height="5" viewBox="0 0 8 5" style={{

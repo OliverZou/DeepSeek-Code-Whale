@@ -91,6 +91,8 @@ export function StartWindowDrag():Promise<void>;
 
 export function StreamChat(arg1:string,arg2:string,arg3:boolean):Promise<string>;
 
+export function SyncSessionIfCurrent(arg1:string):Promise<Array<pod.ChatMessageJSON>>;
+
 export function TestConnection(arg1:string):Promise<string>;
 
 export function WindowClose():Promise<void>;

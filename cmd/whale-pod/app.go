@@ -25,6 +25,7 @@ import (
 	"github.com/usewhale/whale/internal/store"
 	"github.com/usewhale/whale/internal/tasks"
 	teamlog "github.com/usewhale/whale/internal/team_engine/log"
+	"github.com/fsnotify/fsnotify"
 	"github.com/usewhale/whale/internal/team_engine"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
@@ -107,6 +108,7 @@ func (a *App) startup(ctx context.Context) {
 	pod.Log("startup", "whale-pod workDir=%s teamsDir=%s expertsDir=%s sessionsDir=%s", a.workDir, a.teamsDir, a.expertsDir, a.sessionsDir)
 	a.openEngine()
 	a.initMCP()
+	a.startSessionWatcher()
 }
 
 func (a *App) openEngine() {
@@ -591,6 +593,7 @@ func (a *App) StartTask(goal, teamName, workDir string) string {
 		pod.Log("task", "done: batches=%d err=%v", len(batches), err)
 		eng.CompleteMasterTask(mt.ID)
 		runtime.EventsEmit(a.ctx, "update", a.GetMasterTasks())
+		runtime.EventsEmit(a.ctx, "session-update", sessionID)
 	}()
 
 	return ""
@@ -674,6 +677,7 @@ func (a *App) StartExpertTask(goal, agentName, workDir string) string {
 		pod.Log("task", "expert done: batches=%d err=%v", len(batches), err)
 		eng.CompleteMasterTask(mt.ID)
 		runtime.EventsEmit(a.ctx, "update", a.GetMasterTasks())
+		runtime.EventsEmit(a.ctx, "session-update", sessionID)
 	}()
 
 	return ""
@@ -732,6 +736,7 @@ func (a *App) StartTaskInSession(sessionID, goal, teamName, workDir string) stri
 		pod.Log("task", "done: batches=%d err=%v", len(batches), err)
 		eng.CompleteMasterTask(mt.ID)
 		runtime.EventsEmit(a.ctx, "update", a.GetMasterTasks())
+		runtime.EventsEmit(a.ctx, "session-update", sessionID)
 	}()
 
 	return sessionID
@@ -805,6 +810,7 @@ func (a *App) StartExpertTaskInSession(sessionID, goal, agentName, workDir strin
 		pod.Log("task", "expert done: batches=%d err=%v", len(batches), err)
 		eng.CompleteMasterTask(mt.ID)
 		runtime.EventsEmit(a.ctx, "update", a.GetMasterTasks())
+		runtime.EventsEmit(a.ctx, "session-update", sessionID)
 	}()
 
 	return sessionID
@@ -1147,6 +1153,9 @@ func (a *App) StreamChat(sessionID, message string, deepThink bool) string {
 			SessionID: sessionID, Done: true,
 		})
 		runtime.EventsEmit(a.ctx, "update", a.GetMasterTasks())
+		// Let tool messages flush to JSONL, then notify frontend
+		time.Sleep(200 * time.Millisecond)
+		runtime.EventsEmit(a.ctx, "session-update", sessionID)
 	}()
 
 	return ""
@@ -2143,12 +2152,16 @@ func (a *App) GetChatMessages(taskID string) []pod.ChatMessageJSON {
 				if m.Role == core.RoleAssistant || m.Role == core.RoleTool {
 					from = "agent"
 				}
+				dur := m.DurationMs
+				if dur == 0 && !m.UpdatedAt.IsZero() && !m.CreatedAt.IsZero() {
+					dur = m.UpdatedAt.Sub(m.CreatedAt).Milliseconds()
+				}
 				result = append(result, pod.ChatMessageJSON{
 					Time:       m.CreatedAt.Format(time.RFC3339),
 					From:       from,
 					Content:    core.MessagePlainText(m),
 					Thinking:   m.Reasoning,
-					DurationMs: m.DurationMs,
+					DurationMs: dur,
 				})
 			}
 			return result
@@ -2509,6 +2522,42 @@ func (a *App) initMCP() {
 			}
 		})
 	}()
+}
+
+// startSessionWatcher monitors session JSONL files and notifies the frontend.
+func (a *App) startSessionWatcher() {
+	watcher, err := fsnotify.NewWatcher()
+	if err != nil {
+		pod.Log("watcher", "create: %v", err)
+		return
+	}
+	if err := watcher.Add(a.sessionsDir); err != nil {
+		pod.Log("watcher", "add dir: %v", err)
+		return
+	}
+	go func() {
+		for {
+			select {
+			case ev, ok := <-watcher.Events:
+				if !ok { return }
+				if ev.Op&(fsnotify.Write|fsnotify.Create) == 0 { continue }
+				if !strings.HasSuffix(ev.Name, ".jsonl") { continue }
+				sessionID := strings.TrimSuffix(filepath.Base(ev.Name), ".jsonl")
+				runtime.EventsEmit(a.ctx, "session-update", sessionID)
+			case err, ok := <-watcher.Errors:
+				if !ok { return }
+				pod.Log("watcher", "error: %v", err)
+			case <-a.ctx.Done():
+				watcher.Close()
+				return
+			}
+		}
+	}()
+}
+
+// syncSessionIfCurrent reloads messages for a session if it's the active chat.
+func (a *App) SyncSessionIfCurrent(sessionID string) []pod.ChatMessageJSON {
+	return a.GetChatMessages(sessionID)
 }
 
 func (a *App) ListMCPServers() []MCPServerInfo {

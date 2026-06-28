@@ -178,6 +178,10 @@ export function StreamChat(arg1, arg2, arg3) {
   return window['go']['main']['App']['StreamChat'](arg1, arg2, arg3);
 }
 
+export function SyncSessionIfCurrent(arg1) {
+  return window['go']['main']['App']['SyncSessionIfCurrent'](arg1);
+}
+
 export function TestConnection(arg1) {
   return window['go']['main']['App']['TestConnection'](arg1);
 }

@@ -179,6 +179,23 @@ export const useStore = create<PodState>((set, get) => ({
       wails.EventsOn('chat-action', (data: { sessionId: string; mode: string; role?: string; goal: string }) => {
         get().handleChatAction(data);
       });
+      wails.EventsOn('session-update', (sessionID: string) => {
+        if (sessionID === get().directChatTaskId) {
+          api.getChatMessages(sessionID).then(msgs => {
+            if (msgs && msgs.length > 0) {
+              const displayMsgs: ChatMessage[] = msgs.map((m: ChatMessage) => ({
+                from: m.from === 'agent' ? 'agent' : 'human',
+                content: m.content,
+                time: m.time || '',
+                thinking: m.thinking || undefined,
+                durationMs: m.durationMs != null ? m.durationMs : undefined,
+              }));
+              set({ directMessages: displayMsgs, chatVersion: get().chatVersion + 1 });
+            }
+          });
+          get().loadMasterTasks();
+        }
+      });
     }
   },
 

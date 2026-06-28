@@ -1,6 +1,7 @@
 package core
 
 import (
+	"encoding/json"
 	"strings"
 	"time"
 )
@@ -144,18 +145,50 @@ func FormatToolResults(results []ToolResult) string {
 		b.WriteString(icon)
 		b.WriteString(" ")
 		b.WriteString(r.Name)
-		if r.ModelText != "" {
+
+		// Convert Payload to map[string]any safely (JSON round-trip if needed)
+		payload := toPayloadMap(r.Payload)
+		rendered := RenderToolResultText(r.Name, ToolResultOutcome(r), r.Code, payload)
+		if rendered != "" && rendered != "ok" {
 			b.WriteString(": ")
-			// Truncate long model text for display
-			if len(r.ModelText) > 500 {
-				b.WriteString(r.ModelText[:500])
-				b.WriteString("…")
-			} else {
-				b.WriteString(r.ModelText)
-			}
+			b.WriteString(truncateText(rendered, 2000))
 		}
 	}
 	return b.String()
+}
+
+func toPayloadMap(p any) map[string]any {
+	if p == nil {
+		return nil
+	}
+	if m, ok := p.(map[string]any); ok {
+		return m
+	}
+	if m, ok := p.(map[string]interface{}); ok {
+		result := make(map[string]any, len(m))
+		for k, v := range m {
+			result[k] = v
+		}
+		return result
+	}
+	// Fallback: JSON round-trip
+	data, err := json.Marshal(p)
+	if err != nil {
+		return nil
+	}
+	var result map[string]any
+	if json.Unmarshal(data, &result) != nil {
+		return nil
+	}
+	return result
+}
+
+func truncateText(s string, max int) string {
+	runes := []rune(s)
+	if len(runes) <= max {
+		return s
+	}
+	return string(runes[:max]) + "…"
 }
 
 func MessagePartsPlainText(parts []MessagePart) string {
