@@ -293,9 +293,10 @@ func DefaultTeamRoots(workspaceRoot string) []string {
 	if home, err := os.UserHomeDir(); err == nil && strings.TrimSpace(home) != "" {
 		roots = append(roots, filepath.Join(home, ".whale", "teams"))
 	}
-	// Bundled teams shipped with the binary (bin/teams/ next to the exe).
+	// Bundled teams shipped with the binary (teams/ next to the exe).
+	// The exe lives inside bin/ already, so teams are at <exe_dir>/teams/.
 	if exe, err := os.Executable(); err == nil {
-		roots = append(roots, filepath.Join(filepath.Dir(exe), "bin", "teams"))
+		roots = append(roots, filepath.Join(filepath.Dir(exe), "teams"))
 	}
 	return roots
 }
