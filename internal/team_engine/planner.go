@@ -197,13 +197,14 @@ func (p *Planner) checkAndResearch(rawGoal, workdir string, timeout time.Duratio
 // the raw goal, domain research, and identified gaps.
 func (p *Planner) produceSpec(rawGoal, workdir string, timeout time.Duration, model string, research *DomainResearch, gaps []DimensionGap) (string, error) {
 	prompt := SpecProductionPrompt(rawGoal, research, gaps)
-	// Inject team context so the spec is aware of team capabilities.
-	if p.team != nil {
-		prompt = p.team.BuildLeaderPrompt(prompt)
+	// Only inject the leader's quality philosophy — roles, capabilities, and
+	// routing tables are irrelevant for writing a spec (decomposition uses them).
+	if p.team != nil && p.team.Leader.Prompt != "" {
+		prompt += "\n\n## Team Standards\n" + p.team.Leader.Prompt
 	}
 
 	start := time.Now()
-	result := p.runner.RunElaborationStep(prompt, workdir, timeout, 8192, model)
+	result := p.runner.RunElaborationStep(prompt, workdir, timeout, 4096, model)
 	dur := time.Since(start)
 
 	if p.loggers != nil {

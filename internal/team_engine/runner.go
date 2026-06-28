@@ -296,62 +296,90 @@ func (ar *AgentRunner) RunVerifier(prompt, workdir string, timeout time.Duration
 // RunDecomposer runs a Leader/Planner subagent to decompose a goal into subtasks.
 //
 // For reasoning models (deepseek-v4-pro, etc.) the decomposer gets a larger
-// token budget (ReasoningDecomposerMaxTokens) because the planning prompt
-// is significantly longer than a typical task prompt and the model's
-// chain-of-thought can consume 60-80% of the completion budget.
+// token budget (defaultMaxTokens) because the planning prompt is significantly
+// longer than a typical task prompt and the model's chain-of-thought can
+// consume 60-80% of the completion budget.
+//
+// When a liteSpawner is configured (in-process LLM call), RunDecomposer uses it
+// instead of shelling out — this avoids subprocess cold-start overhead (~3-5s).
+// In lite mode, tools are skipped (pure reasoning) and OutputSchema is omitted
+// (DeepSeek doesn't support structured output).  The caller parses JSON from
+// the text response.
 func (ar *AgentRunner) RunDecomposer(prompt, workdir string, timeout time.Duration, model ...string) *RunResult {
-	toolNames := ProfileToToolNames(ProfileReadOnly)
+	mdl := ""
+	if len(model) > 0 && model[0] != "" {
+		mdl = model[0]
+	}
+
+	// Prefer in-process lite spawner when available — decomposition is a pure
+	// reasoning task that doesn't need tools or multi-turn iteration.
+	spawner := ar.spawner
+	usingLite := ar.liteSpawner != nil
+	if usingLite {
+		spawner = ar.liteSpawner
+		// Default to reasoning model — decomposition benefits from CoT.
+		if mdl == "" {
+			mdl = "deepseek-v4-pro"
+		}
+	}
+
 	req := SubagentRequest{
 		Task:     prompt,
 		Role:     "planner",
-		Tools:    toolNames,
 		Workdir:  workdir,
 		Timeout:  timeout,
 		MaxIters: 15,
 		MaxCalls: 40,
-		OutputSchema: map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"tasks": map[string]any{
-					"type": "array",
-					"items": map[string]any{
-						"type": "object",
-						"properties": map[string]any{
-							"title":              map[string]any{"type": "string"},
-							"description":        map[string]any{"type": "string"},
-							"role":               map[string]any{"type": "string"},
-							"batch_id":           map[string]any{"type": "string"},
-							"batch_label":        map[string]any{"type": "string"},
-							"depends_on_batch":   map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
-							"depends_on_index":   map[string]any{"type": "integer"},
-							"verifier_focus":     map[string]any{"type": "string"},
-								"verifier_role":      map[string]any{"type": "string"},
-							"use_dw":             map[string]any{"type": "boolean"},
-							"max_cycles":         map[string]any{"type": "integer"},
+	}
+	if mdl != "" {
+		req.Model = mdl
+	}
+
+	// Lite spawner: no tools (pure reasoning), large token budget for CoT.
+	// Shell spawner: include read-only tools, token budget via effectiveMaxTokens.
+	if usingLite {
+		req.Tools = nil
+		req.MaxTokens = defaultMaxTokens
+	} else {
+		req.Tools = ProfileToToolNames(ProfileReadOnly)
+		req.MaxTokens = effectiveMaxTokens(0, mdl)
+
+		// OutputSchema only works with shell spawner + Claude models.
+		if supportsStructuredOutput(mdl) {
+			req.OutputSchema = map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"tasks": map[string]any{
+						"type": "array",
+						"items": map[string]any{
+							"type": "object",
+							"properties": map[string]any{
+								"title":            map[string]any{"type": "string"},
+								"description":      map[string]any{"type": "string"},
+								"role":             map[string]any{"type": "string"},
+								"batch_id":         map[string]any{"type": "string"},
+								"batch_label":      map[string]any{"type": "string"},
+								"depends_on_batch": map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+								"depends_on_index": map[string]any{"type": "integer"},
+								"verifier_focus":   map[string]any{"type": "string"},
+								"verifier_role":    map[string]any{"type": "string"},
+								"use_dw":           map[string]any{"type": "boolean"},
+								"max_cycles":       map[string]any{"type": "integer"},
+							},
+							"required": []string{"title", "description", "role"},
 						},
-						"required": []string{"title", "description", "role"},
 					},
 				},
-			},
-			"required": []string{"tasks"},
-		},
+				"required": []string{"tasks"},
+			}
+		}
 	}
-	if len(model) > 0 && model[0] != "" {
-		req.Model = model[0]
-	}
-	if !supportsStructuredOutput(req.Model) {
-		// Fall back to text JSON parsing for models that don't support
-		// the structured_output tool (e.g. DeepSeek).
-		req.OutputSchema = nil
-	}
-	// chain-of-thought doesn't starve the JSON plan output.
-	req.MaxTokens = effectiveMaxTokens(0, req.Model)
 
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
 	start := time.Now()
-	resp, err := ar.spawner.SpawnSubagent(ctx, req)
+	resp, err := spawner.SpawnSubagent(ctx, req)
 	elapsed := time.Since(start).Seconds()
 
 	if err != nil {
@@ -371,7 +399,7 @@ func (ar *AgentRunner) RunDecomposer(prompt, workdir string, timeout time.Durati
 		ExitCode:        resp.ExitCode,
 		Stdout:          resp.Output,
 		SpawnerType:     resp.SpawnerType,
-			Stderr:          resp.Diagnostic,
+		Stderr:          resp.Diagnostic,
 		DurationSeconds: round(elapsed, 2),
 		Success:         resp.Success,
 		Structured:      resp.Structured,
