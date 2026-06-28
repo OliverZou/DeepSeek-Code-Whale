@@ -540,6 +540,128 @@ Subcommands:
 	teamCmd.AddCommand(historyCmd)
 	teamCmd.AddCommand(exportCmd)
 
+	// --- trace subcommand — human-readable task execution trace ---
+	traceCmd := &cobra.Command{
+		Use:   "trace <task-id>",
+		Short: "Show human-readable task execution trace",
+		Long: `Show a detailed execution trace for a task including
+timeline, output, verifier result, artifacts, and inbox messages.
+
+Use --json for machine-readable output.`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			eng, err := newTeamEngine(dbPath, whiteboardDir, configPath)
+			if err != nil {
+				return fmt.Errorf("init engine: %w", err)
+			}
+			defer eng.Close()
+
+			jsonFlag, _ := cmd.Flags().GetBool("json")
+			if jsonFlag {
+				jsonStr, err := eng.ExportTaskLogJSON(args[0])
+				if err != nil {
+					return fmt.Errorf("export: %w", err)
+				}
+				fmt.Println(jsonStr)
+				return nil
+			}
+
+			log, err := eng.ExportTaskLog(args[0])
+			if err != nil {
+				return fmt.Errorf("trace: %w", err)
+			}
+
+			sep := strings.Repeat("=", 60)
+			sub := strings.Repeat("-", 60)
+
+			// Section 1: Task Info.
+			fmt.Println(sep)
+			fmt.Printf("  Task Trace: %s\n", log["task_id"])
+			fmt.Println(sep)
+			fmt.Printf("  Title:      %s\n", log["title"])
+			fmt.Printf("  Role:       %s\n", log["role"])
+			fmt.Printf("  State:      %s\n", log["state"])
+			fmt.Printf("  Retries:    %s\n", log["retries"])
+			fmt.Printf("  Created:    %s\n", log["created_at"])
+			fmt.Printf("  Updated:    %s\n", log["updated_at"])
+			if sid, ok := log["session_id"].(string); ok && sid != "" {
+				fmt.Printf("  Session:    %s\n", sid)
+			}
+
+			// Section 2: State History Timeline.
+			if history, ok := log["state_history"].([]map[string]string); ok && len(history) > 0 {
+				fmt.Println(sub)
+				fmt.Println("  Timeline:")
+				for _, h := range history {
+					ts := h["changed_at"]
+					if len(ts) > 19 {
+						ts = ts[:19]
+					}
+					oldState := h["old_state"]
+					newState := h["new_state"]
+					arrow := " → "
+					if oldState == "" {
+						arrow = "🆕 "
+					}
+					fmt.Printf("    %s  %-12s%s%s\n", ts, oldState, arrow, newState)
+					if h["error_msg"] != "" {
+						fmt.Printf("       ⚠️  %s\n", h["error_msg"])
+					}
+				}
+			}
+
+			// Section 3: Output Preview.
+			if output, ok := log["output"].(string); ok && output != "" {
+				fmt.Println(sub)
+				fmt.Println("  Output Preview:")
+				preview := output
+				if len(preview) > 500 {
+					preview = preview[:500] + "..."
+				}
+				for _, line := range strings.Split(preview, "\n") {
+					fmt.Printf("    | %s\n", line)
+				}
+			}
+
+			// Section 4: Verifier Result.
+			if verifier, ok := log["verifier_result"].(string); ok && verifier != "" {
+				fmt.Println(sub)
+				fmt.Println("  Verifier Result:")
+				for _, line := range strings.Split(verifier, "\n") {
+					fmt.Printf("    | %s\n", line)
+				}
+			}
+
+			// Section 5: Artifacts.
+			if artifacts, ok := log["artifacts"].([]string); ok && len(artifacts) > 0 {
+				fmt.Println(sub)
+				fmt.Printf("  Artifacts (%d):\n", len(artifacts))
+				for _, a := range artifacts {
+					fmt.Printf("    - %s\n", a)
+				}
+			}
+
+			// Section 6: Inbox Messages.
+			if msgs, ok := log["inbox_messages"].([]interface{}); ok && len(msgs) > 0 {
+				fmt.Println(sub)
+				fmt.Printf("  Inbox Messages (%d):\n", len(msgs))
+				for _, m := range msgs {
+					if mm, ok := m.(map[string]interface{}); ok {
+						from := fmt.Sprint(mm["from"])
+						content := fmt.Sprint(mm["content"])
+						fmt.Printf("    From: %s\n", from)
+						fmt.Printf("      %s\n", content)
+					}
+				}
+			}
+
+			fmt.Println(sep)
+			return nil
+		},
+	}
+	traceCmd.Flags().Bool("json", false, "Output as JSON (machine-readable)")
+	teamCmd.AddCommand(traceCmd)
+
 	// --- dashboard subcommand ---
 	dashboardCmd := &cobra.Command{
 		Use:   "dashboard",
@@ -577,6 +699,13 @@ Open http://localhost:8080 after starting.`,
 // without forking a subprocess.  Returns nil if no API key is configured.
 // Only suitable for pure prompt→response calls (no tools, one-shot).
 func newLiteSpawner(fallbackModel string) team_engine.SubagentSpawner {
+	// Load API key the same way the rest of Whale does:
+	// env var first, then ~/.whale/credentials.json.
+	apiKey := loadDeepSeekAPIKey()
+	if apiKey == "" {
+		return nil
+	}
+
 	return team_engine.NewFuncSpawner(func(ctx context.Context, req team_engine.SubagentRequest) (team_engine.SubagentResponse, error) {
 		mdl := req.Model
 		if mdl == "" {
@@ -587,6 +716,7 @@ func newLiteSpawner(fallbackModel string) team_engine.SubagentSpawner {
 			maxTok = 4096
 		}
 		client, err := deepseek.New(
+			deepseek.WithAPIKey(apiKey),
 			deepseek.WithModel(mdl),
 			deepseek.WithMaxTokens(maxTok),
 			deepseek.WithThinking(false),
@@ -621,6 +751,30 @@ func newLiteSpawner(fallbackModel string) team_engine.SubagentSpawner {
 			Success: true,
 		}, nil
 	})
+}
+
+// loadDeepSeekAPIKey reads the API key from the same sources as deepseek.New
+// plus ~/.whale/credentials.json (which is where whale setup saves it).
+func loadDeepSeekAPIKey() string {
+	if v := strings.TrimSpace(os.Getenv("DEEPSEEK_API_KEY")); v != "" {
+		return v
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	credsPath := filepath.Join(home, ".whale", "credentials.json")
+	data, err := os.ReadFile(credsPath)
+	if err != nil {
+		return ""
+	}
+	var creds struct {
+		DeepSeekAPIKey string `json:"deepseek_api_key"`
+	}
+	if err := json.Unmarshal(data, &creds); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(creds.DeepSeekAPIKey)
 }
 
 // newTeamEngine creates a TeamEngine with a default shell-based spawner.
