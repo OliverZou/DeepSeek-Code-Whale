@@ -366,7 +366,9 @@ func (e *TeamEngine) createWorktree(taskID string) (string, string, error) {
 		}
 	}
 
+	e.mu.Lock()
 	e.activeTrees[taskID] = branchName
+	e.mu.Unlock()
 	return treePath, branchName, nil
 }
 

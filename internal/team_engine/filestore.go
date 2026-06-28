@@ -97,7 +97,7 @@ func (fs *FileTaskStore) DeriveState(dir string) TaskState {
 }
 
 func (fs *FileTaskStore) taskDir(id string) string  { return filepath.Join(fs.baseDir, id) }
-func (fs *FileTaskStore) masterDir(id string) string { return filepath.Join(fs.baseDir, id) }
+func (fs *FileTaskStore) masterDir(id string) string { return filepath.Join(fs.baseDir, "masters", id) }
 
 // ---------------------------------------------------------------------------
 // metadata — structural fields only, no state
@@ -389,14 +389,15 @@ func (fs *FileTaskStore) ListTasksByState(state TaskState) ([]*Task, error) {
 func (fs *FileTaskStore) UpdateTask(id string, fields map[string]interface{}) error {
 	fs.mu.Lock()
 	t, ok := fs.tasks[id]
-	fs.mu.Unlock()
 	if !ok {
+		fs.mu.Unlock()
 		return nil
 	}
 
 	dir := fs.taskDir(id)
 	meta, err := fs.readMeta(dir)
 	if err != nil {
+		fs.mu.Unlock()
 		return nil
 	}
 
@@ -447,6 +448,7 @@ func (fs *FileTaskStore) UpdateTask(id string, fields map[string]interface{}) er
 	if v, ok := fields["session_id"]; ok {
 		meta.SessionID = fmt.Sprint(v)
 	}
+	fs.mu.Unlock()
 	return fs.writeMeta(dir, meta)
 }
 
