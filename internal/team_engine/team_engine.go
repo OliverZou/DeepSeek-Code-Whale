@@ -1165,6 +1165,7 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 			if e.Loggers != nil { e.Loggers.Engine("task %s worker CONTINUE session (retry=%d)", taskID[:8], attempt) }
 			resp := e.shellSpawner.ContinueSession(ws, fbPrompt)
 			result = &RunResult{
+				SessionID:       resp.SessionID,
 				ExitCode:        resp.ExitCode,
 				Stdout:          resp.Output,
 				Stderr:          resp.Diagnostic,
