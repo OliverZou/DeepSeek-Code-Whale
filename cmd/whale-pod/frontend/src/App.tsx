@@ -1,27 +1,18 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useCallback } from 'react';
 import { useStore } from './store';
 import TitleBar from './components/TitleBar';
 import Sidebar from './components/Sidebar';
 import ChatArea from './components/ChatArea';
 import RightPanel from './components/RightPanel';
 import Resizer from './components/Resizer';
-import SettingsPanel from './components/SettingsPanel';
 import ErrorBoundary from './components/ErrorBoundary';
 import { useKeyboard } from './components/useKeyboard';
 
 export default function App() {
   const init = useStore(s => s.init);
   const sidebarCollapsed = useStore(s => s.sidebarCollapsed);
-  const [showSettings, setShowSettings] = useState(false);
 
   useEffect(() => { useStore.getState().init(); }, []);
-
-  // Listen for toggle-settings event from Sidebar
-  useEffect(() => {
-    const handler = () => setShowSettings(s => !s);
-    window.addEventListener('toggle-settings', handler);
-    return () => window.removeEventListener('toggle-settings', handler);
-  }, []);
 
   const handleNewChat = useCallback(() => {
     useStore.setState({
@@ -63,7 +54,10 @@ export default function App() {
 
   useKeyboard({
     onNewChat: handleNewChat,
-    onToggleSettings: () => setShowSettings(s => !s),
+    onToggleSettings: () => {
+      const cur = useStore.getState().activeFunction;
+      useStore.setState({ activeFunction: cur === 'settings' ? null : 'settings' });
+    },
     onCloseTab: handleCloseTab,
     onNextTab: handleNextTab,
     onPrevTab: handlePrevTab,
@@ -80,8 +74,6 @@ export default function App() {
           <Resizer target="right-panel" side="left" />
           <RightPanel />
         </div>
-
-        <SettingsPanel visible={showSettings} onClose={() => setShowSettings(false)} />
       </div>
     </ErrorBoundary>
   );

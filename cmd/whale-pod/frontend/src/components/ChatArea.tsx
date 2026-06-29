@@ -117,7 +117,7 @@ export default function ChatArea() {
 
     // Settings panel
     if (activeFunction === 'settings') {
-      return <SettingsPanel visible={true} onClose={() => useStore.setState({ activeFunction: null })} />;
+      return <SettingsPanel visible={true} embedded onClose={() => useStore.setState({ activeFunction: null })} />;
     }
 
     // New direct chat (no session selected)

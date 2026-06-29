@@ -45,6 +45,7 @@ export default function SettingsPanel({ visible, onClose, embedded }: SettingsPa
       setSaveMsg('❌ ' + err);
     } else {
       setSaveMsg('✅ 设置已保存');
+      if (embedded) onClose();
       setTimeout(() => setSaveMsg(''), 2000);
     }
     setSaving(false);
