@@ -81,11 +81,12 @@ type WorkspaceJSON struct {
 }
 
 type TeamDetailJSON struct {
-	Name        string   `json:"name"`
-	Label       string   `json:"label"`
-	Category    string   `json:"category,omitempty"`
-	Description string   `json:"description"`
-	Roles       []string `json:"roles"`
+	Name         string   `json:"name"`
+	Label        string   `json:"label"`
+	Category     string   `json:"category,omitempty"`
+	Description  string   `json:"description"`
+	Roles        []string `json:"roles"`
+	Capabilities []string `json:"capabilities,omitempty"`
 }
 
 type AgentInfoJSON struct {

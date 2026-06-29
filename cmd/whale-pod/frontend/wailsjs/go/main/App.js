@@ -90,6 +90,10 @@ export function ListAgents() {
   return window['go']['main']['App']['ListAgents']();
 }
 
+export function ListExperts() {
+  return window['go']['main']['App']['ListExperts']();
+}
+
 export function ListMCPServers() {
   return window['go']['main']['App']['ListMCPServers']();
 }

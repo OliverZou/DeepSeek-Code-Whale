@@ -12,6 +12,7 @@ export const api = {
   saveSummonedItems: (items: SummonedItem[]): Promise<void> => go()?.SaveSummonedItems(items) ?? undefined,
   listTeamDetails: (): Promise<TeamInfo[]> => go()?.ListTeamDetails() ?? [],
   listAgents: (): Promise<AgentInfo[]> => go()?.ListAgents() ?? [],
+  listExperts: (): Promise<AgentInfo[]> => go()?.ListExperts() ?? [],
   startTask: (goal: string, team: string, workDir?: string): Promise<string> => go()?.StartTask(goal, team, workDir ?? '') ?? '',
   startExpertTask: (goal: string, agentName: string, workDir?: string): Promise<string> => go()?.StartExpertTask(goal, agentName, workDir ?? '') ?? '',
   startTaskInSession: (sessionID: string, goal: string, teamName: string, workDir?: string): Promise<string> => go()?.StartTaskInSession(sessionID, goal, teamName, workDir ?? '') ?? '',

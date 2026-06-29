@@ -164,7 +164,7 @@ export const useStore = create<PodState>((set, get) => ({
     const dir = await api.getWorkDir() || '';
     const teams = (await api.listTeams()) || [];
     const teamDetails = (await api.listTeamDetails()) || [];
-    const agentDetails = (await api.listAgents()) || [];
+    const agentDetails = (await api.listExperts()) || [];
     const summoned = (await api.loadSummonedItems()) || [];
     const openWorkspaces = loadWorkspaces();
     set({ workDir: dir, openWorkspaces, teams, teamDetails, agentDetails, summonedItems: summoned });

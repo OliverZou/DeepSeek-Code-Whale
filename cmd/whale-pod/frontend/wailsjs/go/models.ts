@@ -287,6 +287,7 @@ export namespace pod {
 	    category?: string;
 	    description: string;
 	    roles: string[];
+	    capabilities?: string[];
 	
 	    static createFrom(source: any = {}) {
 	        return new TeamDetailJSON(source);
@@ -299,6 +300,7 @@ export namespace pod {
 	        this.category = source["category"];
 	        this.description = source["description"];
 	        this.roles = source["roles"];
+	        this.capabilities = source["capabilities"];
 	    }
 	}
 

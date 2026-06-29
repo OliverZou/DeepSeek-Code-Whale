@@ -465,12 +465,24 @@ func (a *App) ListTeamDetails() []pod.TeamDetailJSON {
 		for i, name := range tc.Roles {
 			roles[i] = tc.RoleDisplayName(name)
 		}
+		// Collect capabilities: YAML capabilities first, then role capabilities as fallback
+		caps := tc.Capabilities
+		if len(caps) == 0 && len(tc.RoleCapabilities) > 0 {
+			seen := make(map[string]bool)
+			for _, c := range tc.RoleCapabilities {
+				if c != "" && !seen[c] {
+					caps = append(caps, c)
+					seen[c] = true
+				}
+			}
+		}
 		result = append(result, pod.TeamDetailJSON{
-			Name:        e.Name(),
-			Label:       tc.Label,
-			Category:    tc.Category,
-			Description: tc.Leader.Description,
-			Roles:       roles,
+			Name:         e.Name(),
+			Label:        tc.Label,
+			Category:     tc.Category,
+			Description:  tc.Leader.Description,
+			Roles:        roles,
+			Capabilities: caps,
 		})
 	}
 	pod.Log("teams", "ListTeamDetails found %d teams in %s", len(result), teamsDir)
@@ -528,6 +540,31 @@ func (a *App) ListAgents() []pod.AgentInfoJSON {
 	}
 	pod.Log("agents", "ListAgents found %d agents (%d unique) in %s", len(result), len(deduped), agentsDir)
 	return deduped
+}
+
+// ListExperts returns experts from the expert registry (experts/*.yaml).
+// Category is the YAML domain field (Chinese).
+func (a *App) ListExperts() []pod.AgentInfoJSON {
+	if a.expertRegistry == nil {
+		return []pod.AgentInfoJSON{}
+	}
+	var result []pod.AgentInfoJSON
+	for _, ef := range a.expertRegistry.Files() {
+		for _, exp := range ef.Experts {
+			name := exp.Name
+			if name == "" {
+				name = exp.NameEn
+			}
+			result = append(result, pod.AgentInfoJSON{
+				Name:        name,
+				Role:        exp.NameEn,
+				Description: exp.Description,
+				Category:    ef.Domain,
+				Skills:      exp.Skills,
+			})
+		}
+	}
+	return result
 }
 
 // ---------------------------------------------------------------------------

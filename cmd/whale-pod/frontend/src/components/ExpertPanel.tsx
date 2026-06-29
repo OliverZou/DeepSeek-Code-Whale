@@ -79,11 +79,11 @@ export default function ExpertPanel() {
       </div>
 
       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 16, padding: '0 28px 24px' }}>
-        {tab === 'experts' && searchedAgents.map(a => {
+        {tab === 'experts' && searchedAgents.map((a, i) => {
           const summoned = summonedItems.some(s => s.name === a.name && s.type === 'expert');
           return (
             <ExpertCard
-              key={a.name}
+              key={`${a.category || 'expert'}-${a.name}-${i}`}
               agent={a}
               summoned={summoned}
               onSummon={() => summonAndOpen({ type: 'expert', name: a.name, label: a.role || a.name, category: a.category, description: a.description })}
@@ -91,11 +91,11 @@ export default function ExpertPanel() {
             />
           );
         })}
-        {tab === 'teams' && searchedTeams.map(t => {
+        {tab === 'teams' && searchedTeams.map((t, i) => {
           const summoned = summonedItems.some(s => s.name === t.name && s.type === 'team');
           return (
             <TeamCard
-              key={t.name}
+              key={`${t.category || 'team'}-${t.name}-${i}`}
               team={t}
               summoned={summoned}
               onSummon={() => summonAndOpen({ type: 'team', name: t.name, label: t.label || t.name, category: t.category, description: t.description })}
@@ -150,10 +150,9 @@ function ExpertCard({ agent, summoned, onSummon, onDismiss }: {
           color: '#fff', fontSize: 18, fontWeight: 700, flexShrink: 0,
         }}>{(agent.role || agent.name)[0]}</div>
         <div>
-          <div style={{ fontWeight: 600, color: '#fff', fontSize: 14 }}>{agent.role || agent.name}</div>
+          <div style={{ fontWeight: 600, color: '#fff', fontSize: 14, marginBottom: 4 }}>{agent.name}</div>
           <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-            {agent.role && <span style={{ fontSize: 11, color: '#888' }}>{agent.name}</span>}
-            {agent.category && <span style={{ fontSize: 10, color: '#4CAF50', background: 'rgba(76,175,80,0.12)', padding: '1px 8px', borderRadius: 8 }}>{agent.category}</span>}
+            {agent.category && <span style={{ fontSize: 10, color: '#888', background: 'rgba(255,255,255,0.06)', padding: '1px 8px', borderRadius: 3 }}>{agent.category}</span>}
           </div>
         </div>
       </div>
@@ -167,8 +166,8 @@ function ExpertCard({ agent, summoned, onSummon, onDismiss }: {
       )}
       {agent.skills && agent.skills.length > 0 && (
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-          {agent.skills.slice(0, expanded ? undefined : 4).map(s => (
-            <span key={s} style={{ padding: '2px 10px', borderRadius: 10, fontSize: 11, background: 'rgba(76,175,80,0.08)', color: '#81C784' }}>{s}</span>
+          {agent.skills.slice(0, expanded ? undefined : 4).map((s, i) => (
+            <span key={`${s}-${i}`} style={{ padding: '2px 10px', borderRadius: 4, fontSize: 11, color: '#aaa', background: 'rgba(255,255,255,0.05)', border: '1px solid #333' }}>{s}</span>
           ))}
           {!expanded && agent.skills.length > 4 && <span style={{ padding: '2px 10px', borderRadius: 10, fontSize: 11, color: '#666' }}>+{agent.skills.length - 4}</span>}
         </div>
@@ -216,27 +215,29 @@ function TeamCard({ team, summoned, onSummon, onDismiss }: {
       <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
         <div style={{
           width: 40, height: 40, borderRadius: '50%',
-          background: 'linear-gradient(135deg, #9C27B0, #2196F3)',
+          background: 'linear-gradient(135deg, #6366F1, #8B5CF6)',
           display: 'flex', alignItems: 'center', justifyContent: 'center',
           color: '#fff', fontSize: 18, fontWeight: 700, flexShrink: 0,
         }}>{(team.label || team.name)[0]}</div>
         <div>
-          <div style={{ fontWeight: 600, color: '#fff', fontSize: 14 }}>{team.label || team.name}</div>
+          <div style={{ fontWeight: 600, color: '#fff', fontSize: 14, marginBottom: 4 }}>{team.label || team.name}</div>
           <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-            {team.category && <span style={{ fontSize: 10, color: '#4CAF50', background: 'rgba(76,175,80,0.12)', padding: '1px 8px', borderRadius: 8 }}>{team.category}</span>}
-            <span style={{ fontSize: 11, color: '#666' }}>{team.roles.length} 位专家</span>
+            {team.category && <span style={{ fontSize: 10, color: '#888', background: 'rgba(255,255,255,0.06)', padding: '1px 8px', borderRadius: 3 }}>{team.category}</span>}
           </div>
         </div>
       </div>
       {team.description && (
         <div style={{ fontSize: 12, color: '#999', lineHeight: 1.6 }}>{team.description}</div>
       )}
-      {team.roles.length > 0 && (
+      {team.capabilities && team.capabilities.length > 0 && (
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-          {team.roles.slice(0, expanded ? undefined : 5).map(r => (
-            <span key={r} style={{ padding: '2px 10px', borderRadius: 10, fontSize: 11, background: 'rgba(255,255,255,0.06)', color: '#aaa' }}>{r}</span>
+          {team.capabilities.slice(0, expanded ? undefined : 5).map((c, i) => (
+            <span key={`${c}-${i}`} style={i === 0
+              ? { padding: '2px 10px', fontSize: 11, color: '#aaa' }
+              : { padding: '2px 10px', borderRadius: 4, fontSize: 11, color: '#aaa', background: 'rgba(255,255,255,0.05)', border: '1px solid #333' }
+            }>{c}</span>
           ))}
-          {!expanded && team.roles.length > 5 && <span style={{ padding: '2px 10px', borderRadius: 10, fontSize: 11, color: '#666' }}>+{team.roles.length - 5}</span>}
+          {!expanded && team.capabilities.length > 5 && <span style={{ padding: '2px 10px', borderRadius: 10, fontSize: 11, color: '#666' }}>+{team.capabilities.length - 5}</span>}
         </div>
       )}
     </div>

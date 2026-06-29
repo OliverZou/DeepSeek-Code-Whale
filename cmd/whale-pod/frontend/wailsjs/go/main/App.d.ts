@@ -47,6 +47,8 @@ export function GetWorkDir():Promise<string>;
 
 export function ListAgents():Promise<Array<pod.AgentInfoJSON>>;
 
+export function ListExperts():Promise<Array<pod.AgentInfoJSON>>;
+
 export function ListMCPServers():Promise<Array<main.MCPServerInfo>>;
 
 export function ListSessionsByAgent(arg1:string,arg2:number,arg3:number):Promise<Array<pod.MasterTaskJSON>>;

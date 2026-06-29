@@ -4,6 +4,7 @@ bin/
 /whale-once
 /whale.exe
 /whale-once.exe
+/whale-pod.exe
 *.test
 *.test.exe
 *.out

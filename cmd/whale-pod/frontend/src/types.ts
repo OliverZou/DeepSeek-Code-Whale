@@ -75,6 +75,7 @@ export interface TeamInfo {
   category?: string;
   description: string;
   roles: string[];
+  capabilities?: string[];
 }
 
 // Agent info
