@@ -27,6 +27,7 @@ import (
 	teamlog "github.com/usewhale/whale/internal/team_engine/log"
 	"github.com/fsnotify/fsnotify"
 	"github.com/usewhale/whale/internal/team_engine"
+	"github.com/usewhale/whale/internal/worktree"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
@@ -710,6 +711,23 @@ func (a *App) StartExpertTask(goal, agentName, workDir string) string {
 	return ""
 }
 
+// resolveWorktreeDir tries to create a git worktree for task isolation.
+// If workspace is a git repo, it creates a worktree in .whale/worktrees/ and
+// returns the isolated path. Otherwise returns the original workspace unchanged.
+func resolveWorktreeDir(workspace, sessionID string) string {
+	if workspace == "" {
+		return workspace
+	}
+	name := strings.ReplaceAll(sessionID, "/", "-")
+	sess, err := worktree.Start(workspace, name)
+	if err != nil {
+		pod.Log("task", "worktree skipped for %s: %v", sessionID, err)
+		return workspace
+	}
+	pod.Log("task", "worktree created: %s (branch %s)", sess.Path, sess.Branch)
+	return sess.Path
+}
+
 // StartTaskInSession starts a team task within an existing session.
 func (a *App) StartTaskInSession(sessionID, goal, teamName, workDir string) string {
 	if strings.TrimSpace(goal) == "" || strings.TrimSpace(sessionID) == "" {
@@ -747,6 +765,9 @@ func (a *App) StartTaskInSession(sessionID, goal, teamName, workDir string) stri
 				os.MkdirAll(taskWorkDir, 0755)
 			}
 		}
+
+		// Create git worktree for task isolation
+		taskWorkDir = resolveWorktreeDir(taskWorkDir, sessionID)
 
 		if teamName != "" {
 			tc, err := team_engine.FindTeam(a.teamsDir, teamName)
@@ -806,6 +827,9 @@ func (a *App) StartExpertTaskInSession(sessionID, goal, agentName, workDir strin
 				os.MkdirAll(taskWorkDir, 0755)
 			}
 		}
+
+		// Create git worktree for task isolation
+		taskWorkDir = resolveWorktreeDir(taskWorkDir, sessionID)
 
 		tc := &team_engine.TeamConfig{
 			Label: agentName,
