@@ -20,6 +20,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
+	"gopkg.in/yaml.v3"
 
 	"github.com/usewhale/whale/internal/agent"
 	"github.com/usewhale/whale/internal/app"
@@ -326,6 +327,12 @@ func (d *Daemon) handleMessage(client *wsClient, req wsRequest) {
 		d.handleTaskDelete(client, req)
 	case "session.list":
 		d.handleSessionList(client, req)
+	case "agent.list":
+		d.handleAgentList(client, req)
+	case "expert.list":
+		d.handleExpertList(client, req)
+	case "team.list":
+		d.handleTeamList(client, req)
 	case "approval.decision":
 		d.handleApprovalDecision(client, req)
 	case "user_input.response":
@@ -725,6 +732,25 @@ func (d *Daemon) handleSessionList(client *wsClient, req wsRequest) {
 	client.send(wsResponse{Type: "session.list", ID: req.ID, Payload: map[string]interface{}{"sessions": result}})
 }
 
+func (d *Daemon) handleAgentList(client *wsClient, req wsRequest) {
+	result := listAgentMarkdown(d.agentsDir())
+	client.send(wsResponse{Type: "agent.list", ID: req.ID, Payload: map[string]interface{}{"agents": result}})
+}
+
+func (d *Daemon) handleExpertList(client *wsClient, req wsRequest) {
+	result := listExpertYAML(d.expertsDir())
+	client.send(wsResponse{Type: "expert.list", ID: req.ID, Payload: map[string]interface{}{"experts": result}})
+}
+
+func (d *Daemon) handleTeamList(client *wsClient, req wsRequest) {
+	result := listTeamsFromDisk(d.teamsDir())
+	client.send(wsResponse{Type: "team.list", ID: req.ID, Payload: map[string]interface{}{"teams": result}})
+}
+
+func (d *Daemon) agentsDir() string  { return filepath.Join(filepath.Dir(d.cfg.DataDir), "agents") }
+func (d *Daemon) expertsDir() string { return filepath.Join(filepath.Dir(d.cfg.DataDir), "experts") }
+func (d *Daemon) teamsDir() string   { return filepath.Join(filepath.Dir(d.cfg.DataDir), "teams") }
+
 // =========================================================================
 // Helpers
 // =========================================================================
@@ -758,4 +784,165 @@ func resolveAPIKey(dataDir string) string {
 		}
 	}
 	return ""
+}
+
+// listAgentMarkdown scans a directory of markdown agent definitions.
+func listAgentMarkdown(dir string) []map[string]interface{} {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	var result []map[string]interface{}
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		subs, _ := os.ReadDir(filepath.Join(dir, e.Name()))
+		for _, se := range subs {
+			if se.IsDir() || !strings.HasSuffix(se.Name(), ".md") {
+				continue
+			}
+			data, _ := os.ReadFile(filepath.Join(dir, e.Name(), se.Name()))
+			name := strings.TrimSuffix(se.Name(), ".md")
+			desc := ""
+			role := ""
+			parts := strings.SplitN(string(data), "---", 3)
+			if len(parts) >= 3 {
+				var raw struct {
+					Name        string            `yaml:"name"`
+					Role        string            `yaml:"role"`
+					Description string            `yaml:"description"`
+					Skills      []string          `yaml:"skills"`
+					Tools       []string          `yaml:"tools"`
+					WhenToUse   string            `yaml:"whenToUse"`
+					Profession  map[string]string `yaml:"profession"`
+					DisplayName map[string]string `yaml:"displayName"`
+				}
+				if yaml.Unmarshal([]byte(parts[1]), &raw) == nil {
+					if raw.Name != "" {
+						name = raw.Name
+					}
+					desc = raw.Description
+					role = raw.Role
+					if role == "" && raw.Profession != nil {
+						if zh, ok := raw.Profession["zh"]; ok {
+							role = zh
+						}
+					}
+					if role == "" && raw.DisplayName != nil {
+						if zh, ok := raw.DisplayName["zh"]; ok {
+							role = zh
+						}
+					}
+				}
+			}
+			if desc == "" {
+				desc = strings.TrimSpace(string(data))
+			}
+			result = append(result, map[string]interface{}{
+				"name": name, "role": role, "description": desc,
+				"category": e.Name(),
+			})
+		}
+	}
+	return result
+}
+
+// listExpertYAML scans a directory of expert YAML files.
+func listExpertYAML(dir string) []map[string]interface{} {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	var result []map[string]interface{}
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".yaml") {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(dir, e.Name()))
+		if err != nil {
+			continue
+		}
+		var ef struct {
+			Domain  string `yaml:"domain"`
+			Experts []struct {
+				Name        string        `yaml:"name"`
+				NameEn      string        `yaml:"name_en"`
+				Description string        `yaml:"description"`
+				Skills      []interface{} `yaml:"skills"`
+			} `yaml:"experts"`
+		}
+		if yaml.Unmarshal(data, &ef) != nil {
+			continue
+		}
+		for _, exp := range ef.Experts {
+			skills := make([]string, 0, len(exp.Skills))
+			for _, s := range exp.Skills {
+				switch v := s.(type) {
+				case string:
+					skills = append(skills, v)
+				case map[string]interface{}:
+					if zh, ok := v["zh"].(string); ok {
+						skills = append(skills, zh)
+					} else if en, ok := v["en"].(string); ok {
+						skills = append(skills, en)
+					}
+				}
+			}
+			name := exp.Name
+			if name == "" {
+				name = exp.NameEn
+			}
+			result = append(result, map[string]interface{}{
+			"name": name, "role": exp.NameEn,
+			"description": exp.Description,
+			"category":    ef.Domain,
+			"skills":      skills,
+			})
+		}
+	}
+	return result
+}
+
+// listTeamsFromDisk scans team directories for team.yaml files.
+func listTeamsFromDisk(dir string) []map[string]interface{} {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	var result []map[string]interface{}
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(dir, e.Name(), "team.yaml"))
+		if err != nil {
+			continue
+		}
+		var raw struct {
+			Name         string   `yaml:"name"`
+			Label        string   `yaml:"label"`
+			Category     string   `yaml:"category"`
+			Description  string   `yaml:"description"`
+			Roles        []string `yaml:"roles"`
+			Capabilities []string `yaml:"capabilities"`
+		}
+		if yaml.Unmarshal(data, &raw) != nil {
+			continue
+		}
+		name := raw.Name
+		if name == "" {
+			name = e.Name()
+		}
+		label := raw.Label
+		if label == "" {
+			label = name
+		}
+		result = append(result, map[string]interface{}{
+			"name": name, "label": label,
+			"category": raw.Category, "description": raw.Description,
+			"roles": raw.Roles, "capabilities": raw.Capabilities,
+		})
+	}
+	return result
 }
