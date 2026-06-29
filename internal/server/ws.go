@@ -327,6 +327,14 @@ func (d *Daemon) handleMessage(client *wsClient, req wsRequest) {
 		d.handleTaskDelete(client, req)
 	case "session.list":
 		d.handleSessionList(client, req)
+	case "session.listByAgent":
+		d.handleSessionListByAgent(client, req)
+	case "session.delete":
+		d.handleSessionDelete(client, req)
+	case "session.deleteAll":
+		d.handleSessionDeleteAll(client, req)
+	case "session.clearEmpty":
+		d.handleSessionClearEmpty(client, req)
 	case "agent.list":
 		d.handleAgentList(client, req)
 	case "expert.list":
@@ -732,14 +740,103 @@ func (d *Daemon) handleSessionList(client *wsClient, req wsRequest) {
 	client.send(wsResponse{Type: "session.list", ID: req.ID, Payload: map[string]interface{}{"sessions": result}})
 }
 
-func (d *Daemon) handleAgentList(client *wsClient, req wsRequest) {
-	result := listAgentMarkdown(d.agentsDir())
-	client.send(wsResponse{Type: "agent.list", ID: req.ID, Payload: map[string]interface{}{"agents": result}})
+func (d *Daemon) handleSessionListByAgent(client *wsClient, req wsRequest) {
+	var p struct {
+		Agent  string `json:"agent"`
+		Offset int    `json:"offset"`
+		Limit  int    `json:"limit"`
+	}
+	json.Unmarshal(req.Payload, &p)
+	if p.Limit <= 0 {
+		p.Limit = 20
+	}
+	sessions, _ := session.ListSessions(d.sessionsDir, p.Offset+p.Limit)
+	result := make([]map[string]interface{}, 0)
+	count := 0
+	for _, s := range sessions {
+		if s.Meta.Kind == "subagent" {
+			continue
+		}
+		if p.Agent != "" && s.Meta.Agent != p.Agent {
+			continue
+		}
+		count++
+		if count <= p.Offset {
+			continue
+		}
+		goal := s.Meta.Title
+		if goal == "" {
+			goal = s.Conversation
+		}
+		result = append(result, map[string]interface{}{
+			"id": s.ID, "goal": goal, "agent": s.Meta.Agent,
+			"workspace_path": s.Meta.Workspace,
+			"status": s.Meta.Status,
+			"created_at": s.Meta.StartedAt,
+		})
+		if len(result) >= p.Limit {
+			break
+		}
+	}
+	hasMore := count > p.Offset+len(result)
+	client.send(wsResponse{Type: "session.listByAgent", ID: req.ID, Payload: map[string]interface{}{"sessions": result, "has_more": hasMore}})
+}
+
+func (d *Daemon) handleSessionDelete(client *wsClient, req wsRequest) {
+	var p struct{ ID string `json:"id"` }
+	json.Unmarshal(req.Payload, &p)
+	os.Remove(filepath.Join(d.sessionsDir, p.ID+".jsonl"))
+	os.Remove(filepath.Join(d.sessionsDir, p.ID+".meta.json"))
+	client.send(wsResponse{Type: "session.delete", ID: req.ID, Payload: map[string]string{"id": p.ID}})
+}
+
+func (d *Daemon) handleSessionDeleteAll(client *wsClient, req wsRequest) {
+	var p struct{ Agent string `json:"agent"` }
+	json.Unmarshal(req.Payload, &p)
+	sessions, _ := session.ListSessions(d.sessionsDir, 0)
+	for _, s := range sessions {
+		if s.Meta.Kind == "subagent" {
+			continue
+		}
+		if p.Agent != "" && s.Meta.Agent != p.Agent {
+			continue
+		}
+		os.Remove(filepath.Join(d.sessionsDir, s.ID+".jsonl"))
+		os.Remove(filepath.Join(d.sessionsDir, s.ID+".meta.json"))
+	}
+	client.send(wsResponse{Type: "session.deleteAll", ID: req.ID, Payload: map[string]string{}})
+}
+
+func (d *Daemon) handleSessionClearEmpty(client *wsClient, req wsRequest) {
+	var p struct{ Agent string `json:"agent"` }
+	json.Unmarshal(req.Payload, &p)
+	entries, _ := os.ReadDir(d.sessionsDir)
+	for _, e := range entries {
+		if !strings.HasSuffix(e.Name(), ".jsonl") {
+			continue
+		}
+		id := strings.TrimSuffix(e.Name(), ".jsonl")
+		if strings.Contains(id, "--subagent-") {
+			continue
+		}
+		metaPath := filepath.Join(d.sessionsDir, id+".meta.json")
+		info, err := os.Stat(metaPath)
+		if err != nil || info.Size() < 10 {
+			os.Remove(filepath.Join(d.sessionsDir, e.Name()))
+			os.Remove(metaPath)
+		}
+	}
+	client.send(wsResponse{Type: "session.clearEmpty", ID: req.ID, Payload: map[string]string{}})
 }
 
 func (d *Daemon) handleExpertList(client *wsClient, req wsRequest) {
 	result := listExpertYAML(d.expertsDir())
 	client.send(wsResponse{Type: "expert.list", ID: req.ID, Payload: map[string]interface{}{"experts": result}})
+}
+
+func (d *Daemon) handleAgentList(client *wsClient, req wsRequest) {
+	result := listAgentMarkdown(d.agentsDir())
+	client.send(wsResponse{Type: "agent.list", ID: req.ID, Payload: map[string]interface{}{"agents": result}})
 }
 
 func (d *Daemon) handleTeamList(client *wsClient, req wsRequest) {
