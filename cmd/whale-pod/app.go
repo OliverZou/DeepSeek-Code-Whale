@@ -58,19 +58,9 @@ func NewApp() *App {
 	if exe, err := os.Executable(); err == nil {
 		exeDir = filepath.Dir(exe)
 	}
-	teamsDir := filepath.Join(exeDir, "teams")
-	expertsDir := filepath.Join(exeDir, "experts")
-	if cwd, err := os.Getwd(); err == nil {
-		for dir := cwd; dir != filepath.Dir(dir); dir = filepath.Dir(dir) {
-			if fi, err := os.Stat(filepath.Join(dir, "bin", "teams")); err == nil && fi.IsDir() {
-				binDir := filepath.Join(dir, "bin")
-				teamsDir = filepath.Join(binDir, "teams")
-				expertsDir = filepath.Join(binDir, "experts")
-				exeDir = binDir
-				break
-			}
-		}
-	}
+	dataDir := store.DefaultDataDir()
+	teamsDir := filepath.Join(dataDir, "teams")
+	expertsDir := filepath.Join(dataDir, "experts")
 	return &App{workDir: exeDir, teamsDir: teamsDir, expertsDir: expertsDir}
 }
 

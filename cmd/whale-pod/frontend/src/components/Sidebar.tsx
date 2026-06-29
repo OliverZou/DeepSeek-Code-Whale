@@ -90,8 +90,10 @@ export default function Sidebar() {
   const masterTasks = useStore(s => s.masterTasks);
   const selectMasterTask = useStore(s => s.selectMasterTask);
   const addTab = useStore(s => s.addTab);
+  const selMasterTaskId = useStore(s => s.selMasterTaskId);
   const [search, setSearch] = useState('');
   const [lastMsgs, setLastMsgs] = useState<Record<string, string>>({});
+  const [expandedAgents, setExpandedAgents] = useState<Set<string>>(new Set());
 
   const allAgents: (SummonedItem | typeof whaleItem)[] = useMemo(() => {
     const seen = new Set<string>();
@@ -180,8 +182,8 @@ export default function Sidebar() {
   };
 
   const handleToggleSettings = () => {
-    // fire a custom event that App.tsx listens to
-    window.dispatchEvent(new CustomEvent('toggle-settings'));
+    const current = useStore.getState().activeFunction;
+    useStore.setState({ activeFunction: current === 'settings' ? null : 'settings' });
   };
 
   return (
@@ -217,20 +219,86 @@ export default function Sidebar() {
           const agentKey = item.type + ':' + item.name;
           const agentKeyNorm = item.type === 'whale' ? '' : agentKey;
           const lastPreview = lastMsgs[agentKeyNorm] || undefined;
+          const agentTasks = masterTasks.filter(t => (t.agent || '') === agentKeyNorm);
+          const isExpanded = expandedAgents.has(agentKey);
+          const isActive = selAgentId === agentKeyNorm;
+          const toggleExpand = () => {
+            setExpandedAgents(prev => {
+              const next = new Set(prev);
+              if (next.has(agentKey)) next.delete(agentKey); else next.add(agentKey);
+              return next;
+            });
+          };
           return (
-            <AgentRow
-              key={agentKey}
-              item={item}
-              active={selAgentId === agentKeyNorm}
-              onClick={() => selectAgent(agentKeyNorm, item.name, item.type as 'expert' | 'team' | 'whale')}
-              onContextMenu={item.type !== 'whale' ? (e) => {
-                e.preventDefault();
-                if (confirm(`移除「${item.label}」？`)) {
-                  dismissItem(item.name, item.type);
-                }
-              } : undefined}
-              lastPreview={lastPreview}
-            />
+            <div key={agentKey}>
+              <div style={{ display: 'flex', alignItems: 'center' }}>
+                <div style={{ flex: 1 }}>
+                  <AgentRow
+                    item={item}
+                    active={isActive}
+                    onClick={() => selectAgent(agentKeyNorm, item.name, item.type as 'expert' | 'team' | 'whale')}
+                    onContextMenu={item.type !== 'whale' ? (e) => {
+                      e.preventDefault();
+                      if (confirm(`移除「${item.label}」？`)) {
+                        dismissItem(item.name, item.type);
+                      }
+                    } : undefined}
+                    lastPreview={lastPreview}
+                  />
+                </div>
+                {agentTasks.length > 0 && (
+                  <span
+                    onClick={e => { e.stopPropagation(); toggleExpand(); }}
+                    style={{
+                      cursor: 'pointer', padding: '4px 8px', color: '#555', fontSize: 10,
+                      flexShrink: 0, userSelect: 'none',
+                    }}
+                  >
+                    <span style={{ color: '#666', marginRight: 2 }}>{agentTasks.length}</span>
+                    <svg width="8" height="5" viewBox="0 0 8 5" style={{
+                      transform: isExpanded ? 'rotate(0deg)' : 'rotate(-90deg)',
+                      transition: 'transform 0.15s',
+                    }}>
+                      <path d="M0 0l4 5 4-5" fill="none" stroke="#666" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+                    </svg>
+                  </span>
+                )}
+              </div>
+              {/* Expanded conversation list */}
+              {isExpanded && agentTasks.length > 0 && (
+                <div style={{ paddingLeft: 24, borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
+                  {agentTasks.slice(0, 20).map(t => (
+                    <div
+                      key={t.id}
+                      onClick={() => handleTaskClick(t)}
+                      style={{
+                        display: 'flex', alignItems: 'center', gap: 6, padding: '5px 14px 5px 10px',
+                        cursor: 'pointer', borderRadius: 4, fontSize: 12,
+                        background: selMasterTaskId === t.id ? 'rgba(76,175,80,0.1)' : 'transparent',
+                        borderLeft: selMasterTaskId === t.id ? '2px solid #4CAF50' : '2px solid transparent',
+                        marginBottom: 1,
+                      }}
+                      onMouseEnter={e => { if (selMasterTaskId !== t.id) e.currentTarget.style.background = 'rgba(255,255,255,0.03)'; }}
+                      onMouseLeave={e => { if (selMasterTaskId !== t.id) e.currentTarget.style.background = 'transparent'; }}
+                    >
+                      <span style={{
+                        width: 6, height: 6, borderRadius: '50%', flexShrink: 0,
+                        background: t.status === 'running' ? '#4CAF50' : t.status === 'done' ? '#888' : '#555',
+                      }} />
+                      <span style={{
+                        flex: 1, color: selMasterTaskId === t.id ? '#ddd' : '#999',
+                        overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                      }}>
+                        {t.goal || '未命名对话'}
+                      </span>
+                      {t.task_count > 0 && (
+                        <span style={{ color: '#FF9800', fontSize: 10, flexShrink: 0 }}>📋{t.task_count}</span>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
           );
         })}
         {filtered.length === 0 && matchedTasks.length === 0 && (

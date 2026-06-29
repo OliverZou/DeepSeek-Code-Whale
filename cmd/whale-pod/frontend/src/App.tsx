@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback } from 'react';
 import { useStore } from './store';
 import TitleBar from './components/TitleBar';
 import Sidebar from './components/Sidebar';
+import ChatArea from './components/ChatArea';
 import RightPanel from './components/RightPanel';
 import Resizer from './components/Resizer';
 import SettingsPanel from './components/SettingsPanel';
@@ -75,6 +76,8 @@ export default function App() {
         <div className="app-container">
           <Sidebar />
           {!sidebarCollapsed && <Resizer target="sidebar" side="right" />}
+          <ChatArea />
+          <Resizer target="right-panel" side="left" />
           <RightPanel />
         </div>
 

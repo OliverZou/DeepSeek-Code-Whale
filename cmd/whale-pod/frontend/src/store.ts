@@ -79,6 +79,13 @@ interface PodState {
   sidebarCollapsed: boolean;
   selAgentId: string | null;
   openTabs: Record<string, string[]>;
+  activeRightTab: string | null;
+  setActiveRightTab: (tabId: string) => void;
+
+  // Pending task action — wait for user to pick workspace before starting
+  pendingTaskAction: { sessionId: string; mode: string; role?: string; goal: string } | null;
+  confirmTaskAction: (workDir: string) => Promise<void>;
+  cancelPendingTaskAction: () => void;
 
   // Streaming state
   isStreaming: boolean;
@@ -110,6 +117,8 @@ interface PodState {
   getCurrentTabs: () => string[];
   summonAndOpen: (item: SummonedItem) => Promise<void>;
   toggleSidebar: () => void;
+  rightPanelVisible: boolean;
+  toggleRightPanel: () => void;
   runSubtask: (taskId: string) => Promise<void>;
   cancelSubtask: (taskId: string) => Promise<void>;
   handleTaskEvent: (event: TaskEvent) => void;
@@ -141,8 +150,12 @@ export const useStore = create<PodState>((set, get) => ({
   summonedItems: [] as SummonedItem[],
   preselectedExpert: '',
   sidebarCollapsed: false,
+  rightPanelVisible: true,
   selAgentId: null,
   openTabs: loadTabs(),
+  activeRightTab: null,
+  setActiveRightTab: (tabId: string) => set({ activeRightTab: tabId }),
+  pendingTaskAction: null,
   pinnedTaskIds: loadPinnedIds(),
   directChatTaskId: null,
   directMessages: [],
@@ -233,22 +246,23 @@ export const useStore = create<PodState>((set, get) => ({
       leaderPlan: [],
       activeFunction: null,
       directChatTaskId: task && task.task_count === 0 ? id : get().directChatTaskId,
+      activeRightTab: task && task.task_count > 0 ? 'task' : null,
     });
-    // Direct chat task: load messages from history
-    if (task && task.task_count === 0) {
-      const msgs = await api.getChatMessages(id);
-      if (msgs && msgs.length > 0) {
-        const displayMsgs: ChatMessage[] = msgs.map(m => ({
-          from: m.from === 'agent' ? 'agent' : 'human',
-          content: m.content,
-          time: m.time || '',
-          thinking: m.thinking || undefined,
-          durationMs: m.durationMs != null ? m.durationMs : undefined,
-        }));
-        set({ directMessages: displayMsgs, chatVersion: get().chatVersion + 1 });
-      }
-      return;
+    // Always try to load direct chat messages (even for sessions that later spawned tasks)
+    const msgs = await api.getChatMessages(id);
+    if (msgs && msgs.length > 0) {
+      const displayMsgs: ChatMessage[] = msgs.map(m => ({
+        from: m.from === 'agent' ? 'agent' : 'human',
+        content: m.content,
+        time: m.time || '',
+        thinking: m.thinking || undefined,
+        durationMs: m.durationMs != null ? m.durationMs : undefined,
+      }));
+      set({ directMessages: displayMsgs, chatVersion: get().chatVersion + 1 });
     }
+    // Pure chat session: done
+    if (task && task.task_count === 0) return;
+    // Session with tasks: also load subtasks and plan
     await get().loadSubtasks(id);
     if (task?.task_count && task.task_count > 0) {
       const plan = await api.getLeaderPlan();
@@ -369,21 +383,32 @@ export const useStore = create<PodState>((set, get) => ({
   },
 
   handleChatAction: async (data: { sessionId: string; mode: string; role?: string; goal: string }) => {
-    const { sessionId, mode, role, goal } = data;
+    // Don't auto-start — set pending so user can pick workspace first
+    set({ pendingTaskAction: data });
+  },
+
+  confirmTaskAction: async (workDir: string) => {
+    const pending = get().pendingTaskAction;
+    if (!pending) return;
+    const { sessionId, mode, role, goal } = pending;
     const selAgentId = get().selAgentId || '';
-    const workDir = '';
 
     if (mode === 'team') {
       const teamName = selAgentId.startsWith('team:') ? selAgentId.slice(5) : '';
-      if (!teamName) { console.warn('[handleChatAction] team mode but no teamName from selAgentId:', selAgentId); return; }
+      if (!teamName) { console.warn('[confirmTaskAction] team mode but no teamName'); return; }
       await api.startTaskInSession(sessionId, goal, teamName, workDir);
     } else if (mode === 'agent') {
       const agentName = role || (selAgentId.startsWith('expert:') ? selAgentId.slice(7) : '');
-      if (!agentName) { console.warn('[handleChatAction] agent mode but no agentName, role:', role, 'selAgentId:', selAgentId); return; }
+      if (!agentName) { console.warn('[confirmTaskAction] agent mode but no agentName'); return; }
       await api.startExpertTaskInSession(sessionId, goal, agentName, workDir);
     }
 
+    set({ pendingTaskAction: null });
     setTimeout(() => get().loadMasterTasks(), 500);
+  },
+
+  cancelPendingTaskAction: () => {
+    set({ pendingTaskAction: null });
   },
 
   sendFeedback: async (msg: string) => {
@@ -528,6 +553,8 @@ export const useStore = create<PodState>((set, get) => ({
   },
 
   toggleSidebar: () => set(s => ({ sidebarCollapsed: !s.sidebarCollapsed })),
+
+  toggleRightPanel: () => set(s => ({ rightPanelVisible: !s.rightPanelVisible })),
 
   handleTaskEvent: (event: TaskEvent) => {
     const unread = new Set(get().unreadTasks);

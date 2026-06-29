@@ -5,9 +5,10 @@ import type { SettingsData, MCPServerInfo } from '../types';
 interface SettingsPanelProps {
   visible: boolean;
   onClose: () => void;
+  embedded?: boolean;
 }
 
-export default function SettingsPanel({ visible, onClose }: SettingsPanelProps) {
+export default function SettingsPanel({ visible, onClose, embedded }: SettingsPanelProps) {
   const [settings, setSettings] = useState<SettingsData>({
     apiKey: '',
     model: 'deepseek-chat',
@@ -61,7 +62,7 @@ export default function SettingsPanel({ visible, onClose }: SettingsPanelProps) 
 
   return (
     <>
-      {/* Backdrop */}
+      {!embedded && (
       <div
         onClick={onClose}
         style={{
@@ -69,8 +70,10 @@ export default function SettingsPanel({ visible, onClose }: SettingsPanelProps) 
           background: 'rgba(0,0,0,0.5)',
         }}
       />
-      {/* Panel */}
-      <div style={{
+      )}
+      <div style={embedded ? {
+        padding: 24, overflowY: 'auto', height: '100%', background: '#141414',
+      } : {
         position: 'fixed', top: 0, right: 0, bottom: 0, width: 380,
         zIndex: 100, background: '#1a1917',
         borderLeft: '1px solid #333',
@@ -224,8 +227,9 @@ export default function SettingsPanel({ visible, onClose }: SettingsPanelProps) 
             <label style={labelStyle}>MCP 服务器</label>
             <div style={{ maxHeight: 300, overflowY: 'auto', borderRadius: 8, border: '1px solid #333' }}>
               {mcpServers.length === 0 && (
-                <div style={{ padding: 16, color: '#555', fontSize: 12, textAlign: 'center' }}>
-                  未找到 MCP 服务器配置
+                <div style={{ padding: 16, color: '#666', fontSize: 12, textAlign: 'center', lineHeight: 1.8 }}>
+                  未找到 MCP 服务器配置<br />
+                  <span style={{ color: '#888' }}>配置文件：bin\.whale\mcp.json</span>
                 </div>
               )}
               {mcpServers.map(srv => (

@@ -2,9 +2,10 @@ import { useState, useRef, useEffect, memo, useCallback } from 'react';
 import { useStore } from '../store';
 import { api } from '../wails';
 import ChatContent from './ChatContent';
+import MinimalSelect from './MinimalSelect';
 
 export default function DirectChatView() {
-  const { directMessages, directChatTaskId, sendDirectChat, selMasterTaskId, selAgentId, summonedItems, startDirectChat, masterTasks, isStreaming, streamingContent, streamingThinking, abortStreaming, regenerateLast, deleteMessage, chatVersion } = useStore();
+  const { directMessages, directChatTaskId, sendDirectChat, selMasterTaskId, selAgentId, summonedItems, startDirectChat, masterTasks, isStreaming, streamingContent, streamingThinking, abortStreaming, regenerateLast, deleteMessage, chatVersion, pendingTaskAction, confirmTaskAction, cancelPendingTaskAction, openWorkspaces } = useStore();
   const [input, setInput] = useState('');
   const [focused, setFocused] = useState(false);
   const [sending, setSending] = useState(false);
@@ -246,6 +247,63 @@ export default function DirectChatView() {
               <ChatContent content={m.content} />
             </div>
             )}
+            {/* Task inline card — shown after AI messages that triggered a task */}
+            {m.from === 'agent' && m.action && (() => {
+              const mt = masterTasks.find(t => t.id === directChatTaskId || t.id === selMasterTaskId);
+              const hasSubtasks = mt && mt.task_count > 0;
+              // Is this the message waiting for workspace confirmation?
+              const isPending = pendingTaskAction && pendingTaskAction.goal === m.action!.goal;
+
+              // Already started task — show link to task panel
+              if (hasSubtasks) {
+                return (
+                  <div
+                    onClick={() => useStore.setState({ activeRightTab: 'task' })}
+                    style={{
+                      marginTop: 8, padding: '8px 12px', borderRadius: 8,
+                      background: 'rgba(76,175,80,0.1)',
+                      border: '1px solid rgba(76,175,80,0.25)',
+                      cursor: 'pointer', fontSize: 12,
+                      display: 'flex', alignItems: 'center', gap: 8,
+                      maxWidth: '70%',
+                    }}
+                  >
+                    <span style={{ fontSize: 16 }}>📋</span>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ color: '#4CAF50', fontWeight: 600, marginBottom: 2 }}>已启动任务</div>
+                      <div style={{ color: '#999', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {m.action!.goal}
+                      </div>
+                    </div>
+                    <span style={{ color: '#4CAF50', fontSize: 11, whiteSpace: 'nowrap' }}>查看 →</span>
+                  </div>
+                );
+              }
+
+              // Pending task — show workspace picker
+              if (isPending) {
+                const wsOptions = [
+                  ...openWorkspaces.map((d: string) => ({ value: d, label: d.split('\\').pop() || d })),
+                  { value: '__pick__', label: '选择文件夹…', special: true },
+                ];
+                return (
+                  <WorkspacePicker
+                    goal={m.action!.goal}
+                    role={m.action!.role}
+                    workspaces={wsOptions}
+                    onConfirm={(ws) => confirmTaskAction(ws)}
+                    onCancel={cancelPendingTaskAction}
+                    onPickFolder={async () => {
+                      const picked = await api.pickFolder();
+                      if (picked) return picked;
+                      return null;
+                    }}
+                  />
+                );
+              }
+
+              return null;
+            })()}
           </div>
         ))}
         {sending && !isStreaming && (
@@ -512,6 +570,90 @@ export default function DirectChatView() {
           </svg>
           {workspacePath && <span style={{ fontSize: 13, color: '#777', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={workspacePath}>{workspacePath}</span>}
         </div>
+      </div>
+    </div>
+  );
+}
+
+// Inline workspace picker for pending task actions
+function WorkspacePicker({
+  goal, role, workspaces, onConfirm, onCancel, onPickFolder,
+}: {
+  goal: string;
+  role?: string;
+  workspaces: { value: string; label: string; special?: boolean }[];
+  onConfirm: (ws: string) => void;
+  onCancel: () => void;
+  onPickFolder: () => Promise<string | null>;
+}) {
+  const [selectedWs, setSelectedWs] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  const handleConfirm = async () => {
+    if (busy) return;
+    let ws = selectedWs;
+    if (ws === '__pick__') {
+      setBusy(true);
+      const picked = await onPickFolder();
+      setBusy(false);
+      if (!picked) return;
+      ws = picked;
+    }
+    if (!ws) return;
+    onConfirm(ws);
+  };
+
+  const handleWsChange = (v: string) => {
+    setSelectedWs(v);
+  };
+
+  return (
+    <div style={{
+      marginTop: 8, padding: '10px 12px', borderRadius: 8,
+      background: 'rgba(255,152,0,0.08)',
+      border: '1px solid rgba(255,152,0,0.3)',
+      fontSize: 12, maxWidth: '70%',
+    }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+        <span style={{ fontSize: 16 }}>📋</span>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ color: '#FF9800', fontWeight: 600 }}>确认启动任务</div>
+          <div style={{ color: '#999', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {goal}
+          </div>
+          {role && <div style={{ color: '#666', fontSize: 11, marginTop: 1 }}>{role}</div>}
+        </div>
+      </div>
+
+      <div style={{ marginBottom: 8 }}>
+        <div style={{ fontSize: 11, color: '#888', marginBottom: 4 }}>选择工作空间（任务文件将创建在此目录）</div>
+        <MinimalSelect
+          value={selectedWs}
+          placeholder="选择工作空间…"
+          options={workspaces}
+          onChange={handleWsChange}
+          style={{ width: '100%' }}
+        />
+      </div>
+
+      <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+        <button
+          onClick={onCancel}
+          style={{
+            padding: '4px 12px', borderRadius: 6, border: '1px solid #555',
+            background: 'transparent', color: '#999', fontSize: 11, cursor: 'pointer',
+          }}
+        >取消</button>
+        <button
+          onClick={handleConfirm}
+          disabled={!selectedWs || busy}
+          style={{
+            padding: '4px 12px', borderRadius: 6, border: 'none',
+            background: (selectedWs && !busy) ? '#FF9800' : '#333',
+            color: '#fff', fontSize: 11, fontWeight: 600, cursor: (selectedWs && !busy) ? 'pointer' : 'default',
+            opacity: (selectedWs && !busy) ? 1 : 0.4,
+          }}
+        >确认启动</button>
       </div>
     </div>
   );

@@ -20,7 +20,7 @@ body { font-family: system-ui, sans-serif; background: var(--bg); color: var(--t
 .app-frame { display: flex; flex-direction: column; height: 100vh; }
 /* Floating window controls */
 .win-float { position: fixed; top: 4px; right: 6px; display: flex; gap: 2px; z-index: 100; }
-.win-float button { width: 32px; height: 26px; border: none; background: transparent; color: rgba(255,255,255,0.3); font-size: 13px; cursor: pointer; display: flex; align-items: center; justify-content: center; border-radius: 4px; }
+.win-float button { width: 34px; height: 28px; border: none; background: transparent; color: rgba(255,255,255,0.3); font-size: 13px; cursor: pointer; display: flex; align-items: center; justify-content: center; border-radius: 4px; }
 .win-float button:hover { background: rgba(255,255,255,0.08); color: rgba(255,255,255,0.7); }
 .win-float .btn-close:hover { background: var(--red); color: #fff; }
 .win-controls button { width: 36px; height: 24px; border: none; background: transparent; color: var(--muted); font-size: 13px; cursor: pointer; display: flex; align-items: center; justify-content: center; border-radius: 4px; }
@@ -53,7 +53,7 @@ body { font-family: system-ui, sans-serif; background: var(--bg); color: var(--t
 .app-container { display: flex; flex: 1; overflow: hidden; }
 #sidebar { width: 280px; min-width: 180px; max-width: 500px; background: var(--sidebar-bg); display: flex; flex-direction: column; overflow: hidden; flex-shrink: 0; border-right: 1px solid rgba(255,255,255,0.06); transition: width 0.25s ease, min-width 0.25s ease, border-right-width 0.25s ease; }
 
-#right-panel { flex: 1; display: flex; flex-direction: column; overflow: hidden; background: var(--panel-bg); }
+#right-panel { width: 320px; min-width: 180px; max-width: 500px; display: flex; flex-direction: column; overflow: hidden; background: var(--panel-bg); flex-shrink: 0; border-left: 1px solid rgba(255,255,255,0.06); transition: width 0.25s ease, min-width 0.25s ease; }
 #right-panel > :not(.panel-titlebar) { overflow-y: auto; flex: 1; }
 
 /* Sections */
