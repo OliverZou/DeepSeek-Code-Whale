@@ -806,6 +806,9 @@ func listAgentMarkdown(dir string) []map[string]interface{} {
 			name := strings.TrimSuffix(se.Name(), ".md")
 			desc := ""
 			role := ""
+			var skills []string
+			var tools []string
+			var whenToUse string
 			parts := strings.SplitN(string(data), "---", 3)
 			if len(parts) >= 3 {
 				var raw struct {
@@ -824,6 +827,9 @@ func listAgentMarkdown(dir string) []map[string]interface{} {
 					}
 					desc = raw.Description
 					role = raw.Role
+					skills = raw.Skills
+					tools = raw.Tools
+					whenToUse = raw.WhenToUse
 					if role == "" && raw.Profession != nil {
 						if zh, ok := raw.Profession["zh"]; ok {
 							role = zh
@@ -842,6 +848,7 @@ func listAgentMarkdown(dir string) []map[string]interface{} {
 			result = append(result, map[string]interface{}{
 				"name": name, "role": role, "description": desc,
 				"category": e.Name(),
+				"skills": skills, "tools": tools, "whenToUse": whenToUse,
 			})
 		}
 	}
