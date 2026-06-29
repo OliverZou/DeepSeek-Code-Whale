@@ -3,6 +3,8 @@ import { useStore } from '../store';
 import { api } from '../wails';
 import CreateTaskView from './CreateTaskView';
 import DirectChatView from './DirectChatView';
+import ExpertPanel from './ExpertPanel';
+import SettingsPanel from './SettingsPanel';
 import ChatHistoryPanel from './ChatHistoryPanel';
 import ChatTabBar from './ChatTabBar';
 
@@ -106,6 +108,16 @@ export default function ChatArea() {
     // Create task view
     if (activeFunction === 'create') {
       return <CreateTaskView />;
+    }
+
+    // Expert panel
+    if (activeFunction === 'expert') {
+      return <ExpertPanel />;
+    }
+
+    // Settings panel
+    if (activeFunction === 'settings') {
+      return <SettingsPanel visible={true} onClose={() => useStore.setState({ activeFunction: null })} />;
     }
 
     // New direct chat (no session selected)
