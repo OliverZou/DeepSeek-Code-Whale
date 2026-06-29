@@ -747,9 +747,9 @@ func (d *Daemon) handleTeamList(client *wsClient, req wsRequest) {
 	client.send(wsResponse{Type: "team.list", ID: req.ID, Payload: map[string]interface{}{"teams": result}})
 }
 
-func (d *Daemon) agentsDir() string  { return filepath.Join(filepath.Dir(d.cfg.DataDir), "agents") }
-func (d *Daemon) expertsDir() string { return filepath.Join(filepath.Dir(d.cfg.DataDir), "experts") }
-func (d *Daemon) teamsDir() string   { return filepath.Join(filepath.Dir(d.cfg.DataDir), "teams") }
+func (d *Daemon) agentsDir() string  { return filepath.Join(d.cfg.DataDir, "agents") }
+func (d *Daemon) expertsDir() string { return filepath.Join(d.cfg.DataDir, "experts") }
+func (d *Daemon) teamsDir() string   { return filepath.Join(d.cfg.DataDir, "teams") }
 
 // =========================================================================
 // Helpers
