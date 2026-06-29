@@ -335,6 +335,8 @@ func (d *Daemon) handleMessage(client *wsClient, req wsRequest) {
 		d.handleSessionDeleteAll(client, req)
 	case "session.clearEmpty":
 		d.handleSessionClearEmpty(client, req)
+	case "session.getMessages":
+		d.handleSessionGetMessages(client, req)
 	case "agent.list":
 		d.handleAgentList(client, req)
 	case "expert.list":
@@ -848,9 +850,30 @@ func (d *Daemon) agentsDir() string  { return filepath.Join(d.cfg.DataDir, "agen
 func (d *Daemon) expertsDir() string { return filepath.Join(d.cfg.DataDir, "experts") }
 func (d *Daemon) teamsDir() string   { return filepath.Join(d.cfg.DataDir, "teams") }
 
-// =========================================================================
-// Helpers
-// =========================================================================
+func (d *Daemon) handleSessionGetMessages(client *wsClient, req wsRequest) {
+	var p struct{ ID string `json:"id"` }
+	json.Unmarshal(req.Payload, &p)
+	msgs, err := d.store.List(context.Background(), p.ID)
+	if err != nil {
+		client.send(wsResponse{Type: "error", ID: req.ID, Payload: map[string]string{"message": err.Error()}})
+		return
+	}
+	result := make([]map[string]interface{}, 0, len(msgs))
+	for _, m := range msgs {
+		from := "human"
+		if m.Role == core.RoleAssistant || m.Role == core.RoleTool {
+			from = "agent"
+		}
+		result = append(result, map[string]interface{}{
+			"time":    m.CreatedAt.Format(time.RFC3339),
+			"from":    from,
+			"content": core.MessagePlainText(m),
+			"thinking": m.Reasoning,
+			"durationMs": m.DurationMs,
+		})
+	}
+	client.send(wsResponse{Type: "session.getMessages", ID: req.ID, Payload: map[string]interface{}{"messages": result}})
+}
 
 func (d *Daemon) broadcast(msg wsPush) {
 	d.mu.Lock()
