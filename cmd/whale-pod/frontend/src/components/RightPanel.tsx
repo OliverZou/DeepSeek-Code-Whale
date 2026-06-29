@@ -3,6 +3,7 @@ import { api } from '../wails';
 import ExpertPanel from './ExpertPanel';
 import SettingsPanel from './SettingsPanel';
 import TaskPanel from './TaskPanel';
+import { useEffect } from 'react';
 
 const sidebarToggleIcon = (
   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -34,6 +35,13 @@ export default function RightPanel() {
 
   const mt = masterTasks.find(t => t.id === selMasterTaskId);
   const hasTasks = mt && mt.task_count > 0;
+
+  // Auto-open right panel when expert or settings is activated
+  useEffect(() => {
+    if (!rightPanelVisible && (activeFunction === 'expert' || activeFunction === 'settings')) {
+      useStore.setState({ rightPanelVisible: true });
+    }
+  }, [activeFunction, rightPanelVisible]);
 
   // Build available tabs
   const tabs: { id: string; label: string }[] = [];
