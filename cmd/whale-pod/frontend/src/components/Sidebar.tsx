@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useRef, useLayoutEffect } from 'react';
+import { useState, useEffect, useMemo, useRef, useLayoutEffect, useCallback } from 'react';
 import { useStore } from '../store';
 import { api } from '../wails';
 import type { SummonedItem, MasterTask } from '../types';
@@ -44,8 +44,9 @@ function AgentAvatar({ item }: { item: SummonedItem | { type: 'whale'; name: str
 
 function useFixedRight(sidebarRef: React.RefObject<HTMLDivElement>, rowRef: React.RefObject<HTMLDivElement>, leftOffset: number, active: boolean): React.CSSProperties {
   const [style, setStyle] = useState<React.CSSProperties>({});
-  useLayoutEffect(() => {
-    if (!active) return;
+
+  // core positioning logic — recalculates on active / offset / sidebar size / scroll
+  const recalc = useCallback(() => {
     const row = rowRef.current;
     const sb = sidebarRef.current;
     if (!row || !sb) return;
@@ -57,7 +58,29 @@ function useFixedRight(sidebarRef: React.RefObject<HTMLDivElement>, rowRef: Reac
       top: rr.top + rr.height / 2 - 11,
       zIndex: 10,
     });
-  }, [active, leftOffset, sidebarRef]);
+  }, [sidebarRef, rowRef, leftOffset]);
+
+  useLayoutEffect(() => {
+    if (!active) return;
+    recalc();
+  }, [active, recalc]);
+
+  // keep position in sync when sidebar is resized or scrolled
+  useEffect(() => {
+    if (!active) return;
+    const sb = sidebarRef.current;
+    if (!sb) return;
+    const ro = new ResizeObserver(() => recalc());
+    ro.observe(sb);
+    // also listen to scroll on the scroll container (first scrollable child)
+    const scrollEl = sb.querySelector('[style*="overflow"]') as HTMLElement | null;
+    scrollEl?.addEventListener('scroll', recalc, { passive: true });
+    return () => {
+      ro.disconnect();
+      scrollEl?.removeEventListener('scroll', recalc);
+    };
+  }, [active, recalc, sidebarRef]);
+
   return style;
 }
 
