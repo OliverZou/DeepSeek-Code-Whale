@@ -11,6 +11,8 @@ import { useKeyboard } from './components/useKeyboard';
 export default function App() {
   const init = useStore(s => s.init);
   const sidebarCollapsed = useStore(s => s.sidebarCollapsed);
+  const activeFunction = useStore(s => s.activeFunction);
+  const isPanelView = activeFunction === 'expert' || activeFunction === 'settings';
 
   useEffect(() => { useStore.getState().init(); }, []);
 
@@ -71,8 +73,8 @@ export default function App() {
           <Sidebar />
           {!sidebarCollapsed && <Resizer target="sidebar" side="right" />}
           <ChatArea />
-          <Resizer target="right-panel" side="left" />
-          <RightPanel />
+          {!isPanelView && <Resizer target="right-panel" side="left" />}
+          {!isPanelView && <RightPanel />}
         </div>
       </div>
     </ErrorBoundary>
