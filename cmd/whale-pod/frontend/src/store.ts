@@ -383,6 +383,18 @@ export const useStore = create<PodState>((set, get) => ({
   },
 
   handleChatAction: async (data: { sessionId: string; mode: string; role?: string; goal: string }) => {
+    const selAgentId = get().selAgentId || '';
+
+    // Validate: expert chats should never start team tasks
+    if (selAgentId.startsWith('expert:') && data.mode === 'team') {
+      console.warn('[handleChatAction] ignoring team mode in expert chat');
+      return;
+    }
+    // whale chats don't start any tasks
+    if (!selAgentId.startsWith('expert:') && !selAgentId.startsWith('team:')) {
+      return;
+    }
+
     // Don't auto-start — set pending so user can pick workspace first
     set({ pendingTaskAction: data });
   },
