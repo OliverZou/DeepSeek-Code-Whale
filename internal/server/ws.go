@@ -324,6 +324,8 @@ func (d *Daemon) handleMessage(client *wsClient, req wsRequest) {
 		d.handleTaskCancel(client, req)
 	case "task.delete":
 		d.handleTaskDelete(client, req)
+	case "session.list":
+		d.handleSessionList(client, req)
 	case "approval.decision":
 		d.handleApprovalDecision(client, req)
 	case "user_input.response":
@@ -687,6 +689,40 @@ func (d *Daemon) handleTaskDelete(client *wsClient, req wsRequest) {
 		return
 	}
 	client.send(wsResponse{Type: "task.deleted", ID: req.ID, Payload: map[string]string{"task_id": p.TaskID}})
+}
+
+// handleSessionList returns recent sessions from the JSONL store.
+func (d *Daemon) handleSessionList(client *wsClient, req wsRequest) {
+	sessions, err := session.ListSessions(d.sessionsDir, 50)
+	if err != nil {
+		client.send(wsResponse{Type: "error", ID: req.ID, Payload: map[string]string{"message": err.Error()}})
+		return
+	}
+	result := make([]map[string]interface{}, 0, len(sessions))
+	for _, s := range sessions {
+		if s.Meta.Kind == "subagent" {
+			continue
+		}
+		goal := s.Meta.Title
+		if goal == "" {
+			goal = s.Conversation
+		}
+		status := "done"
+		if s.Meta.Status == "active" {
+			status = "running"
+		}
+		result = append(result, map[string]interface{}{
+			"id":              s.ID,
+			"goal":            goal,
+			"agent":           s.Meta.Agent,
+			"workspace_path":  s.Meta.Workspace,
+			"workspace_label": filepath.Base(s.Meta.Workspace),
+			"status":          status,
+			"created_at":      s.Meta.StartedAt,
+			"task_count":      0,
+		})
+	}
+	client.send(wsResponse{Type: "session.list", ID: req.ID, Payload: map[string]interface{}{"sessions": result}})
 }
 
 // =========================================================================
