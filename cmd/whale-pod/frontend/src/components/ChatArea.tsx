@@ -151,13 +151,17 @@ export default function ChatArea() {
     );
   };
 
+  const isPanelView = activeFunction === 'expert' || activeFunction === 'settings';
+
   return (
     <div id="chat-area" style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', background: 'var(--panel-bg)', minWidth: 200 }}>
       <div className="panel-titlebar" onDoubleClick={() => api.windowMaximize()} style={{ paddingRight: 110 }}>
         {sidebarCollapsed && <SidebarToggle />}
-        <div style={{ display: 'flex', alignItems: 'stretch', gap: 0, flex: 1, minWidth: 0, height: '100%' }}>
-          <ChatTabBar />
-        </div>
+        {!isPanelView && (
+          <div style={{ display: 'flex', alignItems: 'stretch', gap: 0, flex: 1, minWidth: 0, height: '100%' }}>
+            <ChatTabBar />
+          </div>
+        )}
       </div>
       {renderContent()}
     </div>
