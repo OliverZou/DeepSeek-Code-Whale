@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"github.com/usewhale/whale/internal/core"
 	"github.com/usewhale/whale/internal/defaults"
+	whalemcp "github.com/usewhale/whale/internal/mcp"
 	"github.com/usewhale/whale/internal/policy"
 	"github.com/usewhale/whale/internal/session"
 	"strings"
@@ -160,15 +161,6 @@ func (a *App) MCPManager() *whalemcp.Manager {
 		return nil
 	}
 	return a.mcpManager
-}
-	if a.dashboardClient != nil {
-		// Best-effort deregister — don't block shutdown.
-		go a.dashboardClient.Deregister()
-	}
-	if a.mcpManager == nil {
-		return nil
-	}
-	return a.mcpManager.Close()
 }
 
 func (a *App) savePreferences() {

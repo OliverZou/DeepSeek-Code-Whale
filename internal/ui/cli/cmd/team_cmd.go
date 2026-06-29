@@ -15,7 +15,6 @@ import (
 	"github.com/usewhale/whale/internal/llm"
 	"github.com/usewhale/whale/internal/llm/deepseek"
 	"github.com/usewhale/whale/internal/team_engine"
-	"github.com/usewhale/whale/internal/team_engine/server"
 )
 
 func newTeamCmd() *cobra.Command {
@@ -661,36 +660,6 @@ Use --json for machine-readable output.`,
 	}
 	traceCmd.Flags().Bool("json", false, "Output as JSON (machine-readable)")
 	teamCmd.AddCommand(traceCmd)
-
-	// --- dashboard subcommand ---
-	dashboardCmd := &cobra.Command{
-		Use:   "dashboard",
-		Short: "Start real-time web dashboard",
-		Long: `Start a web server with SSE-based live task monitoring.
-
-Dashboard shows:
-  - Real-time task status (auto-refreshes every 2s via SSE)
-  - Aggregate statistics (total, success rate)
-  - Progress bars for producing/verifying stages
-  - Agent output preview
-  - Dark theme, modern UI
-
-Open http://localhost:8080 after starting.`,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			addr, _ := cmd.Flags().GetString("addr")
-
-			eng, err := newTeamEngine(dbPath, whiteboardDir, configPath)
-			if err != nil {
-				return fmt.Errorf("init engine: %w", err)
-			}
-			defer eng.Close()
-
-			srv := server.NewDashboardServer(eng, addr)
-			return srv.Start()
-		},
-	}
-	dashboardCmd.Flags().String("addr", "localhost:8080", "Listen address (host:port)")
-	teamCmd.AddCommand(dashboardCmd)
 
 	return teamCmd
 }
