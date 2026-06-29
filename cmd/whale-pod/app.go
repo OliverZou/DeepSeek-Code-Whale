@@ -960,6 +960,19 @@ func isPodSession(id string) bool {
 	return strings.HasPrefix(id, "pod-")
 }
 
+// agentMatches normalizes agent keys: "" and "whale:" are treated as equivalent.
+// Frontend sends "" for Whale, but sessions may have Meta.Agent = "whale:".
+func agentMatches(filter, stored string) bool {
+	// Normalize: treat empty string and "whale:" as the same.
+	norm := func(s string) string {
+		if s == "" || s == "whale:" {
+			return ""
+		}
+		return s
+	}
+	return norm(filter) == norm(stored)
+}
+
 func newSessionID() string {
 	u, err := uuid.NewV7()
 	if err != nil {
@@ -1771,10 +1784,7 @@ func (a *App) ListSessionsByAgent(agent string, offset, limit int) []pod.MasterT
 			continue
 		}
 		sa := s.Meta.Agent
-		if agent == "" && sa != "" {
-			continue
-		}
-		if agent != "" && sa != agent {
+		if !agentMatches(agent, sa) {
 			continue
 		}
 		count++
@@ -1955,7 +1965,13 @@ func (a *App) ApplyOutput(taskID, targetDir string) string {
 }
 
 func (a *App) DeleteSession(sessionID string) string {
-	// Delete session files
+	a.deleteSessionInternal(sessionID)
+	runtime.EventsEmit(a.ctx, "update", a.GetMasterTasks())
+	return ""
+}
+
+// deleteSessionInternal removes the session files and engine tasks without emitting events.
+func (a *App) deleteSessionInternal(sessionID string) {
 	sanitized := core.SanitizeSessionID(sessionID)
 	for _, suffix := range []string{".jsonl", ".meta.json", ".approvals.json", ".mode.json", ".goal.json", ".todo.json"} {
 		os.Remove(filepath.Join(a.sessionsDir, sanitized+suffix))
@@ -1971,9 +1987,6 @@ func (a *App) DeleteSession(sessionID string) string {
 			eng.DeleteMasterTaskAndChildren(mt.ID)
 		}
 	}
-
-	runtime.EventsEmit(a.ctx, "update", a.GetMasterTasks())
-	return ""
 }
 
 // DeleteAllSessions deletes all sessions (pod + task) for the specified agent.
@@ -1986,14 +1999,12 @@ func (a *App) DeleteAllSessions(agent string) string {
 		if s.Meta.Kind == "subagent" {
 			continue
 		}
-		if agent == "" && s.Meta.Agent != "" {
+		if !agentMatches(agent, s.Meta.Agent) {
 			continue
 		}
-		if agent != "" && s.Meta.Agent != agent {
-			continue
-		}
-		a.DeleteSession(s.ID)
+		a.deleteSessionInternal(s.ID)
 	}
+	runtime.EventsEmit(a.ctx, "update", a.GetMasterTasks())
 	return ""
 }
 
@@ -2007,20 +2018,18 @@ func (a *App) ClearEmptySessions(agent string) string {
 		if s.Meta.Kind == "subagent" {
 			continue
 		}
-		if agent == "" && s.Meta.Agent != "" {
-			continue
-		}
-		if agent != "" && s.Meta.Agent != agent {
+		if !agentMatches(agent, s.Meta.Agent) {
 			continue
 		}
 		// Check if session has any messages
 		if a.sessionStore != nil {
 			msgs, err := a.sessionStore.List(context.Background(), s.ID)
 			if err == nil && len(msgs) == 0 {
-				a.DeleteSession(s.ID)
+				a.deleteSessionInternal(s.ID)
 			}
 		}
 	}
+	runtime.EventsEmit(a.ctx, "update", a.GetMasterTasks())
 	return ""
 }
 

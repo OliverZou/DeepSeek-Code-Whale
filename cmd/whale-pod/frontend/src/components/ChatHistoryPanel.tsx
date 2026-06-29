@@ -2,8 +2,19 @@ import { useState, useEffect, useRef } from 'react';
 import { useStore } from '../store';
 import { api } from '../wails';
 import type { MasterTask } from '../types';
+import ConfirmDialog from './ConfirmDialog';
 
 const PAGE_SIZE = 20;
+
+/** Reset to new-chat page after deletion. */
+function resetToNewChat() {
+  useStore.setState({
+    selMasterTaskId: null,
+    directChatTaskId: null,
+    directMessages: [],
+    activeFunction: 'chat',
+  });
+}
 
 export default function ChatHistoryPanel({ open, onClose }: { open: boolean; onClose: () => void }) {
   const selAgentId = useStore(s => s.selAgentId);
@@ -14,6 +25,10 @@ export default function ChatHistoryPanel({ open, onClose }: { open: boolean; onC
   const [loading, setLoading] = useState(false);
   const [visible, setVisible] = useState(false);
   const panelRef = useRef<HTMLDivElement>(null);
+
+  // Confirm dialog state
+  const [confirmTarget, setConfirmTarget] = useState<MasterTask | null>(null);
+  const [confirmDeleteAll, setConfirmDeleteAll] = useState(false);
 
   const agent = selAgentId === 'whale:' ? '' : selAgentId || '';
 
@@ -58,43 +73,38 @@ export default function ChatHistoryPanel({ open, onClose }: { open: boolean; onC
   };
 
   const handleSelect = (session: MasterTask) => {
-    // Ensure agent context matches the session's agent
     const agentKey = session.agent || '';
     if (useStore.getState().selAgentId !== agentKey) {
       useStore.setState({ selAgentId: agentKey });
     }
-    // Force directChatTaskId so DirectChatView loads this session's messages,
-    // not a stale previous session.
     useStore.setState({ directChatTaskId: session.id });
     useStore.getState().addTab(session.id);
     selectMasterTask(session.id);
     onClose();
   };
 
-  const handleDelete = async (e: React.MouseEvent, session: MasterTask) => {
+  /** Perform single-session deletion. */
+  const doDelete = async (sessionId: string) => {
+    const state = useStore.getState();
+    const isCurrent = state.selMasterTaskId === sessionId || state.directChatTaskId === sessionId;
+    await api.deleteSession(sessionId);
+    // Remove from local list
+    setSessions(prev => prev.filter(s => s.id !== sessionId));
+    state.loadMasterTasks();
+    // If we deleted the currently viewed session, go back to new chat
+    if (isCurrent) {
+      state.removeTab(sessionId);
+      resetToNewChat();
+    }
+  };
+
+  const handleDeleteClick = (e: React.MouseEvent, session: MasterTask) => {
     e.stopPropagation();
-    if (!confirm(`删除对话「${session.goal || session.id}」？`)) return;
-    await api.deleteSession(session.id);
-    setSessions(prev => prev.filter(s => s.id !== session.id));
-    useStore.getState().loadMasterTasks();
+    setConfirmTarget(session);
   };
 
-  const handleDeleteAll = async () => {
-    if (!confirm(`确定删除「${selAgentId || 'Whale'}」的全部对话记录？此操作不可恢复。`)) return;
-    await api.deleteAllSessions(agent);
-    setSessions([]);
-    setHasMore(false);
-    useStore.getState().loadMasterTasks();
-  };
-
-  const handleClearEmpty = async () => {
-    await api.clearEmptySessions(agent);
-    // Reload list
-    const result = await api.listSessionsByAgent(agent, 0, PAGE_SIZE);
-    setSessions(result || []);
-    setHasMore((result || []).length >= PAGE_SIZE);
-    setOffset((result || []).length);
-    useStore.getState().loadMasterTasks();
+  const handleDeleteAllClick = () => {
+    setConfirmDeleteAll(true);
   };
 
   const formatTime = (iso: string) => {
@@ -109,6 +119,7 @@ export default function ChatHistoryPanel({ open, onClose }: { open: boolean; onC
   };
 
   return (
+    <>
     <div
       ref={panelRef}
       style={{
@@ -132,19 +143,7 @@ export default function ChatHistoryPanel({ open, onClose }: { open: boolean; onC
         <span style={{ fontSize: 13, color: '#aaa', fontWeight: 600 }}>对话历史</span>
         <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
           <span
-            onClick={handleClearEmpty}
-            title="清理空对话"
-            style={{ cursor: 'pointer', color: '#666', display: 'flex', alignItems: 'center', padding: 2 }}
-            onMouseEnter={e => e.currentTarget.style.color = '#ccc'}
-            onMouseLeave={e => e.currentTarget.style.color = '#666'}
-          >
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/>
-              <line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/>
-            </svg>
-          </span>
-          <span
-            onClick={handleDeleteAll}
+            onClick={handleDeleteAllClick}
             title="全部删除"
             style={{ cursor: 'pointer', color: '#666', display: 'flex', alignItems: 'center', padding: 2 }}
             onMouseEnter={e => e.currentTarget.style.color = '#f44336'}
@@ -194,7 +193,7 @@ export default function ChatHistoryPanel({ open, onClose }: { open: boolean; onC
                 {s.goal || s.id}
               </span>
               <span
-                onClick={e => handleDelete(e, s)}
+                onClick={e => handleDeleteClick(e, s)}
                 title="删除对话"
                 style={{
                   color: '#555', fontSize: 11, cursor: 'pointer', flexShrink: 0,
@@ -231,5 +230,50 @@ export default function ChatHistoryPanel({ open, onClose }: { open: boolean; onC
         )}
       </div>
     </div>
+
+    {/* Single-delete confirm */}
+    <ConfirmDialog
+        open={confirmTarget !== null}
+        title="删除对话"
+        message={`确定删除「${confirmTarget?.goal || confirmTarget?.id || ''}」吗？此操作不可恢复。`}
+        confirmLabel="删除"
+        danger
+        onConfirm={async () => {
+          if (confirmTarget) {
+            await doDelete(confirmTarget.id);
+          }
+          setConfirmTarget(null);
+        }}
+        onCancel={() => setConfirmTarget(null)}
+      />
+
+      {/* Delete-all confirm */}
+      <ConfirmDialog
+        open={confirmDeleteAll}
+        title="删除全部对话"
+        message={`确定删除「${selAgentId || 'Whale'}」的全部对话记录？此操作不可恢复。`}
+        confirmLabel="全部删除"
+        danger
+        onConfirm={() => {
+          // Close dialog immediately for instant feedback
+          setConfirmDeleteAll(false);
+          // Defer heavy work so dialog closing renders first
+          setTimeout(async () => {
+            await api.deleteAllSessions(agent);
+            setSessions([]);
+            setHasMore(false);
+            useStore.getState().loadMasterTasks();
+            const { openTabs } = useStore.getState();
+            const key = agent || '';
+            const agentTabs = openTabs[key] || [];
+            for (const tid of agentTabs) {
+              useStore.getState().removeTab(tid);
+            }
+            resetToNewChat();
+          }, 0);
+        }}
+        onCancel={() => setConfirmDeleteAll(false)}
+      />
+    </>
   );
 }

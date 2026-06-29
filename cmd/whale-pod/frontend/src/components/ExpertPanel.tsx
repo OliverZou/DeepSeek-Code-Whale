@@ -86,7 +86,7 @@ export default function ExpertPanel() {
               key={`${a.category || 'expert'}-${a.name}-${i}`}
               agent={a}
               summoned={summoned}
-              onSummon={() => summonAndOpen({ type: 'expert', name: a.name, label: a.role || a.name, category: a.category, description: a.description })}
+              onSummon={() => summonAndOpen({ type: 'expert', name: a.name, label: a.name, category: a.category, description: a.description })}
               onDismiss={() => dismissItem(a.name, 'expert')}
             />
           );

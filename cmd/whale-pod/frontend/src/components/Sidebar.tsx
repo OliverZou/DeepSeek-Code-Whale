@@ -1,7 +1,9 @@
-import { useState, useEffect, useMemo, useRef } from 'react';
+import { useState, useEffect, useMemo, useRef, useLayoutEffect } from 'react';
 import { useStore } from '../store';
 import { api } from '../wails';
 import type { SummonedItem, MasterTask } from '../types';
+import ConfirmDialog from './ConfirmDialog';
+import { useMenu } from './ContextMenu';
 
 function SearchBox({ value, onChange }: { value: string; onChange: (v: string) => void }) {
   return (
@@ -40,20 +42,50 @@ function AgentAvatar({ item }: { item: SummonedItem | { type: 'whale'; name: str
   );
 }
 
-function AgentRow({ item, active, onClick, onContextMenu, lastPreview }: {
+function useFixedRight(sidebarRef: React.RefObject<HTMLDivElement>, rowRef: React.RefObject<HTMLDivElement>, leftOffset: number, active: boolean): React.CSSProperties {
+  const [style, setStyle] = useState<React.CSSProperties>({});
+  useLayoutEffect(() => {
+    if (!active) return;
+    const row = rowRef.current;
+    const sb = sidebarRef.current;
+    if (!row || !sb) return;
+    const rr = row.getBoundingClientRect();
+    const sr = sb.getBoundingClientRect();
+    setStyle({
+      position: 'fixed',
+      left: sr.right - leftOffset,
+      top: rr.top + rr.height / 2 - 11,
+      zIndex: 10,
+    });
+  }, [active, leftOffset, sidebarRef]);
+  return style;
+}
+
+function AgentRow({ item, active, onClick, onNewChat, onRemove, lastPreview, sidebarRef }: {
   item: SummonedItem | { type: 'whale'; name: string; label: string };
   active: boolean;
   onClick: () => void;
-  onContextMenu?: (e: React.MouseEvent) => void;
+  onNewChat?: () => void;
+  onRemove?: () => void;
   lastPreview?: string;
+  sidebarRef: React.RefObject<HTMLDivElement>;
 }) {
   const [hover, setHover] = useState(false);
+  const rowRef = useRef<HTMLDivElement>(null);
+  const showMenu = !!(onNewChat || onRemove);
+  const dotStyle = useFixedRight(sidebarRef, rowRef, 30, hover && showMenu);
+  const menu = useMenu();
   const desc = item.type !== 'whale' && 'description' in item ? (item as SummonedItem).description : '';
   const preview = lastPreview || desc;
+  const menuItems = [
+    ...(onNewChat ? [{ label: '新对话', onClick: onNewChat }] : []),
+    ...(onRemove ? [{ label: '移除', onClick: onRemove }] : []),
+  ];
+
   return (
     <div
+      ref={rowRef}
       onClick={onClick}
-      onContextMenu={onContextMenu}
       onMouseEnter={() => setHover(true)}
       onMouseLeave={() => setHover(false)}
       style={{
@@ -74,11 +106,98 @@ function AgentRow({ item, active, onClick, onContextMenu, lastPreview }: {
           </div>
         )}
       </div>
+      {showMenu && hover && (
+        <span
+          ref={menu.ref}
+          onMouseDown={e => { e.stopPropagation(); }}
+          onClick={e => { e.stopPropagation(); menu.showWith(menuItems); }}
+          style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: 22, height: 22, cursor: 'pointer', ...dotStyle }}
+        >
+          <svg width="14" height="3" viewBox="0 0 14 3" fill="#aaa">
+            <circle cx="1.5" cy="1.5" r="1.5"/><circle cx="7" cy="1.5" r="1.5"/><circle cx="12.5" cy="1.5" r="1.5"/>
+          </svg>
+          {menu.portal}
+        </span>
+      )}
     </div>
   );
 }
 
 const whaleItem = { type: 'whale' as const, name: '', label: 'Whale' };
+
+function AgentSection({
+  item, sidebarRef,
+  agentKey, agentKeyNorm, lastPreview,
+  agentTasks, isExpanded, isActive,
+  selectAgent, setRemoveTarget,
+  toggleExpand, handleTaskClick,
+  selMasterTaskId,
+}: {
+  item: SummonedItem | typeof whaleItem;
+  sidebarRef: React.RefObject<HTMLDivElement>;
+  agentKey: string; agentKeyNorm: string; lastPreview?: string;
+  agentTasks: MasterTask[]; isExpanded: boolean; isActive: boolean;
+  selectAgent: (agentId: string, agentName: string, agentType: 'expert' | 'team' | 'whale') => void;
+  setRemoveTarget: (item: SummonedItem | null) => void;
+  toggleExpand: () => void;
+  handleTaskClick: (task: MasterTask) => void;
+  selMasterTaskId: string | null;
+}) {
+  const rowRef = useRef<HTMLDivElement>(null);
+  const hasTasks = agentTasks.length > 0;
+  const countStyle = useFixedRight(sidebarRef, rowRef, 58, hasTasks);
+  return (
+    <div>
+      <div ref={rowRef} style={{ display: 'flex', alignItems: 'center' }}>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <AgentRow
+            item={item}
+            active={isActive}
+            onClick={() => selectAgent(agentKeyNorm, item.name, item.type as 'expert' | 'team' | 'whale')}
+            onNewChat={item.type !== 'whale' ? () => useStore.setState({ preselectedExpert: item.name, activeFunction: 'create' }) : undefined}
+            onRemove={item.type !== 'whale' ? () => setRemoveTarget(item as SummonedItem) : undefined}
+            lastPreview={lastPreview}
+            sidebarRef={sidebarRef}
+          />
+        </div>
+        {hasTasks && (
+          <span
+            onClick={e => { e.stopPropagation(); toggleExpand(); }}
+            style={{ display: 'flex', alignItems: 'center', gap: 2, cursor: 'pointer', padding: '4px 8px', color: '#aaa', fontSize: 10, userSelect: 'none', ...countStyle }}
+          >
+            <span style={{ color: '#aaa', marginRight: 2 }}>{agentTasks.length}</span>
+            <svg width="8" height="5" viewBox="0 0 8 5" style={{ transform: isExpanded ? 'rotate(0deg)' : 'rotate(-90deg)', transition: 'transform 0.15s' }}>
+              <path d="M0 0l4 5 4-5" fill="none" stroke="#aaa" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+            </svg>
+          </span>
+        )}
+      </div>
+      {isExpanded && hasTasks && (
+        <div style={{ paddingLeft: 24, borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
+          {agentTasks.slice(0, 20).map(t => (
+            <div
+              key={t.id}
+              onClick={() => handleTaskClick(t)}
+              style={{
+                display: 'flex', alignItems: 'center', gap: 6, padding: '5px 14px 5px 10px',
+                cursor: 'pointer', borderRadius: 4, fontSize: 12,
+                background: selMasterTaskId === t.id ? 'rgba(76,175,80,0.1)' : 'transparent',
+                borderLeft: selMasterTaskId === t.id ? '2px solid #4CAF50' : '2px solid transparent',
+                marginBottom: 1,
+              }}
+              onMouseEnter={e => { if (selMasterTaskId !== t.id) e.currentTarget.style.background = 'rgba(255,255,255,0.03)'; }}
+              onMouseLeave={e => { if (selMasterTaskId !== t.id) e.currentTarget.style.background = 'transparent'; }}
+            >
+              <span style={{ width: 6, height: 6, borderRadius: '50%', flexShrink: 0, background: t.status === 'running' ? '#4CAF50' : t.status === 'done' ? '#888' : '#555' }} />
+              <span style={{ flex: 1, color: selMasterTaskId === t.id ? '#ddd' : '#999', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{t.goal || '未命名对话'}</span>
+              {t.task_count > 0 && <span style={{ color: '#FF9800', fontSize: 10, flexShrink: 0 }}>📋{t.task_count}</span>}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
 
 export default function Sidebar() {
   const toggleSidebar = useStore(s => s.toggleSidebar);
@@ -94,6 +213,8 @@ export default function Sidebar() {
   const [search, setSearch] = useState('');
   const [lastMsgs, setLastMsgs] = useState<Record<string, string>>({});
   const [expandedAgents, setExpandedAgents] = useState<Set<string>>(new Set());
+  const [removeTarget, setRemoveTarget] = useState<SummonedItem | null>(null);
+  const sidebarRef = useRef<HTMLDivElement>(null);
 
   const allAgents: (SummonedItem | typeof whaleItem)[] = useMemo(() => {
     const seen = new Set<string>();
@@ -189,6 +310,7 @@ export default function Sidebar() {
   return (
     <div
       id="sidebar"
+      ref={sidebarRef}
       style={{
         width: collapsed ? 0 : undefined,
         minWidth: collapsed ? 0 : undefined,
@@ -230,75 +352,22 @@ export default function Sidebar() {
             });
           };
           return (
-            <div key={agentKey}>
-              <div style={{ display: 'flex', alignItems: 'center' }}>
-                <div style={{ flex: 1 }}>
-                  <AgentRow
-                    item={item}
-                    active={isActive}
-                    onClick={() => selectAgent(agentKeyNorm, item.name, item.type as 'expert' | 'team' | 'whale')}
-                    onContextMenu={item.type !== 'whale' ? (e) => {
-                      e.preventDefault();
-                      if (confirm(`移除「${item.label}」？`)) {
-                        dismissItem(item.name, item.type);
-                      }
-                    } : undefined}
-                    lastPreview={lastPreview}
-                  />
-                </div>
-                {agentTasks.length > 0 && (
-                  <span
-                    onClick={e => { e.stopPropagation(); toggleExpand(); }}
-                    style={{
-                      cursor: 'pointer', padding: '4px 8px', color: '#555', fontSize: 10,
-                      flexShrink: 0, userSelect: 'none',
-                    }}
-                  >
-                    <span style={{ color: '#666', marginRight: 2 }}>{agentTasks.length}</span>
-                    <svg width="8" height="5" viewBox="0 0 8 5" style={{
-                      transform: isExpanded ? 'rotate(0deg)' : 'rotate(-90deg)',
-                      transition: 'transform 0.15s',
-                    }}>
-                      <path d="M0 0l4 5 4-5" fill="none" stroke="#666" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
-                    </svg>
-                  </span>
-                )}
-              </div>
-              {/* Expanded conversation list */}
-              {isExpanded && agentTasks.length > 0 && (
-                <div style={{ paddingLeft: 24, borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
-                  {agentTasks.slice(0, 20).map(t => (
-                    <div
-                      key={t.id}
-                      onClick={() => handleTaskClick(t)}
-                      style={{
-                        display: 'flex', alignItems: 'center', gap: 6, padding: '5px 14px 5px 10px',
-                        cursor: 'pointer', borderRadius: 4, fontSize: 12,
-                        background: selMasterTaskId === t.id ? 'rgba(76,175,80,0.1)' : 'transparent',
-                        borderLeft: selMasterTaskId === t.id ? '2px solid #4CAF50' : '2px solid transparent',
-                        marginBottom: 1,
-                      }}
-                      onMouseEnter={e => { if (selMasterTaskId !== t.id) e.currentTarget.style.background = 'rgba(255,255,255,0.03)'; }}
-                      onMouseLeave={e => { if (selMasterTaskId !== t.id) e.currentTarget.style.background = 'transparent'; }}
-                    >
-                      <span style={{
-                        width: 6, height: 6, borderRadius: '50%', flexShrink: 0,
-                        background: t.status === 'running' ? '#4CAF50' : t.status === 'done' ? '#888' : '#555',
-                      }} />
-                      <span style={{
-                        flex: 1, color: selMasterTaskId === t.id ? '#ddd' : '#999',
-                        overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                      }}>
-                        {t.goal || '未命名对话'}
-                      </span>
-                      {t.task_count > 0 && (
-                        <span style={{ color: '#FF9800', fontSize: 10, flexShrink: 0 }}>📋{t.task_count}</span>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
+            <AgentSection
+              key={agentKey}
+              item={item}
+              sidebarRef={sidebarRef}
+              agentKey={agentKey}
+              agentKeyNorm={agentKeyNorm}
+              lastPreview={lastPreview}
+              agentTasks={agentTasks}
+              isExpanded={isExpanded}
+              isActive={isActive}
+              selectAgent={selectAgent}
+              setRemoveTarget={setRemoveTarget}
+              toggleExpand={toggleExpand}
+              handleTaskClick={handleTaskClick}
+              selMasterTaskId={selMasterTaskId}
+            />
           );
         })}
         {filtered.length === 0 && matchedTasks.length === 0 && (
@@ -373,6 +442,19 @@ export default function Sidebar() {
           </svg>
         </button>
       </div>
+
+      <ConfirmDialog
+        open={removeTarget !== null}
+        title="移除专家"
+        message={`确定移除「${removeTarget?.label || ''}」吗？移除后仍可重新召唤。`}
+        confirmLabel="移除"
+        danger
+        onConfirm={() => {
+          if (removeTarget) { dismissItem(removeTarget.name, removeTarget.type); }
+          setRemoveTarget(null);
+        }}
+        onCancel={() => setRemoveTarget(null)}
+      />
     </div>
   );
 }
