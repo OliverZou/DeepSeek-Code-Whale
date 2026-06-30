@@ -40,6 +40,7 @@ type Manager struct {
 	discovery     map[string][]discoveredTool
 	states        map[string]ServerState
 	tools         []core.Tool
+	secrets       *secretsStore
 }
 
 type ServerState struct {
@@ -86,9 +87,18 @@ func NewManager(cfg Config, workspaceRoot ...string) *Manager {
 		sessions:      map[string]*clientSession{},
 		discovery:     map[string][]discoveredTool{},
 		states:        map[string]ServerState{},
+		secrets:       nil, // set via SetSecretsDir by caller
 	}
 	m.resetStatesLocked()
 	return m
+}
+
+// SetSecretsDir loads persisted secrets from the given data directory.
+func (m *Manager) SetSecretsDir(dataDir string) {
+	if m == nil {
+		return
+	}
+	m.secrets = loadSecrets(dataDir)
 }
 
 func (m *Manager) Initialize(ctx context.Context) {
@@ -157,6 +167,59 @@ func (m *Manager) Tools() []core.Tool {
 	return out
 }
 
+// SetServerEnv stores a secret value for an MCP server's env var (e.g. a token).
+// The value is persisted to disk and will be used when resolving ${VAR} references
+// in that server's URL / headers / env config.
+func (m *Manager) SetServerEnv(serverName, key, value string) error {
+	if m == nil || m.secrets == nil {
+		return fmt.Errorf("secrets store not available")
+	}
+	return m.secrets.Set(serverName, key, value)
+}
+
+// resolveEnv resolves ${VAR} references in the given value, checking the
+// per-server secrets first, then falling back to os.LookupEnv.
+func (m *Manager) resolveEnv(serverName, value string) (string, error) {
+	return expandEnvRefsWith(value, func(name string) (string, bool) {
+		if m != nil && m.secrets != nil {
+			return m.secrets.Lookup(serverName, name)
+		}
+		return "", false
+	})
+}
+
+// preValidateConfig checks that all ${VAR} references in the server config
+// can be resolved. Returns the first missing-var error, or nil.
+func (m *Manager) preValidateConfig(srv ServerConfig) error {
+	lookup := func(name string) (string, bool) {
+		if m.secrets != nil {
+			if v, ok := m.secrets.Lookup(srv.Name, name); ok {
+				return v, true
+			}
+		}
+		return os.LookupEnv(name)
+	}
+	// Check URL
+	if strings.TrimSpace(srv.URL) != "" {
+		if _, err := expandEnvRefsWith(srv.URL, lookup); err != nil {
+			return err
+		}
+	}
+	// Check headers
+	for name, value := range srv.Headers {
+		if _, err := expandEnvRefsWith(value, lookup); err != nil {
+			return fmt.Errorf("header %q: %w", name, err)
+		}
+	}
+	// Check env vars
+	for k, v := range srv.Env {
+		if _, err := expandEnvRefsWith(v, lookup); err != nil {
+			return fmt.Errorf("env %q: %w", k, err)
+		}
+	}
+	return nil
+}
+
 func (m *Manager) States() []ServerState {
 	if m == nil {
 		return nil
@@ -210,22 +273,35 @@ func (m *Manager) EnableServer(ctx context.Context, name string) error {
 		return fmt.Errorf("save config: %w", err)
 	}
 
-	m.mu.Lock()
-	m.setState(ServerState{Name: name, Status: StatusStarting})
-	m.mu.Unlock()
-
-	sess, discovered, toolNames, err := m.startServer(ctx, srv)
-	if err != nil {
+	// Validate env vars synchronously — missing tokens are reported immediately
+	// so the frontend can prompt the user before the async connection attempt.
+	if err := m.preValidateConfig(srv); err != nil {
 		m.mu.Lock()
-		m.setState(ServerState{Name: name, Status: StatusFailed, Error: err.Error()})
+		m.setStateLocked(ServerState{Name: name, Status: StatusFailed, Error: err.Error(), Disabled: false})
 		m.mu.Unlock()
-		return fmt.Errorf("start mcp server %q: %w", name, err)
+		return err
 	}
 
 	m.mu.Lock()
-	m.registerConnectedServer(srv, sess, discovered, toolNames)
-
+	m.setStateLocked(ServerState{Name: name, Status: StatusStarting, Disabled: false})
 	m.mu.Unlock()
+
+	// Connect asynchronously — EnableServer returns immediately after saving
+	// config, so the WS response is not delayed by network timeouts.
+	go func() {
+		sess, discovered, toolNames, err := m.startServer(ctx, srv)
+		if err != nil {
+			m.mu.Lock()
+			m.setStateLocked(ServerState{Name: name, Status: StatusFailed, Error: err.Error(), Disabled: false})
+			m.mu.Unlock()
+			return
+		}
+		st := m.registerConnectedServer(srv, sess, discovered, toolNames)
+		m.mu.Lock()
+		m.states[name] = st
+		m.mu.Unlock()
+	}()
+
 	return nil
 }
 
@@ -253,7 +329,7 @@ func (m *Manager) DisableServer(name string) error {
 		delete(m.sessions, name)
 	}
 	delete(m.discovery, name)
-	m.setState(ServerState{Name: name, Status: StatusDisabled, Disabled: true})
+	m.setStateLocked(ServerState{Name: name, Status: StatusDisabled, Disabled: true})
 	m.tools = m.buildToolsLocked()
 	m.mu.Unlock()
 
@@ -312,7 +388,14 @@ func (m *Manager) startServer(ctx context.Context, srv ServerConfig) (*clientSes
 	timeoutCtx, timeoutCancel := context.WithTimeout(mcpCtx, srv.TimeoutDuration())
 	defer timeoutCancel()
 
-	transport, stdioCmd, httpDiag, err := createTransport(mcpCtx, kind, srv)
+	transport, stdioCmd, httpDiag, err := createTransport(mcpCtx, kind, srv, func(name string) (string, bool) {
+		if m.secrets != nil {
+			if v, ok := m.secrets.Lookup(srv.Name, name); ok {
+				return v, true
+			}
+		}
+		return os.LookupEnv(name)
+	})
 	if err != nil {
 		cancel()
 		return nil, nil, nil, err
@@ -409,13 +492,13 @@ func sortedDiscoveredTools(tools []discoveredTool) []discoveredTool {
 	return out
 }
 
-func createTransport(ctx context.Context, kind string, srv ServerConfig) (sdk.Transport, *exec.Cmd, *httpDiagnostics, error) {
+func createTransport(ctx context.Context, kind string, srv ServerConfig, lookupEnv func(string) (string, bool)) (sdk.Transport, *exec.Cmd, *httpDiagnostics, error) {
 	switch kind {
 	case "stdio":
 		if strings.TrimSpace(srv.Command) == "" {
 			return nil, nil, nil, fmt.Errorf("mcp server %q requires command", srv.Name)
 		}
-		env, err := resolvedEnvPairs(srv.Env)
+		env, err := resolvedEnvPairsWith(srv.Env, lookupEnv)
 		if err != nil {
 			return nil, nil, nil, fmt.Errorf("mcp server %q env config: %w", srv.Name, err)
 		}
@@ -431,13 +514,17 @@ func createTransport(ctx context.Context, kind string, srv ServerConfig) (sdk.Tr
 		if strings.TrimSpace(srv.URL) == "" {
 			return nil, nil, nil, fmt.Errorf("mcp server %q requires url", srv.Name)
 		}
-		headers, err := resolvedHeaders(srv.Headers)
+		endpoint, err := expandEnvRefsWith(strings.TrimSpace(srv.URL), lookupEnv)
+		if err != nil {
+			return nil, nil, nil, fmt.Errorf("mcp server %q url: %w", srv.Name, err)
+		}
+		headers, err := resolvedHeadersWith(srv.Headers, lookupEnv)
 		if err != nil {
 			return nil, nil, nil, fmt.Errorf("mcp server %q headers config: %w", srv.Name, err)
 		}
 		diag := &httpDiagnostics{}
 		return &sdk.StreamableClientTransport{
-			Endpoint: strings.TrimSpace(srv.URL),
+			Endpoint: endpoint,
 			HTTPClient: &http.Client{Transport: headerRoundTripper{
 				serverName: srv.Name,
 				headers:    headers,
@@ -481,6 +568,11 @@ func (rt headerRoundTripper) RoundTrip(req *http.Request) (*http.Response, error
 func (m *Manager) setState(st ServerState) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.setStateLocked(st)
+}
+
+// setStateLocked updates state without locking (caller must hold m.mu).
+func (m *Manager) setStateLocked(st ServerState) {
 	if prev, ok := m.states[st.Name]; ok {
 		st = mergeServerStateMetadata(prev, st)
 	}

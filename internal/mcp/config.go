@@ -138,7 +138,7 @@ func normalizeTransport(value string) (string, bool, error) {
 	switch strings.ToLower(value) {
 	case "stdio":
 		return "stdio", true, nil
-	case "http", "streamable-http", "streamable_http", "streamablehttp":
+	case "http", "streamable-http", "streamable_http", "streamablehttp", "sse":
 		return "http", true, nil
 	default:
 		return "", true, fmt.Errorf("unsupported transport %q", value)
@@ -200,6 +200,13 @@ func isFilesystemServerCommand(value string) bool {
 }
 
 func expandEnvRefs(value string) (string, error) {
+	return expandEnvRefsWith(value, nil)
+}
+
+// expandEnvRefsWith resolves ${VAR} references. It checks the provided lookup
+// function first; if nil or not found, falls back to os.LookupEnv.
+// Returns an error if a referenced variable cannot be resolved.
+func expandEnvRefsWith(value string, lookup func(string) (string, bool)) (string, error) {
 	var out strings.Builder
 	for {
 		start := strings.Index(value, "${")
@@ -217,7 +224,14 @@ func expandEnvRefs(value string) (string, error) {
 		if name == "" {
 			return "", fmt.Errorf("empty environment reference")
 		}
-		resolved, ok := os.LookupEnv(name)
+		var resolved string
+		var ok bool
+		if lookup != nil {
+			resolved, ok = lookup(name)
+		}
+		if !ok {
+			resolved, ok = os.LookupEnv(name)
+		}
 		if !ok {
 			return "", fmt.Errorf("environment variable %q is not set", name)
 		}
@@ -226,7 +240,29 @@ func expandEnvRefs(value string) (string, error) {
 	}
 }
 
+// MissingEnvError extracts the missing env var name from an expandEnvRefs error.
+// Returns empty string if the error is not about a missing env var.
+func MissingEnvError(err error) string {
+	if err == nil {
+		return ""
+	}
+	// Error format: environment variable "NAME" is not set
+	msg := err.Error()
+	const prefix = `environment variable "`
+	if idx := strings.Index(msg, prefix); idx >= 0 {
+		rest := msg[idx+len(prefix):]
+		if end := strings.IndexByte(rest, '"'); end >= 0 {
+			return rest[:end]
+		}
+	}
+	return ""
+}
+
 func resolvedEnvPairs(env map[string]string) ([]string, error) {
+	return resolvedEnvPairsWith(env, nil)
+}
+
+func resolvedEnvPairsWith(env map[string]string, lookup func(string) (string, bool)) ([]string, error) {
 	if len(env) == 0 {
 		return nil, nil
 	}
@@ -237,7 +273,7 @@ func resolvedEnvPairs(env map[string]string) ([]string, error) {
 	sort.Strings(keys)
 	out := make([]string, 0, len(keys))
 	for _, k := range keys {
-		v, err := expandEnvRefs(env[k])
+		v, err := expandEnvRefsWith(env[k], lookup)
 		if err != nil {
 			return nil, fmt.Errorf("env %q: %w", k, err)
 		}
@@ -247,6 +283,10 @@ func resolvedEnvPairs(env map[string]string) ([]string, error) {
 }
 
 func resolvedHeaders(headers map[string]string) (map[string]string, error) {
+	return resolvedHeadersWith(headers, nil)
+}
+
+func resolvedHeadersWith(headers map[string]string, lookup func(string) (string, bool)) (map[string]string, error) {
 	if len(headers) == 0 {
 		return nil, nil
 	}
@@ -256,7 +296,7 @@ func resolvedHeaders(headers map[string]string) (map[string]string, error) {
 		if !validHeaderName(name) {
 			return nil, fmt.Errorf("invalid header name %q", name)
 		}
-		resolved, err := expandEnvRefs(value)
+		resolved, err := expandEnvRefsWith(value, lookup)
 		if err != nil {
 			return nil, fmt.Errorf("header %q: %w", name, err)
 		}
