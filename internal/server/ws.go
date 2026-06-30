@@ -238,6 +238,7 @@ type wsPush struct {
 type chatRequest struct {
 	Message   string `json:"message"`
 	SessionID string `json:"session_id,omitempty"`
+	Agent     string `json:"agent,omitempty"`
 	DeepThink bool   `json:"deep_think,omitempty"`
 }
 
@@ -780,6 +781,9 @@ func (d *Daemon) handleChat(client *wsClient, req wsRequest) {
 			m.StartedAt = time.Now()
 		}
 		m.TurnCount++
+		if p.Agent != "" {
+			m.Agent = p.Agent
+		}
 		m.Status = "active"
 	})
 
@@ -1748,7 +1752,8 @@ func (d *Daemon) handleSessionListByAgent(client *wsClient, req wsRequest) {
 		if s.Meta.Kind == "subagent" {
 			continue
 		}
-		if p.Agent != "" && s.Meta.Agent != p.Agent {
+// Always filter by agent — empty string means "whale" sessions.
+if s.Meta.Agent != p.Agent {
 			continue
 		}
 		count++
@@ -1791,7 +1796,8 @@ func (d *Daemon) handleSessionDeleteAll(client *wsClient, req wsRequest) {
 		if s.Meta.Kind == "subagent" {
 			continue
 		}
-		if p.Agent != "" && s.Meta.Agent != p.Agent {
+// Always filter by agent — empty string means "whale" sessions.
+if s.Meta.Agent != p.Agent {
 			continue
 		}
 		os.Remove(filepath.Join(d.sessionsDir, s.ID+".jsonl"))
