@@ -111,7 +111,7 @@ func (c *Client) wsLoop() {
 
 		c.connectAndRead()
 
-		// Connection dropped — clear wsID so we re-register via
+		// Connection dropped 闁?clear wsID so we re-register via
 		// HTTP on the next loop iteration.  This handles dashboard
 		// restarts (the old wsID is unknown to the new dashboard).
 		c.wsID = ""
@@ -295,7 +295,7 @@ func (c *Client) IsRegistered() bool {
 
 // SyncState pushes the full master-task and subtask state to the dashboard.
 // Called on connect and after major state changes.
-func (c *Client) SyncState(mts []MasterTaskJSON, sts map[string][]SubtaskJSON, wsLabel string) {
+func (c *Client) SyncState(mts []TaskSessionJSON, sts map[string][]SubtaskJSON, wsLabel string) {
 	c.wsConnMu.Lock()
 	conn := c.wsConn
 	c.wsConnMu.Unlock()

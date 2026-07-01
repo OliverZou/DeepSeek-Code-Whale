@@ -260,7 +260,7 @@ Subcommands:
 				return nil
 			}
 
-			masterTask, mtErr := eng.CreateMasterTask(goal, workdir, "")
+			sess, mtErr := eng.CreateTaskSession(goal, workdir, "")
 			if mtErr != nil {
 				return fmt.Errorf("create master task: %w", mtErr)
 			}
@@ -283,7 +283,7 @@ Subcommands:
 			defer cancel()
 
 
-			batches, err := eng.PlanAndRun(cmd.Context(), goal, workdir, masterTask.ID)
+			batches, err := eng.PlanAndRun(cmd.Context(), goal, workdir, sess.ID)
 			if err != nil {
 				return fmt.Errorf("plan and run: %w", err)
 			}

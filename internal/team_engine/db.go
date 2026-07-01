@@ -1,7 +1,8 @@
 package team_engine
 
-// MasterTask represents a top-level task (总任务).
-type MasterTask struct {
+// TaskSession represents a top-level task session container (任务会话容器).
+// Distinct from chat Session to avoid naming confusion.
+type TaskSession struct {
 	ID            string `json:"id"`
 	Goal          string `json:"goal"`
 	Agent         string `json:"agent,omitempty"`

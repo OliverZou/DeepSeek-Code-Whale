@@ -74,7 +74,7 @@ func (t *TeamLog) write(cat, format string, args ...interface{}) {
 		return
 	}
 	if !t.mu.TryLock() {
-		return // avoid deadlock — drop log if mutex is contested
+		return // avoid deadlock 鈥?drop log if mutex is contested
 	}
 	defer t.mu.Unlock()
 	ts := time.Now().Format(time.RFC3339)
@@ -94,7 +94,7 @@ func (t *TeamLog) DashboardRegister(path, wsID string, err error) {
 	if err != nil {
 		t.write("dashboard", "register path=%s FAILED: %v", path, err)
 	} else {
-		t.write("dashboard", "register path=%s → %s", path, wsID)
+		t.write("dashboard", "register path=%s 鈫?%s", path, wsID)
 	}
 }
 func (t *TeamLog) DashboardWSConnect(wsID string, ok bool, err error) {
@@ -111,7 +111,7 @@ func (t *TeamLog) DashboardQueueResume(wsID, taskID, method string) {
 	t.write("dashboard", "queue resume %s task=%s via=%s", wsID, taskID, method)
 }
 func (t *TeamLog) DashboardStateTransition(taskID, from, to, reason string) {
-	t.write("dashboard", "state %s: %s → %s (%s)", taskID, from, to, reason)
+	t.write("dashboard", "state %s: %s 鈫?%s (%s)", taskID, from, to, reason)
 }
 func (t *TeamLog) DashboardResumeMaster(wsID, taskID string, err error) {
 	if err != nil {
@@ -194,7 +194,7 @@ func (t *TeamLog) EngineAutoResume(masterTaskID string, err error) {
 	}
 }
 func (t *TeamLog) EngineResumeTask(taskID, newState string) {
-	t.write("engine", "resume-task %s → %s", taskID[:8], newState)
+	t.write("engine", "resume-task %s 鈫?%s", taskID[:8], newState)
 }
 
 // --- CLI ---
@@ -223,10 +223,10 @@ func verdict(passed bool) string {
 	return "FAIL"
 }
 func truncateGoal(g string) string {
-	if len(g) > 60 { return g[:60] + "…" }
+	if len(g) > 60 { return g[:60] + "鈥? }
 	return g
 }
 func truncateStr(s string, n int) string {
-	if len(s) > n { return s[:n] + "…" }
+	if len(s) > n { return s[:n] + "鈥? }
 	return s
 }

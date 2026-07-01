@@ -29,7 +29,7 @@
 //	        // render based on event type (assistant, thinking, tool_call, ...)
 //	    case "chat":
 //	        sessionID := msg["payload"].(map[string]interface{})["session_id"]
-//	        // chat done — save session_id for next turn
+//	        // chat done 闁?save session_id for next turn
 //	    }
 //	}
 //
@@ -40,131 +40,131 @@
 //
 // ## Chat & Agent
 //
-//	→ {"type":"chat", "id":"1", "payload":{"message":"...","session_id":"(optional)","deep_think":false}}
-//	← {"type":"chat.stream", "payload":{"session_id":"...","event":"assistant","content":"delta..."}}
-//	← {"type":"chat.stream", "payload":{"session_id":"...","event":"thinking","content":"delta..."}}
-//	← {"type":"chat.stream", "payload":{"session_id":"...","event":"tool_call","tool_call_id":"...","tool_name":"...","tool_input":"..."}}
-//	← {"type":"chat.stream", "payload":{"session_id":"...","event":"tool_result","tool_call_id":"...","tool_name":"...","tool_outcome":"success","tool_status":"","content":"..."}}
-//	← {"type":"chat.stream", "payload":{"session_id":"...","event":"plan","content":"delta..."}}
-//	← {"type":"chat.stream", "payload":{"session_id":"...","event":"subagent","task_id":"...","task_title":"...","task_status":"started|progress|done"}}
-//	← {"type":"chat.stream", "payload":{"session_id":"...","event":"task","task_id":"...","task_title":"...","task_status":"started|done"}}
-//	← {"type":"chat.stream", "payload":{"session_id":"...","event":"hook","task_title":"hook_name: decision"}}
-//	← {"type":"chat.stream", "payload":{"session_id":"...","event":"error","error":"..."}}
-//	← {"type":"chat.stream", "payload":{"session_id":"...","event":"response_reset"}}
-//	← {"type":"chat.stream", "payload":{"session_id":"...","event":"context_compacted"}}
-//	← {"type":"chat.stream", "payload":{"session_id":"...","event":"provider_retry","content":"provider retrying..."}}
-//	← {"type":"chat.stream", "payload":{"session_id":"...","event":"done","done":true}}
-//	← {"type":"chat", "id":"1", "payload":{"session_id":"..."}}
+//	闁?{"type":"chat", "id":"1", "payload":{"message":"...","session_id":"(optional)","deep_think":false}}
+//	闁?{"type":"chat.stream", "payload":{"session_id":"...","event":"assistant","content":"delta..."}}
+//	闁?{"type":"chat.stream", "payload":{"session_id":"...","event":"thinking","content":"delta..."}}
+//	闁?{"type":"chat.stream", "payload":{"session_id":"...","event":"tool_call","tool_call_id":"...","tool_name":"...","tool_input":"..."}}
+//	闁?{"type":"chat.stream", "payload":{"session_id":"...","event":"tool_result","tool_call_id":"...","tool_name":"...","tool_outcome":"success","tool_status":"","content":"..."}}
+//	闁?{"type":"chat.stream", "payload":{"session_id":"...","event":"plan","content":"delta..."}}
+//	闁?{"type":"chat.stream", "payload":{"session_id":"...","event":"subagent","task_id":"...","task_title":"...","task_status":"started|progress|done"}}
+//	闁?{"type":"chat.stream", "payload":{"session_id":"...","event":"task","task_id":"...","task_title":"...","task_status":"started|done"}}
+//	闁?{"type":"chat.stream", "payload":{"session_id":"...","event":"hook","task_title":"hook_name: decision"}}
+//	闁?{"type":"chat.stream", "payload":{"session_id":"...","event":"error","error":"..."}}
+//	闁?{"type":"chat.stream", "payload":{"session_id":"...","event":"response_reset"}}
+//	闁?{"type":"chat.stream", "payload":{"session_id":"...","event":"context_compacted"}}
+//	闁?{"type":"chat.stream", "payload":{"session_id":"...","event":"provider_retry","content":"provider retrying..."}}
+//	闁?{"type":"chat.stream", "payload":{"session_id":"...","event":"done","done":true}}
+//	闁?{"type":"chat", "id":"1", "payload":{"session_id":"..."}}
 //
-//	→ {"type":"chat.cancel", "id":"2", "payload":{"session_id":"..."}}
-//	← {"type":"chat.canceled", "id":"2", "payload":{"session_id":"..."}}
+//	闁?{"type":"chat.cancel", "id":"2", "payload":{"session_id":"..."}}
+//	闁?{"type":"chat.canceled", "id":"2", "payload":{"session_id":"..."}}
 //
 // ## Approval & User Input
 //
-//	← {"type":"approval.required", "payload":{"session_id":"...","tool_call_id":"...","tool_name":"...","reason":"...","code":"...","key":"..."}}
-//	→ {"type":"approval.decision", "id":"3", "payload":{"session_id":"...","tool_call_id":"...","decision":"allow|deny|allow_session|cancel"}}
+//	闁?{"type":"approval.required", "payload":{"session_id":"...","tool_call_id":"...","tool_name":"...","reason":"...","code":"...","key":"..."}}
+//	闁?{"type":"approval.decision", "id":"3", "payload":{"session_id":"...","tool_call_id":"...","decision":"allow|deny|allow_session|cancel"}}
 //
-//	← {"type":"user_input.required", "payload":{"session_id":"...","tool_call_id":"...","questions":[{"id":"...","header":"...","question":"...","options":[{"label":"...","description":"..."}]}]}}
-//	→ {"type":"user_input.response", "id":"4", "payload":{"session_id":"...","tool_call_id":"...","answer":"..."}}
+//	闁?{"type":"user_input.required", "payload":{"session_id":"...","tool_call_id":"...","questions":[{"id":"...","header":"...","question":"...","options":[{"label":"...","description":"..."}]}]}}
+//	闁?{"type":"user_input.response", "id":"4", "payload":{"session_id":"...","tool_call_id":"...","answer":"..."}}
 //
 // ## Task Management (Team Engine)
 //
-//	→ {"type":"task.create", "id":"5", "payload":{"goal":"...","workdir":"...","team_name":"(optional)"}}
-//	← {"type":"task.created", "id":"5", "payload":{"master_task_id":"..."}}
+//	闁?{"type":"task.create", "id":"5", "payload":{"goal":"...","workdir":"...","team_name":"(optional)"}}
+//	闁?{"type":"task.created", "id":"5", "payload":{"master_task_id":"..."}}
 //
-//	→ {"type":"task.list", "id":"6"}
-//	← {"type":"task.list", "id":"6", "payload":{"tasks":[{"id":"...","goal":"...","status":"...","workdir":"...","created_at":"...","task_count":0}]}}
+//	闁?{"type":"task.list", "id":"6"}
+//	闁?{"type":"task.list", "id":"6", "payload":{"tasks":[{"id":"...","goal":"...","status":"...","workdir":"...","created_at":"...","task_count":0}]}}
 //
-//	→ {"type":"task.cancel", "id":"7", "payload":{"task_id":"..."}}
-//	← {"type":"task.canceled", "id":"7", "payload":{"task_id":"..."}}
+//	闁?{"type":"task.cancel", "id":"7", "payload":{"task_id":"..."}}
+//	闁?{"type":"task.canceled", "id":"7", "payload":{"task_id":"..."}}
 //
-//	→ {"type":"task.delete", "id":"8", "payload":{"task_id":"..."}}
-//	← {"type":"task.deleted", "id":"8", "payload":{"task_id":"..."}}
+//	闁?{"type":"task.delete", "id":"8", "payload":{"task_id":"..."}}
+//	闁?{"type":"task.deleted", "id":"8", "payload":{"task_id":"..."}}
 //
-//	← {"type":"task.state_changed", "payload":{"task_id":"...","title":"...","old_state":"...","new_state":"...","progress":50}}
-//	← {"type":"task.log", "payload":{"task_id":"...","role":"leader|agent"}}
+//	闁?{"type":"task.state_changed", "payload":{"task_id":"...","title":"...","old_state":"...","new_state":"...","progress":50}}
+//	闁?{"type":"task.log", "payload":{"task_id":"...","role":"leader|agent"}}
 //
-//	→ {"type":"task.subtasks", "id":"5a", "payload":{"master_task_id":"..."}}
-//	← {"type":"task.subtasks", "id":"5a", "payload":{"subtasks":[{...recursive...}]}}
+//	闁?{"type":"task.subtasks", "id":"5a", "payload":{"master_task_id":"..."}}
+//	闁?{"type":"task.subtasks", "id":"5a", "payload":{"subtasks":[{...recursive...}]}}
 //
-//	→ {"type":"task.dialogue", "id":"5b", "payload":{"task_id":"..."}}
-//	← {"type":"task.dialogue", "id":"5b", "payload":{"task_id":"...","output":"...","verifier":"...","confirmation":"..."}}
+//	闁?{"type":"task.dialogue", "id":"5b", "payload":{"task_id":"..."}}
+//	闁?{"type":"task.dialogue", "id":"5b", "payload":{"task_id":"...","output":"...","verifier":"...","confirmation":"..."}}
 //
-//	→ {"type":"task.plan", "id":"5c", "payload":{"master_task_id":"..."}}
-//	← {"type":"task.plan", "id":"5c", "payload":{"master_task_id":"...","plan_md":"...","plan_json":"...","spec_md":"..."}}
+//	闁?{"type":"task.plan", "id":"5c", "payload":{"master_task_id":"..."}}
+//	闁?{"type":"task.plan", "id":"5c", "payload":{"master_task_id":"...","plan_md":"...","plan_json":"...","spec_md":"..."}}
 //
-//	→ {"type":"task.feedback", "id":"5d", "payload":{"task_id":"...","message":"..."}}
-//	← {"type":"task.feedback", "id":"5d", "payload":{"task_id":"...","status":"sent"}}
+//	闁?{"type":"task.feedback", "id":"5d", "payload":{"task_id":"...","message":"..."}}
+//	闁?{"type":"task.feedback", "id":"5d", "payload":{"task_id":"...","status":"sent"}}
 //
-//	→ {"type":"task.confirm", "id":"5e", "payload":{"task_id":"...","decision":"confirm|reject","comment":"(optional)"}}
-//	← {"type":"task.confirmed", "id":"5e", "payload":{"task_id":"...","decision":"..."}}
+//	闁?{"type":"task.confirm", "id":"5e", "payload":{"task_id":"...","decision":"confirm|reject","comment":"(optional)"}}
+//	闁?{"type":"task.confirmed", "id":"5e", "payload":{"task_id":"...","decision":"..."}}
 //
-//	→ {"type":"task.confirmations", "id":"5f", "payload":{"master_task_id":"..."}}
-//	← {"type":"task.confirmations", "id":"5f", "payload":{"pending":[...]}}
+//	闁?{"type":"task.confirmations", "id":"5f", "payload":{"master_task_id":"..."}}
+//	闁?{"type":"task.confirmations", "id":"5f", "payload":{"pending":[...]}}
 //
-//	→ {"type":"task.rename", "id":"5g", "payload":{"task_id":"...","title":"..."}}
-//	← {"type":"task.renamed", "id":"5g", "payload":{"task_id":"...","title":"...","old_title":"..."}}
+//	闁?{"type":"task.rename", "id":"5g", "payload":{"task_id":"...","title":"..."}}
+//	闁?{"type":"task.renamed", "id":"5g", "payload":{"task_id":"...","title":"...","old_title":"..."}}
 //
 // ## Session Management
 //
-//	→ {"type":"session.list", "id":"9"}
-//	← {"type":"session.list", "id":"9", "payload":{"sessions":[{"id":"...","goal":"...","agent":"...","workspace_path":"...","workspace_label":"...","workspace_id":"...","session_path":"...","status":"...","created_at":"...","task_count":0,"done_count":0,"active_count":0,"suspended_count":0,"workspace_online":true}]}}
+//	闁?{"type":"session.list", "id":"9"}
+//	闁?{"type":"session.list", "id":"9", "payload":{"sessions":[{"id":"...","goal":"...","agent":"...","workspace_path":"...","workspace_label":"...","workspace_id":"...","session_path":"...","status":"...","created_at":"...","task_count":0,"done_count":0,"active_count":0,"suspended_count":0,"workspace_online":true}]}}
 //
-//	→ {"type":"session.listByAgent", "id":"10", "payload":{"agent":"...","offset":0,"limit":20}}
-//	← {"type":"session.listByAgent", "id":"10", "payload":{"sessions":[...],"has_more":false}}
+//	闁?{"type":"session.listByAgent", "id":"10", "payload":{"agent":"...","offset":0,"limit":20}}
+//	闁?{"type":"session.listByAgent", "id":"10", "payload":{"sessions":[...],"has_more":false}}
 //
-//	→ {"type":"session.getMessages", "id":"11", "payload":{"id":"session-uuid"}}
-//	← {"type":"session.getMessages", "id":"11", "payload":{"messages":[{"time":"...","from":"human|agent","content":"...","thinking":"...","durationMs":0}]}}
+//	闁?{"type":"session.getMessages", "id":"11", "payload":{"id":"session-uuid"}}
+//	闁?{"type":"session.getMessages", "id":"11", "payload":{"messages":[{"time":"...","from":"human|agent","content":"...","thinking":"...","durationMs":0}]}}
 //
-//	→ {"type":"session.delete", "id":"12", "payload":{"id":"session-uuid"}}
-//	← {"type":"session.delete", "id":"12", "payload":{"id":"session-uuid"}}
+//	闁?{"type":"session.delete", "id":"12", "payload":{"id":"session-uuid"}}
+//	闁?{"type":"session.delete", "id":"12", "payload":{"id":"session-uuid"}}
 //
-//	→ {"type":"session.deleteAll", "id":"13", "payload":{"agent":"(optional)"}}
-//	← {"type":"session.deleteAll", "id":"13", "payload":{}}
+//	闁?{"type":"session.deleteAll", "id":"13", "payload":{"agent":"(optional)"}}
+//	闁?{"type":"session.deleteAll", "id":"13", "payload":{}}
 //
-//	→ {"type":"session.clearEmpty", "id":"14", "payload":{"agent":"(optional)"}}
-//	← {"type":"session.clearEmpty", "id":"14", "payload":{}}
+//	闁?{"type":"session.clearEmpty", "id":"14", "payload":{"agent":"(optional)"}}
+//	闁?{"type":"session.clearEmpty", "id":"14", "payload":{}}
 //
 // ## Resource Listing
 //
-//	→ {"type":"agent.list", "id":"15"}
-//	← {"type":"agent.list", "id":"15", "payload":{"agents":[...]}}
+//	闁?{"type":"agent.list", "id":"15"}
+//	闁?{"type":"agent.list", "id":"15", "payload":{"agents":[...]}}
 //
-//	→ {"type":"expert.list", "id":"16"}
-//	← {"type":"expert.list", "id":"16", "payload":{"experts":[...]}}
+//	闁?{"type":"expert.list", "id":"16"}
+//	闁?{"type":"expert.list", "id":"16", "payload":{"experts":[...]}}
 //
-//	→ {"type":"team.list", "id":"17"}
-//	← {"type":"team.list", "id":"17", "payload":{"teams":[...]}}
+//	闁?{"type":"team.list", "id":"17"}
+//	闁?{"type":"team.list", "id":"17", "payload":{"teams":[...]}}
 //
 // ## MCP Management
 //
-//	→ {"type":"mcp.list", "id":"18"}
-//	← {"type":"mcp.list", "id":"18", "payload":{"servers":[{"name":"...","status":"...","disabled":false,"tools":0}]}}
+//	闁?{"type":"mcp.list", "id":"18"}
+//	闁?{"type":"mcp.list", "id":"18", "payload":{"servers":[{"name":"...","status":"...","disabled":false,"tools":0}]}}
 //
-//	→ {"type":"mcp.setEnabled", "id":"19", "payload":{"name":"...","enabled":true}}
-//	← {"type":"mcp.setEnabled", "id":"19", "payload":{"name":"...","enabled":true}}
+//	闁?{"type":"mcp.setEnabled", "id":"19", "payload":{"name":"...","enabled":true}}
+//	闁?{"type":"mcp.setEnabled", "id":"19", "payload":{"name":"...","enabled":true}}
 //
 // ## File Read
 //
-//	→ {"type":"file.read", "id":"20", "payload":{"path":"relative/or/absolute"}}
-//	← {"type":"file.read", "id":"20", "payload":{"path":"...","content":"...","size":1234}}
+//	闁?{"type":"file.read", "id":"20", "payload":{"path":"relative/or/absolute"}}
+//	闁?{"type":"file.read", "id":"20", "payload":{"path":"...","content":"...","size":1234}}
 //
 // ## Team Chat
 //
-//	→ {"type":"team.chat.send", "id":"21", "payload":{"master_task_id":"...","from":"...","to":"...","content":"..."}}
-//	← {"type":"team.chat.sent", "id":"21", "payload":{...}}
-//	← {"type":"team.chat.message", "payload":{...}} (broadcast push)
+//	闁?{"type":"team.chat.send", "id":"21", "payload":{"master_task_id":"...","from":"...","to":"...","content":"..."}}
+//	闁?{"type":"team.chat.sent", "id":"21", "payload":{...}}
+//	闁?{"type":"team.chat.message", "payload":{...}} (broadcast push)
 //
-//	→ {"type":"team.chat.messages", "id":"22", "payload":{"master_task_id":"..."}}
-//	← {"type":"team.chat.messages", "id":"22", "payload":{"messages":[...]}}
+//	闁?{"type":"team.chat.messages", "id":"22", "payload":{"master_task_id":"..."}}
+//	闁?{"type":"team.chat.messages", "id":"22", "payload":{"messages":[...]}}
 //
 // ## Health
 //
-//	GET /health → 200 "ok"
+//	GET /health 闁?200 "ok"
 //
 // ## Errors
 //
-//	← {"type":"error", "id":"...", "payload":{"message":"..."}}
+//	闁?{"type":"error", "id":"...", "payload":{"message":"..."}}
 package server
 
 import (
@@ -246,23 +246,23 @@ type chatRequest struct {
 //
 // The pod should switch on the "event" field to decide how to render:
 //
-//	event="assistant"  → append Content to the markdown message body
-//	event="thinking"   → append Content to the collapsible reasoning area
-//	event="tool_call"  → show a tool-call card (ToolCallID + ToolName + ToolInput)
-//	event="tool_result"→ show a tool-result card (ToolOutcome + ToolStatus + Content)
-//	event="plan"       → append Content as plan step delta, or show PlanText as complete plan
-//	event="subagent"   → update subagent card (TaskID + TaskTitle + TaskStatus)
-//	event="task"       → update parallel-reason card
-//	event="hook"       → show hook notification (TaskTitle = "name: decision")
-//	event="error"      → show error banner (Content or Error field)
-//	event="response_reset" → clear previous partial assistant content
-//	event="context_compacted" → note that context was compacted (no Content)
-//	event="provider_retry" → show "retrying..." indicator
-//	event="done"       → turn complete (Done=true), finalize the message
+//	event="assistant"  闁?append Content to the markdown message body
+//	event="thinking"   闁?append Content to the collapsible reasoning area
+//	event="tool_call"  闁?show a tool-call card (ToolCallID + ToolName + ToolInput)
+//	event="tool_result"闁?show a tool-result card (ToolOutcome + ToolStatus + Content)
+//	event="plan"       闁?append Content as plan step delta, or show PlanText as complete plan
+//	event="subagent"   闁?update subagent card (TaskID + TaskTitle + TaskStatus)
+//	event="task"       闁?update parallel-reason card
+//	event="hook"       闁?show hook notification (TaskTitle = "name: decision")
+//	event="error"      闁?show error banner (Content or Error field)
+//	event="response_reset" 闁?clear previous partial assistant content
+//	event="context_compacted" 闁?note that context was compacted (no Content)
+//	event="provider_retry" 闁?show "retrying..." indicator
+//	event="done"       闁?turn complete (Done=true), finalize the message
 //
 // IMPORTANT: Both "assistant" and "thinking" events use the Content field.
 // The pod must check the "event" field to know where to render the text.
-// There is no separate "thinking" field — reasoning deltas arrive as
+// There is no separate "thinking" field 闁?reasoning deltas arrive as
 // event="thinking" with the text in Content.
 //
 // ToolOutcome: "success", "error", "skipped", "no_result"
@@ -484,7 +484,7 @@ var wsUpgrader = websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { re
 //   - Session store (JSONL)
 //   - Tool registry (all built-in tools)
 //   - Whale config (model, effort, etc.)
-//   - Team engine event → WebSocket broadcast bridge
+//   - Team engine event 闁?WebSocket broadcast bridge
 //   - HTTP mux with /ws and /health endpoints
 func NewDaemon(eng *team_engine.TeamEngine, cfg DaemonConfig) (*Daemon, error) {
 	if err := os.MkdirAll(cfg.DataDir, 0755); err != nil {
@@ -543,7 +543,7 @@ func NewDaemon(eng *team_engine.TeamEngine, cfg DaemonConfig) (*Daemon, error) {
 		mcpManager:       mcpMgr,
 	}
 
-	// Team engine events → broadcast.
+	// Team engine events 闁?broadcast.
 	eng.OnEvent(func(evt team_engine.TaskEvent) {
 		switch evt.Type {
 		case team_engine.EventStateChanged, team_engine.EventTaskDone,
@@ -655,13 +655,13 @@ func (d *Daemon) handleMessage(client *wsClient, req wsRequest) {
 	case "chat":
 		go d.handleChat(client, req)
 	case "task.create":
-		go d.handleTaskCreate(client, req)
+		go d.handleTaskSessionCreate(client, req)
 	case "task.list":
-		d.handleTaskList(client, req)
+		d.handleTaskSessionList(client, req)
 	case "task.cancel":
-		d.handleTaskCancel(client, req)
+		d.handleTaskSessionCancel(client, req)
 	case "task.delete":
-		d.handleTaskDelete(client, req)
+		d.handleTaskSessionDelete(client, req)
 	case "session.list":
 		d.handleSessionList(client, req)
 	case "session.listByAgent":
@@ -683,19 +683,19 @@ func (d *Daemon) handleMessage(client *wsClient, req wsRequest) {
 	case "chat.cancel":
 		d.handleChatCancel(client, req)
 	case "task.subtasks":
-		d.handleTaskSubtasks(client, req)
+		d.handleTaskSessionSubtasks(client, req)
 	case "task.dialogue":
-		d.handleTaskDialogue(client, req)
+		d.handleTaskSessionDialogue(client, req)
 	case "task.plan":
-		d.handleTaskPlan(client, req)
+		d.handleTaskSessionPlan(client, req)
 	case "task.feedback":
-		d.handleTaskFeedback(client, req)
+		d.handleTaskSessionFeedback(client, req)
 	case "task.confirm":
-		d.handleTaskConfirm(client, req)
+		d.handleTaskSessionConfirm(client, req)
 	case "task.confirmations":
-		d.handleTaskConfirmations(client, req)
+		d.handleTaskSessionConfirmations(client, req)
 	case "task.rename":
-		d.handleTaskRename(client, req)
+		d.handleTaskSessionRename(client, req)
 	case "mcp.list":
 		d.handleMCPList(client, req)
 	case "mcp.setEnabled":
@@ -923,7 +923,7 @@ func (d *Daemon) handleChat(client *wsClient, req wsRequest) {
 			chunk.Content = "provider retrying..."
 
 		case agent.AgentEventTypeToolArgsRepaired:
-			// Transparent to frontend — agent auto-repaired broken JSON.
+			// Transparent to frontend 闁?agent auto-repaired broken JSON.
 
 		case agent.AgentEventTypeResponseReset:
 			chunk.Event = "response_reset"
@@ -1152,10 +1152,10 @@ func (d *Daemon) handleUserInputResponse(client *wsClient, req wsRequest) {
 // Task operations
 // =========================================================================
 
-// handleTaskCreate creates a master task and starts PlanAndRun in a goroutine.
+// handleTaskSessionCreate creates a master task and starts PlanAndRun in a goroutine.
 // Returns immediately with the master_task_id; progress is delivered via
 // task.state_changed and task.log pushes.
-func (d *Daemon) handleTaskCreate(client *wsClient, req wsRequest) {
+func (d *Daemon) handleTaskSessionCreate(client *wsClient, req wsRequest) {
 	var p taskCreateRequest
 	if err := json.Unmarshal(req.Payload, &p); err != nil {
 		client.send(wsResponse{Type: "error", ID: req.ID, Payload: map[string]string{"message": "invalid payload"}})
@@ -1167,7 +1167,7 @@ func (d *Daemon) handleTaskCreate(client *wsClient, req wsRequest) {
 		workDir = d.cfg.WorkDir
 	}
 
-	mt, err := d.engine.CreateMasterTask(p.Goal, workDir, "")
+	mt, err := d.engine.CreateTaskSession(p.Goal, workDir, "")
 	if err != nil {
 		client.send(wsResponse{Type: "error", ID: req.ID, Payload: map[string]string{"message": fmt.Sprintf("create task: %v", err)}})
 		return
@@ -1182,16 +1182,16 @@ func (d *Daemon) handleTaskCreate(client *wsClient, req wsRequest) {
 	}})
 }
 
-// handleTaskList returns all master tasks with their subtask counts.
-func (d *Daemon) handleTaskList(client *wsClient, req wsRequest) {
-	tasks, err := d.engine.ListMasterTasks()
+// handleTaskSessionList returns all master tasks with their subtask counts.
+func (d *Daemon) handleTaskSessionList(client *wsClient, req wsRequest) {
+	tasks, err := d.engine.ListTaskSessions()
 	if err != nil {
 		client.send(wsResponse{Type: "error", ID: req.ID, Payload: map[string]string{"message": fmt.Sprintf("list tasks: %v", err)}})
 		return
 	}
 	result := make([]map[string]interface{}, len(tasks))
 	for i, mt := range tasks {
-		subtasks, _ := d.engine.Store.ListTasksByMasterTask(mt.ID)
+		subtasks, _ := d.engine.Store.ListTasksByTaskSession(mt.ID)
 		doneCount, activeCount, suspendedCount := 0, 0, 0
 		for _, t := range subtasks {
 			switch t.State {
@@ -1220,8 +1220,8 @@ func (d *Daemon) handleTaskList(client *wsClient, req wsRequest) {
 	}})
 }
 
-// handleTaskCancel cancels a running master task.
-func (d *Daemon) handleTaskCancel(client *wsClient, req wsRequest) {
+// handleTaskSessionCancel cancels a running master task.
+func (d *Daemon) handleTaskSessionCancel(client *wsClient, req wsRequest) {
 	var p struct {
 		TaskID string `json:"task_id"`
 	}
@@ -1229,12 +1229,12 @@ func (d *Daemon) handleTaskCancel(client *wsClient, req wsRequest) {
 		client.send(wsResponse{Type: "error", ID: req.ID, Payload: map[string]string{"message": "invalid payload"}})
 		return
 	}
-	d.engine.CancelMasterTaskExecution(p.TaskID)
+	d.engine.CancelTaskSessionExecution(p.TaskID)
 	client.send(wsResponse{Type: "task.canceled", ID: req.ID, Payload: map[string]string{"task_id": p.TaskID}})
 }
 
-// handleTaskDelete deletes a master task and all its children.
-func (d *Daemon) handleTaskDelete(client *wsClient, req wsRequest) {
+// handleTaskSessionDelete deletes a master task and all its children.
+func (d *Daemon) handleTaskSessionDelete(client *wsClient, req wsRequest) {
 	var p struct {
 		TaskID string `json:"task_id"`
 	}
@@ -1242,7 +1242,7 @@ func (d *Daemon) handleTaskDelete(client *wsClient, req wsRequest) {
 		client.send(wsResponse{Type: "error", ID: req.ID, Payload: map[string]string{"message": "invalid payload"}})
 		return
 	}
-	if err := d.engine.DeleteMasterTaskAndChildren(p.TaskID); err != nil {
+	if err := d.engine.DeleteTaskSessionAndTasks(p.TaskID); err != nil {
 		client.send(wsResponse{Type: "error", ID: req.ID, Payload: map[string]string{"message": fmt.Sprintf("delete task: %v", err)}})
 		return
 	}
@@ -1253,8 +1253,8 @@ func (d *Daemon) handleTaskDelete(client *wsClient, req wsRequest) {
 // Subtask / dialogue / plan
 // =========================================================================
 
-// handleTaskSubtasks returns the full subtask tree for a master task.
-func (d *Daemon) handleTaskSubtasks(client *wsClient, req wsRequest) {
+// handleTaskSessionSubtasks returns the full subtask tree for a master task.
+func (d *Daemon) handleTaskSessionSubtasks(client *wsClient, req wsRequest) {
 	var p subtaskRequest
 	if err := json.Unmarshal(req.Payload, &p); err != nil {
 		client.send(wsResponse{Type: "error", ID: req.ID, Payload: map[string]string{"message": "invalid payload"}})
@@ -1263,7 +1263,7 @@ func (d *Daemon) handleTaskSubtasks(client *wsClient, req wsRequest) {
 	masterID := p.MasterTaskID
 	if masterID == "" && p.SessionID != "" {
 		// Look up master task by session ID.
-		tasks, _ := d.engine.ListMasterTasksBySession(p.SessionID)
+		tasks, _ := d.engine.ListTaskSessionsBySessionID(p.SessionID)
 		if len(tasks) > 0 {
 			masterID = tasks[0].ID
 		}
@@ -1273,7 +1273,7 @@ func (d *Daemon) handleTaskSubtasks(client *wsClient, req wsRequest) {
 		return
 	}
 
-	subtasks, err := d.engine.ListTasksByMasterTask(masterID)
+	subtasks, err := d.engine.ListTasksByTaskSession(masterID)
 	if err != nil {
 		client.send(wsResponse{Type: "error", ID: req.ID, Payload: map[string]string{"message": err.Error()}})
 		return
@@ -1354,8 +1354,8 @@ func buildSubtaskTree(tasks []*team_engine.Task) []map[string]interface{} {
 	return result
 }
 
-// handleTaskDialogue returns agent dialogue logs for a subtask.
-func (d *Daemon) handleTaskDialogue(client *wsClient, req wsRequest) {
+// handleTaskSessionDialogue returns agent dialogue logs for a subtask.
+func (d *Daemon) handleTaskSessionDialogue(client *wsClient, req wsRequest) {
 	var p dialogueRequest
 	if err := json.Unmarshal(req.Payload, &p); err != nil {
 		client.send(wsResponse{Type: "error", ID: req.ID, Payload: map[string]string{"message": "invalid payload"}})
@@ -1379,8 +1379,8 @@ func (d *Daemon) handleTaskDialogue(client *wsClient, req wsRequest) {
 	}})
 }
 
-// handleTaskPlan returns the leader's decomposition plan for a master task.
-func (d *Daemon) handleTaskPlan(client *wsClient, req wsRequest) {
+// handleTaskSessionPlan returns the leader's decomposition plan for a master task.
+func (d *Daemon) handleTaskSessionPlan(client *wsClient, req wsRequest) {
 	var p planRequest
 	if err := json.Unmarshal(req.Payload, &p); err != nil {
 		client.send(wsResponse{Type: "error", ID: req.ID, Payload: map[string]string{"message": "invalid payload"}})
@@ -1392,10 +1392,10 @@ func (d *Daemon) handleTaskPlan(client *wsClient, req wsRequest) {
 	}
 
 	// Read plan files from the master task's whiteboard directory.
-	masterDir := d.engine.Whiteboard.MasterDir(p.MasterTaskID)
-	planMD, _ := os.ReadFile(filepath.Join(masterDir, "plan.md"))
-	planJSON, _ := os.ReadFile(filepath.Join(masterDir, "plan.json"))
-	specMD, _ := os.ReadFile(filepath.Join(masterDir, "spec.md"))
+	TaskSessionDir := d.engine.Whiteboard.TaskSessionDir(p.MasterTaskID)
+	planMD, _ := os.ReadFile(filepath.Join(TaskSessionDir, "plan.md"))
+	planJSON, _ := os.ReadFile(filepath.Join(TaskSessionDir, "plan.json"))
+	specMD, _ := os.ReadFile(filepath.Join(TaskSessionDir, "spec.md"))
 
 	client.send(wsResponse{Type: "task.plan", ID: req.ID, Payload: map[string]interface{}{
 		"master_task_id": p.MasterTaskID,
@@ -1409,8 +1409,8 @@ func (d *Daemon) handleTaskPlan(client *wsClient, req wsRequest) {
 // Feedback / confirmation
 // =========================================================================
 
-// handleTaskFeedback sends human feedback to a running subtask.
-func (d *Daemon) handleTaskFeedback(client *wsClient, req wsRequest) {
+// handleTaskSessionFeedback sends human feedback to a running subtask.
+func (d *Daemon) handleTaskSessionFeedback(client *wsClient, req wsRequest) {
 	var p feedbackRequest
 	if err := json.Unmarshal(req.Payload, &p); err != nil {
 		client.send(wsResponse{Type: "error", ID: req.ID, Payload: map[string]string{"message": "invalid payload"}})
@@ -1425,8 +1425,8 @@ func (d *Daemon) handleTaskFeedback(client *wsClient, req wsRequest) {
 	}})
 }
 
-// handleTaskConfirm handles user confirmation/rejection of a pending confirmation.
-func (d *Daemon) handleTaskConfirm(client *wsClient, req wsRequest) {
+// handleTaskSessionConfirm handles user confirmation/rejection of a pending confirmation.
+func (d *Daemon) handleTaskSessionConfirm(client *wsClient, req wsRequest) {
 	var p confirmRequest
 	if err := json.Unmarshal(req.Payload, &p); err != nil {
 		client.send(wsResponse{Type: "error", ID: req.ID, Payload: map[string]string{"message": "invalid payload"}})
@@ -1456,14 +1456,14 @@ func (d *Daemon) handleTaskConfirm(client *wsClient, req wsRequest) {
 	}})
 }
 
-// handleTaskConfirmations lists all pending confirmations for a master task.
-func (d *Daemon) handleTaskConfirmations(client *wsClient, req wsRequest) {
+// handleTaskSessionConfirmations lists all pending confirmations for a master task.
+func (d *Daemon) handleTaskSessionConfirmations(client *wsClient, req wsRequest) {
 	var p confirmationsRequest
 	if err := json.Unmarshal(req.Payload, &p); err != nil {
 		client.send(wsResponse{Type: "error", ID: req.ID, Payload: map[string]string{"message": "invalid payload"}})
 		return
 	}
-	subtasks, _ := d.engine.ListTasksByMasterTask(p.MasterTaskID)
+	subtasks, _ := d.engine.ListTasksByTaskSession(p.MasterTaskID)
 	var pending []map[string]interface{}
 	for _, t := range subtasks {
 		if d.engine.Whiteboard.HasConfirmation(t.ID) {
@@ -1481,22 +1481,22 @@ func (d *Daemon) handleTaskConfirmations(client *wsClient, req wsRequest) {
 	}})
 }
 
-// handleTaskRename renames a master task.
-func (d *Daemon) handleTaskRename(client *wsClient, req wsRequest) {
+// handleTaskSessionRename renames a master task.
+func (d *Daemon) handleTaskSessionRename(client *wsClient, req wsRequest) {
 	var p taskRenameRequest
 	if err := json.Unmarshal(req.Payload, &p); err != nil {
 		client.send(wsResponse{Type: "error", ID: req.ID, Payload: map[string]string{"message": "invalid payload"}})
 		return
 	}
 	// Rename by updating the master task's goal in the store.
-	mt, err := d.engine.GetMasterTask(p.TaskID)
+	mt, err := d.engine.GetTaskSession(p.TaskID)
 	if err != nil {
 		client.send(wsResponse{Type: "error", ID: req.ID, Payload: map[string]string{"message": "task not found"}})
 		return
 	}
 	// Update the goal/description in the whiteboard.
-	masterDir := d.engine.Whiteboard.MasterDir(p.TaskID)
-	goalPath := filepath.Join(masterDir, "goal.md")
+	TaskSessionDir := d.engine.Whiteboard.TaskSessionDir(p.TaskID)
+	goalPath := filepath.Join(TaskSessionDir, "goal.md")
 	if _, err := os.Stat(goalPath); err == nil {
 		os.WriteFile(goalPath, []byte(p.Title), 0644)
 	}
@@ -1699,8 +1699,8 @@ func (d *Daemon) handleSessionList(client *wsClient, req wsRequest) {
 		// Compute real task counts from TeamEngine.
 		taskCount, doneCount, activeCount, suspendedCount := 0, 0, 0, 0
 		if d.engine != nil {
-			if mts, _ := d.engine.ListMasterTasksBySession(s.ID); len(mts) > 0 {
-				subs, _ := d.engine.ListTasksByMasterTask(mts[0].ID)
+			if mts, _ := d.engine.ListTaskSessionsBySessionID(s.ID); len(mts) > 0 {
+				subs, _ := d.engine.ListTasksByTaskSession(mts[0].ID)
 				taskCount = len(subs)
 				for _, t := range subs {
 					switch t.State {
@@ -1752,7 +1752,7 @@ func (d *Daemon) handleSessionListByAgent(client *wsClient, req wsRequest) {
 		if s.Meta.Kind == "subagent" {
 			continue
 		}
-// Always filter by agent — empty string means "whale" sessions.
+// Always filter by agent 闁?empty string means "whale" sessions.
 if s.Meta.Agent != p.Agent {
 			continue
 		}
@@ -1796,7 +1796,7 @@ func (d *Daemon) handleSessionDeleteAll(client *wsClient, req wsRequest) {
 		if s.Meta.Kind == "subagent" {
 			continue
 		}
-// Always filter by agent — empty string means "whale" sessions.
+// Always filter by agent 闁?empty string means "whale" sessions.
 if s.Meta.Agent != p.Agent {
 			continue
 		}
@@ -1914,7 +1914,7 @@ func (c *wsClient) send(msg interface{}) {
 
 // resolveAPIKey reads the DeepSeek API key from:
 //   1. DEEPSEEK_API_KEY environment variable (preferred)
-//   2. {dataDir}/credentials.json → deepseek_api_key field
+//   2. {dataDir}/credentials.json 闁?deepseek_api_key field
 // Returns empty string if neither is set.
 func resolveAPIKey(dataDir string) string {
 	if key := os.Getenv("DEEPSEEK_API_KEY"); key != "" {
@@ -2011,15 +2011,15 @@ func listAgentMarkdown(dir string) []map[string]interface{} {
 // summarizeToolInput returns a short human-readable summary of a tool call's JSON input.
 //
 // Each tool gets a custom extraction:
-//   - shell_run      → the command string
-//   - read_file/write/edit → the file path
-//   - grep           → the pattern
-//   - web_search     → the query
-//   - web_fetch      → the URL
-//   - spawn_subagent → "role: task summary"
-//   - parallel_reason → "N prompts"
-//   - multi_edit     → "file (N edits)"
-//   - empty/unknown  → the original input or tool name
+//   - shell_run      闁?the command string
+//   - read_file/write/edit 闁?the file path
+//   - grep           闁?the pattern
+//   - web_search     闁?the query
+//   - web_fetch      闁?the URL
+//   - spawn_subagent 闁?"role: task summary"
+//   - parallel_reason 闁?"N prompts"
+//   - multi_edit     闁?"file (N edits)"
+//   - empty/unknown  闁?the original input or tool name
 //
 // This is the value sent as ToolInput in chat.stream tool_call events.
 func toolLabel(name string) string {

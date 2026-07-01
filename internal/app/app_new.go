@@ -121,10 +121,10 @@ func New(ctx context.Context, cfg Config, start StartOptions) (*App, error) {
 		// Initialize team-engine lifecycle logger (no-op without -tags teamlog).
 		team_engine.SetLogger(teampglog.NewTeamLog(workspaceRoot))
 
-		// Dashboard registration — only for the main CLI process.
+		// Dashboard registration 闁?only for the main CLI process.
 		// Subprocesses (whale exec --persist / whale exec subprocesses) skip
 		// registration to avoid a cascade: each subprocess registering
-		// triggers SyncDashboardState → new engine → another subprocess...
+		// triggers SyncDashboardState 闁?new engine 闁?another subprocess...
 		if os.Getenv("WHALE_NO_DASHBOARD") == "" {
 
 	// Initialize team-engine lifecycle logger (no-op without -tags teamlog).
@@ -136,7 +136,7 @@ func New(ctx context.Context, cfg Config, start StartOptions) (*App, error) {
 	// Set callbacks BEFORE StartHeartbeat to avoid race.
 	app.toolset.SetDashboardClient(app.dashboardClient)
 	app.dashboardClient.OnResume = func(masterTaskID string) {
-		app.toolset.AutoExecuteMasterTask(masterTaskID)
+		app.toolset.AutoExecuteTaskSession(masterTaskID)
 	}
 	app.dashboardClient.OnCancel = func(masterTaskID string) {
 		app.toolset.CancelAutoExecute()

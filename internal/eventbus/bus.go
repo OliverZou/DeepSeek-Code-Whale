@@ -5,7 +5,7 @@
 // Cross-process bridging:
 //
 //	Use BridgeRead() / BridgeWrite() to connect two Bus instances in different
-//	processes (e.g. dashboard ↔ whale CLI).  Events published with Publish()
+//	processes (e.g. dashboard 闁?whale CLI).  Events published with Publish()
 //	are forwarded to BridgeRead(); events received from the peer process should
 //	be injected via BridgeWrite(), which publishes them locally without
 //	re-forwarding, preventing infinite loops.
@@ -109,7 +109,7 @@ func (b *Bus) Unsubscribe(topic string, ch <-chan Event) {
 
 // Publish sends an event to all subscribers of the given topic and forwards
 // it to any cross-process bridge reader (BridgeRead).  In async mode
-// (default), it never blocks — slow consumers are skipped.
+// (default), it never blocks 闁?slow consumers are skipped.
 func (b *Bus) Publish(topic string, ev Event) {
 	b.publishToSubs(topic, ev)
 
@@ -122,7 +122,7 @@ func (b *Bus) Publish(topic string, ev Event) {
 		select {
 		case bo <- be:
 		default:
-			// Bridge consumer is slow — drop.
+			// Bridge consumer is slow 闁?drop.
 			logBridge("Publish: bridgeOut full, dropped topic=%s type=%s", topic, ev.Type)
 		}
 	}
@@ -147,7 +147,7 @@ func (b *Bus) publishToSubs(topic string, ev Event) {
 			select {
 			case ch <- ev:
 			default:
-				// Slow consumer — drop the event to avoid blocking publisher.
+				// Slow consumer 闁?drop the event to avoid blocking publisher.
 			}
 		} else {
 			ch <- ev
@@ -159,8 +159,8 @@ func (b *Bus) publishToSubs(topic string, ev Event) {
 // background goroutine that reads from bridgeIn and publishes events locally
 // (without re-forwarding).  Returns:
 //
-//	readCh  — bridge out: events published in THIS process (send to peer)
-//	writeCh — bridge in:  events from the peer process (caller writes here)
+//	readCh  闁?bridge out: events published in THIS process (send to peer)
+//	writeCh 闁?bridge in:  events from the peer process (caller writes here)
 //
 // Call EnableBridge once per Bus instance.
 func (b *Bus) EnableBridge() (readCh <-chan BridgedEvent, writeCh chan<- BridgedEvent) {
@@ -244,7 +244,7 @@ const (
 	EventTaskDone       = "task_done"
 	EventLeaderLog      = "leader_log"
 	EventAgentLog       = "agent_log"
-	EventSyncMasterTasks = "sync_master_tasks"
+	EventSyncSessions = "sync_sessions"
 	EventSyncSubtasks    = "sync_subtasks"
 
 	// --- Workspace event types ---

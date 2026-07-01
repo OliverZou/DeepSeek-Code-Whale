@@ -26,21 +26,21 @@ func TestDeleteTask(t *testing.T) {
 	}
 }
 
-func TestDeleteMasterTaskCascades(t *testing.T) {
+func TestDeleteTaskSessionCascades(t *testing.T) {
 	eng := newTestEngine(t)
 	defer eng.Close()
 
-	mt, _ := eng.CreateMasterTask("cascade test", "/tmp", "")
+	mt, _ := eng.CreateTaskSession("cascade test", "/tmp", "")
 	// Create 3 subtasks.
 	for i := 0; i < 3; i++ {
 		task, _ := eng.CreateTask("Sub", "subtask", RoleDeveloper, "", nil, 0, ".", "", "", "")
-		task.MasterTaskID = mt.ID
+		task.TaskSessionID = mt.ID
 		eng.Store.UpdateTask(task.ID, map[string]interface{}{"master_task_id": mt.ID})
 	}
 
-	// Delete the master task.
-	if err := eng.DeleteMasterTask(mt.ID); err != nil {
-		t.Fatalf("delete master task: %v", err)
+	// Delete the task session.
+	if err := eng.DeleteTaskSession(mt.ID); err != nil {
+		t.Fatalf("delete task session: %v", err)
 	}
 
 	// All subtasks should be gone.
@@ -48,10 +48,10 @@ func TestDeleteMasterTaskCascades(t *testing.T) {
 	if len(tasks) != 0 {
 		t.Errorf("expected 0 subtasks after cascade delete, got %d", len(tasks))
 	}
-	// Master task itself should be gone.
-	got, _ := eng.Store.GetMasterTask(mt.ID)
+	// Task session itself should be gone.
+	got, _ := eng.Store.GetTaskSession(mt.ID)
 	if got != nil {
-		t.Error("master task should be deleted")
+		t.Error("task session should be deleted")
 	}
 }
 
@@ -344,7 +344,7 @@ func TestWhiteboardCleanupTask(t *testing.T) {
 	}
 }
 
-func TestWhiteboardCleanupMasterTask(t *testing.T) {
+func TestWhiteboardCleanupTaskSession(t *testing.T) {
 	eng := newTestEngine(t)
 	defer eng.Close()
 
@@ -361,7 +361,7 @@ func TestWhiteboardCleanupMasterTask(t *testing.T) {
 	}
 
 	// Cleanup.
-	eng.Whiteboard.CleanupMasterTask("master-1", []string{task.ID})
+	eng.Whiteboard.CleanupTaskSession("master-1", []string{task.ID})
 
 	// Verify board and task dir are gone.
 	if content, _ := eng.Whiteboard.ReadBoard(); content != "" {
@@ -418,7 +418,7 @@ func TestNewTaskWithProfile(t *testing.T) {
 	if task.BatchID != "batch-1" {
 		t.Errorf("batch_id should be 'batch-1', got %s", task.BatchID)
 	}
-	if task.MasterTaskID != "mt-1" {
-		t.Errorf("master_task_id should be 'mt-1', got %s", task.MasterTaskID)
+	if task.TaskSessionID != "mt-1" {
+		t.Errorf("master_task_id should be 'mt-1', got %s", task.TaskSessionID)
 	}
 }

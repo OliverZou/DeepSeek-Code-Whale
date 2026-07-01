@@ -52,7 +52,7 @@ type Toolset struct {
 	dashboardClient interface {
 		PendingResume() string
 		SendTaskEvent(bridge.TaskEvent)
-		SyncState(mts []bridge.MasterTaskJSON, sts map[string][]bridge.SubtaskJSON, wsLabel string)
+		SyncState(mts []bridge.TaskSessionJSON, sts map[string][]bridge.SubtaskJSON, wsLabel string)
 	}
 
 	// auto-exec cancellation
@@ -63,7 +63,7 @@ type Toolset struct {
 // SyncDashboardState pushes the current team engine state to the dashboard.
 // Creates a temporary engine, reads DB state, and sends sync_full.
 func (b *Toolset) SyncDashboardState(client interface {
-	SyncState(mts []bridge.MasterTaskJSON, sts map[string][]bridge.SubtaskJSON, wsLabel string)
+	SyncState(mts []bridge.TaskSessionJSON, sts map[string][]bridge.SubtaskJSON, wsLabel string)
 }, workspacePath string) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -84,7 +84,7 @@ func (b *Toolset) SyncDashboardState(client interface {
 func (b *Toolset) SetDashboardClient(c interface {
 	PendingResume() string
 	SendTaskEvent(bridge.TaskEvent)
-	SyncState(mts []bridge.MasterTaskJSON, sts map[string][]bridge.SubtaskJSON, wsLabel string)
+	SyncState(mts []bridge.TaskSessionJSON, sts map[string][]bridge.SubtaskJSON, wsLabel string)
 }) {
 	b.dashboardClient = c
 }
