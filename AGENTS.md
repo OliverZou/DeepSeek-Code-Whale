@@ -8,7 +8,6 @@ Whale is a Go CLI/TUI agent. The entrypoint is `cmd/whale`. Most application cod
 - `internal/agent` for the turn loop, approvals, hooks, and tool orchestration
 - `internal/tools` for built-in tools such as shell, patch, file, and web actions
 - `internal/app`, `internal/session`, `internal/memory`, and `internal/store` for runtime state and persistence
-- `internal/server` for the daemon WebSocket API (whale-pod backend)
 - `internal/evals` for replay and harness-based eval coverage
 - `docs/` for user-facing configuration docs
 - `scripts/smoke/` for live API smoke checks that require a real DeepSeek key
@@ -22,17 +21,7 @@ Keep new packages focused and place tests next to the code they cover.
 - `make test` (or `go test ./...`) runs the full offline Go test suite
 - `make test-tui` (or `go test ./internal/tui/...`) runs the TUI-focused subset
 - `make test-evals` (or `go test ./internal/evals/...`) runs eval and replay tests
-- `make test-server` (or `go test ./internal/server/...`) runs daemon WebSocket API tests
 - `make clean` removes `bin/` and `.gocache`
-
-### Daemon commands
-
-- `whale daemon start --port 18900` — start the background daemon (WebSocket API server)
-- `whale daemon stop` — gracefully stop the daemon
-- `whale daemon status` — check if daemon is running
-
-The daemon exposes a WebSocket API at `ws://localhost:{port}/ws` for whale-pod integration.
-See `internal/server/ws.go` for the full protocol reference.
 
 Prefer Makefile targets on macOS/Linux. On Windows (where `make` is not available by default), use the equivalent `go` commands listed above. The `.gocache` directory is managed automatically so cache paths stay consistent regardless of which method you use.
 

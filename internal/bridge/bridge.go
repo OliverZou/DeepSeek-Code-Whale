@@ -8,7 +8,7 @@ import (
 )
 
 // =========================================================================
-// Logger 闁?local file-based log, independent of team_engine
+// Logger — local file-based log, independent of team_engine
 // =========================================================================
 
 
@@ -22,7 +22,7 @@ func Log(cat, format string, args ...interface{}) {
 }
 
 // =========================================================================
-// Log helpers 闁?called by Client
+// Log helpers — called by Client
 // =========================================================================
 
 // CLIHeartbeat logs a CLI heartbeat registration result.
@@ -42,7 +42,7 @@ func CLIReceiveResume(masterTaskID string) {
 }
 
 // =========================================================================
-// TaskEvent 闁?lightweight event sent over WebSocket
+// TaskEvent — lightweight event sent over WebSocket
 // =========================================================================
 
 // TaskEventType mirrors team_engine event types that the bridge forwards.
@@ -64,7 +64,7 @@ type TaskEvent struct {
 }
 
 // =========================================================================
-// BridgedEvent 闁?cross-process EventBus message
+// BridgedEvent — cross-process EventBus message
 // =========================================================================
 
 // Event is a simple topic+type+payload envelope.
@@ -80,7 +80,7 @@ type BridgedEvent struct {
 }
 
 // =========================================================================
-// EnableGlobalBridge 闁?channel pair for cross-process bridge
+// EnableGlobalBridge — channel pair for cross-process bridge
 // =========================================================================
 
 // EnableGlobalBridge returns a read channel and write channel for the bridge.
@@ -90,11 +90,11 @@ func EnableGlobalBridge() (<-chan BridgedEvent, chan<- BridgedEvent) {
 }
 
 // =========================================================================
-// TaskSessionJSON / SubtaskJSON 闁?sync protocol types
+// MasterTaskJSON / SubtaskJSON — sync protocol types
 // =========================================================================
 
-// TaskSessionJSON is the JSON representation of a session sent to the frontend.
-type TaskSessionJSON struct {
+// MasterTaskJSON is the JSON representation of a master task sent to the frontend.
+type MasterTaskJSON struct {
 	ID              string `json:"id"`
 	Goal            string `json:"goal"`
 	WorkspaceID     string `json:"workspace_id"`
@@ -109,7 +109,7 @@ type TaskSessionJSON struct {
 	WorkspaceOnline bool   `json:"workspace_online"`
 }
 
-// SubtaskJSON is a subtask in a session's plan.
+// SubtaskJSON is a subtask in a master task's plan.
 type SubtaskJSON struct {
 	ID          string        `json:"id"`
 	Title       string        `json:"title"`

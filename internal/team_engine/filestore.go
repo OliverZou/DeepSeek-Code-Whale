@@ -34,7 +34,7 @@ type FileTaskStore struct {
 	baseDir string
 	mu      sync.RWMutex
 	tasks   map[string]*Task       // taskID → Task (in-memory index)
-	taskSessions map[string]*TaskSession // sessionID -> TaskSession
+	masters map[string]*MasterTask // masterID → MasterTask
 }
 
 func NewFileTaskStore(baseDir string) (*FileTaskStore, error) {
@@ -44,7 +44,7 @@ func NewFileTaskStore(baseDir string) (*FileTaskStore, error) {
 	fs := &FileTaskStore{
 		baseDir: baseDir,
 		tasks:   make(map[string]*Task),
-		taskSessions: make(map[string]*TaskSession),
+		masters: make(map[string]*MasterTask),
 	}
 	fs.rebuildIndex()
 	return fs, nil
@@ -78,7 +78,7 @@ func (fs *FileTaskStore) rebuildIndex() {
 			if err != nil {
 				continue
 			}
-			fs.taskSessions[e.Name()] = &TaskSession{ID: meta.ID, Goal: meta.Title, Agent: meta.Agent, SessionID: meta.SessionID, WorkspacePath: meta.WorkspacePath, CreatedAt: meta.CreatedAt}
+			fs.masters[e.Name()] = &MasterTask{ID: meta.ID, Goal: meta.Title, Agent: meta.Agent, SessionID: meta.SessionID, WorkspacePath: meta.WorkspacePath, CreatedAt: meta.CreatedAt}
 		}
 	}
 }
@@ -152,7 +152,7 @@ func (fs *FileTaskStore) taskFromMeta(meta *taskMeta) *Task {
 		Output:           meta.Output,
 		ParentIDs:        meta.ParentIDs,
 		BatchID:          meta.BatchID,
-		TaskSessionID:    meta.MasterTaskID,
+		MasterTaskID:     meta.MasterTaskID,
 		VerifierFocus:    meta.VerifierFocus,
 		VerifierFeedback: meta.VerifierFeedback,
 		MaxRetries:       meta.MaxRetries,
@@ -213,7 +213,7 @@ func (fs *FileTaskStore) findTaskDir(id string) string {
 // master task operations
 // ---------------------------------------------------------------------------
 
-func (fs *FileTaskStore) InsertTaskSession(mt *TaskSession) error {
+func (fs *FileTaskStore) InsertMasterTask(mt *MasterTask) error {
 	dir := fs.masterDir(mt.ID)
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return err
@@ -225,26 +225,26 @@ func (fs *FileTaskStore) InsertTaskSession(mt *TaskSession) error {
 	fs.writeGoal(dir, mt.Goal, "teamleader", mt.Goal, "")
 
 	fs.mu.Lock()
-	fs.taskSessions[mt.ID] = &TaskSession{ID: mt.ID, Goal: mt.Goal, Agent: mt.Agent, SessionID: mt.SessionID, WorkspacePath: mt.WorkspacePath, CreatedAt: meta.CreatedAt}
+	fs.masters[mt.ID] = &MasterTask{ID: mt.ID, Goal: mt.Goal, Agent: mt.Agent, SessionID: mt.SessionID, WorkspacePath: mt.WorkspacePath, CreatedAt: meta.CreatedAt}
 	fs.mu.Unlock()
 	return nil
 }
 
-func (fs *FileTaskStore) ListTaskSessions() ([]*TaskSession, error) {
+func (fs *FileTaskStore) ListMasterTasks() ([]*MasterTask, error) {
 	fs.mu.RLock()
 	defer fs.mu.RUnlock()
-	result := make([]*TaskSession, 0, len(fs.taskSessions))
-	for _, mt := range fs.taskSessions {
+	result := make([]*MasterTask, 0, len(fs.masters))
+	for _, mt := range fs.masters {
 		result = append(result, mt)
 	}
 	return result, nil
 }
 
-func (fs *FileTaskStore) ListTaskSessionsBySessionID(sessionID string) ([]*TaskSession, error) {
+func (fs *FileTaskStore) ListMasterTasksBySession(sessionID string) ([]*MasterTask, error) {
 	fs.mu.RLock()
 	defer fs.mu.RUnlock()
-	result := make([]*TaskSession, 0)
-	for _, mt := range fs.taskSessions {
+	result := make([]*MasterTask, 0)
+	for _, mt := range fs.masters {
 		if mt.SessionID == sessionID {
 			result = append(result, mt)
 		}
@@ -252,28 +252,28 @@ func (fs *FileTaskStore) ListTaskSessionsBySessionID(sessionID string) ([]*TaskS
 	return result, nil
 }
 
-func (fs *FileTaskStore) DeleteTaskSession(id string) error {
+func (fs *FileTaskStore) DeleteMasterTask(id string) error {
 	fs.mu.Lock()
-	delete(fs.taskSessions, id)
+	delete(fs.masters, id)
 	fs.mu.Unlock()
 	dir := fs.masterDir(id)
 	return os.RemoveAll(dir)
 }
 
-func (fs *FileTaskStore) GetTaskSession(id string) (*TaskSession, error) {
+func (fs *FileTaskStore) GetMasterTask(id string) (*MasterTask, error) {
 	fs.mu.RLock()
 	defer fs.mu.RUnlock()
-	mt, ok := fs.taskSessions[id]
+	mt, ok := fs.masters[id]
 	if !ok {
 		return nil, nil
 	}
 	return mt, nil
 }
 
-func (fs *FileTaskStore) CompleteTaskSession(id string) error {
+func (fs *FileTaskStore) CompleteMasterTask(id string) error {
 	fs.mu.Lock()
 	defer fs.mu.Unlock()
-	mt, ok := fs.taskSessions[id]
+	mt, ok := fs.masters[id]
 	if !ok {
 		return nil
 	}
@@ -281,11 +281,11 @@ func (fs *FileTaskStore) CompleteTaskSession(id string) error {
 	return nil
 }
 
-func (fs *FileTaskStore) SaveTaskSessionProgress(masterTaskID, progressJSON string) error {
+func (fs *FileTaskStore) SaveMasterTaskProgress(masterTaskID, progressJSON string) error {
 	return os.WriteFile(filepath.Join(fs.masterDir(masterTaskID), "plan.json"), []byte(progressJSON), 0644)
 }
 
-func (fs *FileTaskStore) GetTaskSessionProgress(masterTaskID string) (string, error) {
+func (fs *FileTaskStore) GetMasterTaskProgress(masterTaskID string) (string, error) {
 	data, err := os.ReadFile(filepath.Join(fs.masterDir(masterTaskID), "plan.json"))
 	if err != nil {
 		return "", err
@@ -305,7 +305,7 @@ func (fs *FileTaskStore) InsertTask(task *Task) error {
 	meta := &taskMeta{
 		ID:            task.ID, Title: task.Title, Description: task.Description,
 		Role:          string(task.Role), Output: task.Output,
-		ParentIDs:     task.ParentIDs, BatchID: task.BatchID, MasterTaskID: task.TaskSessionID,
+		ParentIDs:     task.ParentIDs, BatchID: task.BatchID, MasterTaskID: task.MasterTaskID,
 		VerifierFocus: task.VerifierFocus, MaxRetries: task.MaxRetries,
 		CreatedAt: time.Now().UTC().Format(time.RFC3339),
 	}
@@ -343,12 +343,12 @@ func (fs *FileTaskStore) ListTasks() ([]*Task, error) {
 	return result, nil
 }
 
-func (fs *FileTaskStore) ListTasksByTaskSession(masterID string) ([]*Task, error) {
+func (fs *FileTaskStore) ListTasksByMasterTask(masterID string) ([]*Task, error) {
 	fs.mu.RLock()
 	defer fs.mu.RUnlock()
 	var result []*Task
 	for _, t := range fs.tasks {
-		if t.TaskSessionID == masterID {
+		if t.MasterTaskID == masterID {
 			fs.refreshState(t)
 			result = append(result, t)
 		}
@@ -415,7 +415,7 @@ func (fs *FileTaskStore) UpdateTask(id string, fields map[string]interface{}) er
 	}
 	if v, ok := fields["master_task_id"]; ok {
 		meta.MasterTaskID = fmt.Sprint(v)
-		t.TaskSessionID = meta.MasterTaskID
+		t.MasterTaskID = meta.MasterTaskID
 	}
 	if v, ok := fields["verifier_focus"]; ok {
 		meta.VerifierFocus = fmt.Sprint(v)
@@ -518,8 +518,8 @@ func (fs *FileTaskStore) applyStateMarkers(dir string, newState TaskState) {
 	}
 }
 
-func (fs *FileTaskStore) UpdateTaskTaskSessionID(taskID, taskSessionID string) error {
-	return fs.UpdateTask(taskID, map[string]interface{}{"master_task_id": taskSessionID})
+func (fs *FileTaskStore) UpdateTaskMasterTaskID(taskID, masterTaskID string) error {
+	return fs.UpdateTask(taskID, map[string]interface{}{"master_task_id": masterTaskID})
 }
 
 func (fs *FileTaskStore) DeleteTask(id string) error {
@@ -624,11 +624,11 @@ func (fs *FileTaskStore) GetTaskHistory(taskID string) ([]StateHistoryEntry, err
 	return history, nil
 }
 
-// UpdateTaskSessionStatus updates the master task status in memory.
-func (fs *FileTaskStore) UpdateTaskSessionStatus(id, status string) error {
+// UpdateMasterTaskStatus updates the master task status in memory.
+func (fs *FileTaskStore) UpdateMasterTaskStatus(id, status string) error {
 	fs.mu.Lock()
 	defer fs.mu.Unlock()
-	if mt, ok := fs.taskSessions[id]; ok {
+	if mt, ok := fs.masters[id]; ok {
 		mt.Status = status
 	}
 	return nil

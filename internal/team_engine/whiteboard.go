@@ -15,23 +15,23 @@ import (
 // Each task gets a directory under <base_dir>/<task_id>/:
 //
 //	tasks/<task_id>/
-//	闁宠澹曢弨銏ゅ煘閳?input.md        # Leader 闁告劖鐟ラ崣鍡涙儍閸曨亝宕查柛鏂哄墲瀵寧娼?+ 濞戞挸锕ｇ粭鍛村棘?
-//	闁宠澹曢弨銏ゅ煘閳?output.md       # Worker 闁告劖鐟ラ崣鍡涙儍閸曨亪鐛撻柛?
-//	闁宠澹曢弨銏ゅ煘閳?verifier.md     # Verifier 闁告劖鐟ラ崣鍡涙儍閸曨剦姊鹃柡灞诲劤缁劑寮?
-//	闁宠澹曢弨銏ゅ煘閳?status.json     # 鐟滅増鎸告晶鐘绘偐閼哥鍋撴担绋垮笚闁轰胶澧楀畵?
-//	闁宠澹曢弨銏ゅ煘閳?inbox/          # Agent 闂傚倹鎸抽埀顒佷亢椤斿棝鏁嶅顒€绲虹紓浣圭懄濠€?Agent 闁汇劌瀚粔鐑藉箒椤栥倗绀勯柣銏犲綁缁剚绂嶉崫鍕櫢闁稿繈鍎荤槐?
-//	闁?  闁宠澹曢弨銏ゅ煘閳?001_from_human.json
-//	闁?  闁宠鏌￠弨銏ゅ煘閳?002_from_agent-B.json
-//	闁宠澹曢弨銏ゅ煘閳?outbox/         # Agent 闂傚倹鎸抽埀顒佷亢椤斿棝鏁嶅顓熸嫳 Agent 闁告瑦鍨甸崵顓㈡儍閸曨剛啸闁?
-//	闁?  闁宠鏌￠弨銏ゅ煘閳?001_to_agent-C.json
-//	闁宠鏌￠弨銏ゅ煘閳?artifacts/      # Worker 濞存籂鍐ㄦ瘔闁汇劌瀚崣鎸庢媴閹惧瓨鐎ù鐘侯啇缁辨瑦绂掗敐鍥╁灣缂佹稑顧€缁?
+//	├── input.md        # Leader 写入的任务描述 + 上下文
+//	├── output.md       # Worker 写入的产出
+//	├── verifier.md     # Verifier 写入的检查结果
+//	├── status.json     # 当前状态元数据
+//	├── inbox/          # Agent 间通讯：发给本 Agent 的消息（由他人写入）
+//	│   ├── 001_from_human.json
+//	│   └── 002_from_agent-B.json
+//	├── outbox/         # Agent 间通讯：本 Agent 发出的消息
+//	│   └── 001_to_agent-C.json
+//	└── artifacts/      # Worker 产出的具体文件（代码等）
 //
-// Agent 闂傚倹鎸抽埀顒佷亢椤斿棝宕㈤悢宄扮仧闁挎稑鐗呯粭灞剧閾忕顫﹂柛姘湰濞煎牓鏁嶆径娑氱獥
-//   - 濞寸姾顔婄紞宥呫€掗悩璁冲闁挎稑鐗呭Ч澶岀尵濮瑰洠鍋撴稉鍒nt闁靛棔绗抧gine闁挎稑顦甸崗姗€宕ｉ娆庣鞍闂侇偅淇虹换鍐磼閻斿墎顏遍柣?prompt/spawn/abort/kill
-//     闁规亽鍎辫ぐ娑㈠箼瀹ュ嫮绋?Agent
-//   - Agent 濞戞柨顑夊Λ鍧楀矗椤栨瑤绨伴柛宥呯箣濮瑰鐚剧拋宕囶伇闁哄秶鏌夌换妯兼偘鐏炵瓔妯嬮弶鐑嗗枙濮橈附绂嶉幒鐐电闁告牕鎳忕€氼厽绋夌拠鎻捫楅柟鎭掑姂閳ь兛绀侀幏浼村箰婢舵劖浠橀柡灞诲劥椤?
-//   - 婵炴垵鐗婃导鍛偓娑櫭崑宥夊捶?inbox/outbox 濞戞搩鍙忕槐婊眊ent 闁告凹鍨版慨鈺呭籍閹澘娈伴柛鏂诲姀椤曚即宕ｉ弽銊﹀紦閻犲洨绮粔鐑藉箒?
-//   - Agent 闂侇偅淇虹换鍐冀閸パ冩珯鐎规悶鍎遍崣璺ㄦ嫚鐠囨彃鏅告繛鎴濈墛娴煎懘鏁嶇仦鑲╃憿濞存粏娅ｇ悮顐︽儍閸曨亝鍞夊ù婊勫笚閺岀喎顕ｈ箛鎾舵殮闁稿繈鍔嬬粩鎾嚊?
+// Agent 间通讯原则（与人类同权）：
+//   - 任何渠道（人类、Agent、Engine）都可以通过统一的 prompt/spawn/abort/kill
+//     接口操作 Agent
+//   - Agent 之间可以像人类一样进行多轮交互，包括主动推送和按需查询
+//   - 消息存储在 inbox/outbox 中，Agent 启动时自动读取未读消息
+//   - Agent 通过标准工具读写消息，与人类的交互方式完全一致
 // InboxParams carries all inputs needed to write a task's inbox.md.
 type InboxParams struct {
 	Title           string
@@ -53,7 +53,7 @@ type UpstreamRef struct {
 
 type Whiteboard struct {
 	baseDir  string
-	taskSessionID string // set via SetTaskSession to scope under a master task
+	masterID string // set via SetMaster to scope under a master task
 }
 
 // NewWhiteboard creates a Whiteboard rooted at baseDir.
@@ -68,17 +68,17 @@ func NewWhiteboard(baseDir string) (*Whiteboard, error) {
 	return &Whiteboard{baseDir: abs}, nil
 }
 
-// SetTaskSession scopes subsequent Whiteboard operations under the given master task.
+// SetMaster scopes subsequent Whiteboard operations under the given master task.
 // TaskDir, global files (board.md, deliverable.md), etc. are written under
-// baseDir/taskSessionID/ instead of baseDir/.
-func (wb *Whiteboard) SetTaskSession(taskSessionID string) {
-	wb.taskSessionID = taskSessionID
+// baseDir/masterID/ instead of baseDir/.
+func (wb *Whiteboard) SetMaster(masterID string) {
+	wb.masterID = masterID
 }
 
 // taskRoot returns the root directory for task-level files.
 func (wb *Whiteboard) taskRoot() string {
-	if wb.taskSessionID != "" {
-		return filepath.Join(wb.baseDir, wb.taskSessionID)
+	if wb.masterID != "" {
+		return filepath.Join(wb.baseDir, wb.masterID)
 	}
 	return wb.baseDir
 }
@@ -93,10 +93,10 @@ func (wb *Whiteboard) TaskDir(taskID string) string {
 	return filepath.Join(wb.baseDir, taskID)
 }
 
-// TaskSessionDir returns the directory for per-master-task artifacts
+// MasterDir returns the directory for per-master-task artifacts
 // (plan.json, plan.md, spec.md, board.md, deliverable.md, logs).
 // InitTask creates the task directory and writes input.md.
-// NOTE: does NOT overwrite status.json 闁?the caller is responsible for
+// NOTE: does NOT overwrite status.json — the caller is responsible for
 // updating task state via WriteStatus when the state machine transitions.
 func (wb *Whiteboard) InitTask(taskID, input string) error {
 	taskDir := wb.TaskDir(taskID)
@@ -118,7 +118,7 @@ func (wb *Whiteboard) InitTask(taskID, input string) error {
 }
 
 // ---------------------------------------------------------------------------
-// Board 闁?闁稿繈鍔岄惇顒佹交濞戞ê顔婇柣褑濮ゅ?(board.md) 闁告粌濂斿锔界濡厧鈷栨慨鐟版处閳?(deliverable.md)
+// Board — 全局进度白板 (board.md) 和交付物汇总 (deliverable.md)
 // ---------------------------------------------------------------------------
 
 // BoardPath returns the path to the global board.md file.
@@ -284,19 +284,19 @@ func (wb *Whiteboard) HasConfirmation(taskID string) bool {
 	return err == nil
 }
 
-// TaskSessionDir returns the directory for a master task.
-func (wb *Whiteboard) TaskSessionDir(taskSessionID string) string {
-	return filepath.Join(wb.baseDir, taskSessionID)
+// MasterDir returns the directory for a master task.
+func (wb *Whiteboard) MasterDir(masterTaskID string) string {
+	return filepath.Join(wb.baseDir, masterTaskID)
 }
 
 // ChatDir returns the chat directory for a master task.
-func (wb *Whiteboard) ChatDir(taskSessionID string) string {
-	return filepath.Join(wb.TaskSessionDir(taskSessionID), "chat")
+func (wb *Whiteboard) ChatDir(masterTaskID string) string {
+	return filepath.Join(wb.MasterDir(masterTaskID), "chat")
 }
 
 // WriteChatMessage writes a chat message to the master task's chat directory.
-func (wb *Whiteboard) WriteChatMessage(taskSessionID, from, to, content string) error {
-	chatDir := wb.ChatDir(taskSessionID)
+func (wb *Whiteboard) WriteChatMessage(masterTaskID, from, to, content string) error {
+	chatDir := wb.ChatDir(masterTaskID)
 	if err := os.MkdirAll(chatDir, 0755); err != nil {
 		return fmt.Errorf("create chat dir: %w", err)
 	}
@@ -316,8 +316,8 @@ type ChatMessage struct {
 }
 
 // ReadChatMessages reads all chat messages for a master task, sorted by time.
-func (wb *Whiteboard) ReadChatMessages(taskSessionID string) ([]ChatMessage, error) {
-	chatDir := wb.ChatDir(taskSessionID)
+func (wb *Whiteboard) ReadChatMessages(masterTaskID string) ([]ChatMessage, error) {
+	chatDir := wb.ChatDir(masterTaskID)
 	entries, err := os.ReadDir(chatDir)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -414,7 +414,7 @@ func (wb *Whiteboard) ClearTask(taskID string) error {
 }
 
 // ---------------------------------------------------------------------------
-// Message bus 闁?Agent-to-Agent / Human-to-Agent communication
+// Message bus — Agent-to-Agent / Human-to-Agent communication
 // ---------------------------------------------------------------------------
 
 // InboxDir returns the inbox directory for a task.
@@ -456,7 +456,7 @@ func (wb *Whiteboard) WriteMessage(toTaskID string, msg Message) error {
 }
 
 // ReadInbox reads all unread messages from a task's inbox.
-// After reading, messages are not deleted 闁?agents track "seen" via state.
+// After reading, messages are not deleted — agents track "seen" via state.
 // Returns messages sorted by creation time.
 func (wb *Whiteboard) ReadInbox(taskID string) ([]Message, error) {
 	inboxDir := wb.InboxDir(taskID)
@@ -504,7 +504,7 @@ func (wb *Whiteboard) BuildInboxContext(taskID string) (string, error) {
 	}
 
 	var b strings.Builder
-	b.WriteString("\n\n## 妫ｅ啯鎲?Inbox Messages\n")
+	b.WriteString("\n\n## 📨 Inbox Messages\n")
 	b.WriteString("You have received the following messages. Read them and respond if needed.\n\n")
 	for _, msg := range messages {
 		b.WriteString(fmt.Sprintf("### From: %s\n", msg.From))
@@ -535,7 +535,7 @@ func safeSenderName(name string) string {
 
 	// WriteInboxFile writes the structured inbox.md for a task.
 	// Contains: task description, upstream output file references, template,
-	// self-split instructions, and retry feedback 闁?all as file paths,
+	// self-split instructions, and retry feedback — all as file paths,
 	// not inline content.
 	func (wb *Whiteboard) WriteInboxFile(taskID string, params InboxParams) error {
 		taskDir := wb.TaskDir(taskID)
@@ -548,15 +548,15 @@ func safeSenderName(name string) string {
 
 		var b strings.Builder
 		b.WriteString(fmt.Sprintf("# %s\n\n", params.Title))
-		b.WriteString(fmt.Sprintf("**閻熸瑦甯熸竟?*: %s\n\n", params.Role))
+		b.WriteString(fmt.Sprintf("**角色**: %s\n\n", params.Role))
 		b.WriteString("---\n\n")
 
-		b.WriteString("## 妫ｅ啯鎯?濞寸姾顕ф慨鐔煎箵韫囨艾鐗歕n\n")
+		b.WriteString("## 📋 任务描述\n\n")
 		b.WriteString(params.Description)
 		b.WriteString("\n\n")
 
 		if len(params.UpstreamOutputs) > 0 {
-			b.WriteString("## 妫ｅ啯鎲?濞戞挸锕ラ悥鑸电瑜嶉崵顓㈡晬閸綆鍤為柛蹇撶墦濡插嫮鎷犳导娆戠\n\n")
+			b.WriteString("## 📥 上游产出（请先阅读）\n\n")
 			for _, uo := range params.UpstreamOutputs {
 				b.WriteString(fmt.Sprintf("- [%s](%s)\n", uo.Name, uo.Path))
 			}
@@ -564,20 +564,20 @@ func safeSenderName(name string) string {
 		}
 
 		if params.Template != "" {
-			b.WriteString("## 妫ｅ啯鎯?濞存籂鍐ㄦ瘔婵☆垪鍓濆姒巒\n")
+			b.WriteString("## 📄 产出模板\n\n")
 			b.WriteString(params.Template)
 			b.WriteString("\n\n")
 		}
 
 		if params.Memory != "" {
-			b.WriteString("## 妫ｅ喚娼?闁搞儯鍨藉Σ锔炬媼閺夎法绠揬n\n")
+			b.WriteString("## 🧠 团队记忆\n\n")
 			b.WriteString(params.Memory)
 			b.WriteString("\n\n")
 		}
 
 
 		if params.RetryFeedback != "" {
-			b.WriteString("## 妫ｅ啯鏁?濞戞挸锕ｇ粩瀛樻姜椤旂⒈鍚€闁哄被鍎卞鑺ワ純閸︾单\n")
+			b.WriteString("## 🔄 上一轮审查反馈\n\n")
 			b.WriteString(params.RetryFeedback)
 			b.WriteString("\n\n")
 		}
@@ -632,8 +632,8 @@ func (wb *Whiteboard) CopyArtifact(taskID, filename, content string) error {
 		return os.RemoveAll(wb.TaskDir(taskID))
 	}
 
-	// CleanupTaskSession removes board, deliverable, and all subtask directories.
-	func (wb *Whiteboard) CleanupTaskSession(taskSessionID string, subtaskIDs []string) {
+	// CleanupMasterTask removes board, deliverable, and all subtask directories.
+	func (wb *Whiteboard) CleanupMasterTask(masterTaskID string, subtaskIDs []string) {
 		_ = os.Remove(wb.BoardPath())
 		_ = os.Remove(wb.DeliverablePath())
 		_ = os.Remove(filepath.Join(wb.baseDir, "deliverable.json"))

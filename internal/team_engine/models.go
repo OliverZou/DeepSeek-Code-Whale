@@ -94,7 +94,7 @@ type Task struct {
 	VerifierFeedback string     `json:"verifier_feedback"` // Verifier 反馈
 	VerifierFocus    string     `json:"verifier_focus"`    // 验证重点 (correctness,security,sources,plausibility,...)
 	BatchID          string     `json:"batch_id"`          // 所属 Batch（stage）
-  	TaskSessionID    string     `json:"master_task_id"`    // 所属任务会话
+  	MasterTaskID     string     `json:"master_task_id"`    // 所属总任务
 	UseDW            bool       `json:"use_dw"`            // use Dynamic Workflow for verification
 	CreatedAt        string     `json:"created_at"`        // ISO 8601
 	UpdatedAt        string     `json:"updated_at"`        // ISO 8601
@@ -205,7 +205,7 @@ func NewTask(id, title, description string, role AgentRole, profile ToolProfile,
 		Workdir:       workdir,
 		ParentIDs:     parentIDs,
 		BatchID:       batchID,
-		TaskSessionID: masterTaskID,
+		MasterTaskID:  masterTaskID,
 		CreatedAt:     now,
 		UpdatedAt:     now,
 	}
@@ -233,7 +233,7 @@ var ValidTransitions = map[TaskState][]TaskState{
 }
 
 // ResetForResume transitions stuck tasks back to a runnable state so
-// ResumeTaskSession can re-execute them.  This bypasses the normal
+// ResumeMasterTask can re-execute them.  This bypasses the normal
 // transition table because resume is a recovery operation.
 func ResetForResume(state TaskState) TaskState {
 	if state == TaskStateFailed || state == TaskStateSuspended || state == TaskStatePendingConfirmation {

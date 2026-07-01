@@ -646,19 +646,19 @@ func TestSaveAndLoadCheckpoint(t *testing.T) {
 	eng := newTestEngine(t)
 	defer eng.Close()
 
-	mt, err := eng.CreateTaskSession("test goal", "/tmp", "")
+	mt, err := eng.CreateMasterTask("test goal", "/tmp", "")
 	if err != nil {
-		t.Fatalf("create task session: %v", err)
+		t.Fatalf("create master task: %v", err)
 	}
 
 	// Save a checkpoint.
 	checkJSON := `{"completed_batches":["batch-1"],"batch_cycles":{"batch-1":1}}`
-	if err := eng.Store.SaveTaskSessionProgress(mt.ID, checkJSON); err != nil {
+	if err := eng.Store.SaveMasterTaskProgress(mt.ID, checkJSON); err != nil {
 		t.Fatalf("save checkpoint: %v", err)
 	}
 
 	// Reload and verify.
-	loaded, err := eng.Store.GetTaskSessionProgress(mt.ID)
+	loaded, err := eng.Store.GetMasterTaskProgress(mt.ID)
 	if err != nil {
 		t.Fatalf("get checkpoint: %v", err)
 	}
@@ -701,24 +701,24 @@ func TestSuspendAndResumeTransition(t *testing.T) {
 	}
 }
 
-func TestListSuspendedTaskSessions(t *testing.T) {
+func TestListSuspendedMasterTasks(t *testing.T) {
 	eng := newTestEngine(t)
 	defer eng.Close()
 
-	// Create a task session with one subtask.
-	mt, err := eng.CreateTaskSession("suspended test", "/tmp", "")
+	// Create a master task with one subtask.
+	mt, err := eng.CreateMasterTask("suspended test", "/tmp", "")
 	if err != nil {
-		t.Fatalf("create task session: %v", err)
+		t.Fatalf("create master task: %v", err)
 	}
 	task, err := eng.CreateTask("Sub", "subtask", RoleDeveloper, "", nil, 0, ".", "", "", "")
 	if err != nil {
 		t.Fatalf("create subtask: %v", err)
 	}
-	task.TaskSessionID = mt.ID
-	eng.Store.UpdateTaskTaskSessionID(task.ID, mt.ID)
+	task.MasterTaskID = mt.ID
+	eng.Store.UpdateTaskMasterTaskID(task.ID, mt.ID)
 
 	// No suspended tasks yet.
-	suspended, err := eng.ListSuspendedTaskSessions()
+	suspended, err := eng.ListSuspendedMasterTasks()
 	if err != nil {
 		t.Fatalf("list suspended: %v", err)
 	}
@@ -730,15 +730,15 @@ func TestListSuspendedTaskSessions(t *testing.T) {
 	task.State = TaskStateSuspended
 	eng.Store.TransitionState(task.ID, TaskStateSuspended, "suspended", "")
 
-	suspended, err = eng.ListSuspendedTaskSessions()
+	suspended, err = eng.ListSuspendedMasterTasks()
 	if err != nil {
 		t.Fatalf("list suspended: %v", err)
 	}
 	if len(suspended) != 1 {
-		t.Fatalf("expected 1 suspended task session, got %d", len(suspended))
+		t.Fatalf("expected 1 suspended master task, got %d", len(suspended))
 	}
 	if suspended[0].ID != mt.ID {
-		t.Errorf("expected task session %s, got %s", mt.ID, suspended[0].ID)
+		t.Errorf("expected master task %s, got %s", mt.ID, suspended[0].ID)
 	}
 }
 
@@ -760,50 +760,50 @@ func newResumeTestEngine(t *testing.T) *TeamEngine {
 	return eng
 }
 
-func TestResumeTaskSession(t *testing.T) {
+func TestResumeMasterTask(t *testing.T) {
 	t.Skip("TODO: update for file-store behavior — needs output files for done tasks")
 	eng := newResumeTestEngine(t)
 	defer eng.Close()
 
-	// Create task session with two subtasks, one already done, one suspended.
-	mt, err := eng.CreateTaskSession("resume test", t.TempDir(), "")
+	// Create master task with two subtasks, one already done, one suspended.
+	mt, err := eng.CreateMasterTask("resume test", t.TempDir(), "")
 	if err != nil {
-		t.Fatalf("create task session: %v", err)
+		t.Fatalf("create master task: %v", err)
 	}
 
 	t1, _ := eng.CreateTask("Done task", "This task is done", RoleDeveloper, "", nil, 0, ".", "", "", "")
-	t1.TaskSessionID = mt.ID
+	t1.MasterTaskID = mt.ID
 	t1.BatchID = "batch-research"
-	eng.Store.UpdateTaskTaskSessionID(t1.ID, mt.ID)
+	eng.Store.UpdateTaskMasterTaskID(t1.ID, mt.ID)
 	eng.Store.UpdateTask(t1.ID, map[string]interface{}{"batch_id": "batch-research"})
 	eng.Store.TransitionState(t1.ID, TaskStateAssigned, "", "")
 	eng.Store.TransitionState(t1.ID, TaskStateDone, "", "")
 
 	t2, _ := eng.CreateTask("Suspended task", "This task got killed", RoleDeveloper, "", nil, 0, ".", "", "", "")
-	t2.TaskSessionID = mt.ID
+	t2.MasterTaskID = mt.ID
 	t2.BatchID = "batch-coding"
-	eng.Store.UpdateTaskTaskSessionID(t2.ID, mt.ID)
+	eng.Store.UpdateTaskMasterTaskID(t2.ID, mt.ID)
 	eng.Store.UpdateTask(t2.ID, map[string]interface{}{"batch_id": "batch-coding"})
 	eng.Store.TransitionState(t2.ID, TaskStateAssigned, "", "")
 	eng.Store.TransitionState(t2.ID, TaskStateSuspended, "killed", "")
 
 	// Save checkpoint: batch-research done, batch-coding not yet started.
 	checkJSON := `{"completed_batches":["batch-research"],"batch_cycles":{"batch-research":1}}`
-	eng.Store.SaveTaskSessionProgress(mt.ID, checkJSON)
+	eng.Store.SaveMasterTaskProgress(mt.ID, checkJSON)
 
 	// List suspended.
-	suspended, err := eng.ListSuspendedTaskSessions()
+	suspended, err := eng.ListSuspendedMasterTasks()
 	if err != nil {
 		t.Fatalf("list suspended: %v", err)
 	}
 	if len(suspended) != 1 {
-		t.Fatalf("expected 1 suspended task session, got %d", len(suspended))
+		t.Fatalf("expected 1 suspended master task, got %d", len(suspended))
 	}
 
 	// Resume — will run the suspended task via RunBatch -> RunTask -> mock spawner.
-	batches, err := eng.ResumeTaskSession(context.Background(), mt.ID, "resume test", t.TempDir())
+	batches, err := eng.ResumeMasterTask(context.Background(), mt.ID, "resume test", t.TempDir())
 	if err != nil {
-		t.Fatalf("resume task session: %v", err)
+		t.Fatalf("resume master task: %v", err)
 	}
 
 	// --- Debug: print final states ---
@@ -865,9 +865,9 @@ func TestIntegration_SimpleCodeTask(t *testing.T) {
 	mustWrite(t, workdir, "add.go", workerOutput)
 	mustWrite(t, workdir, "go.mod", "module test\n\ngo 1.21")
 
-	mt, err := eng.CreateTaskSession("write add.go", workdir, "")
+	mt, err := eng.CreateMasterTask("write add.go", workdir, "")
 	if err != nil {
-		t.Fatalf("create task session: %v", err)
+		t.Fatalf("create master task: %v", err)
 	}
 
 	batches, err := eng.PlanAndRun(context.Background(), "write add.go", workdir, mt.ID)
@@ -934,9 +934,9 @@ func Reverse(s string) string {
 	mustWrite(t, workdir, "reverse.go", workerOutput)
 	mustWrite(t, workdir, "go.mod", "module test\n\ngo 1.21")
 
-	mt, err := eng.CreateTaskSession("write reverse.go", workdir, "")
+	mt, err := eng.CreateMasterTask("write reverse.go", workdir, "")
 	if err != nil {
-		t.Fatalf("create task session: %v", err)
+		t.Fatalf("create master task: %v", err)
 	}
 
 	batches, err := eng.PlanAndRun(context.Background(), "write reverse.go", workdir, mt.ID)
@@ -984,7 +984,7 @@ func TestIntegration_VerdictVariants(t *testing.T) {
 			// No go.mod — skip build/lint checks, only test verdict parsing.
 			mustWrite(t, workdir, "output.txt", "worker output here")
 
-			mt, _ := eng.CreateTaskSession("test", workdir, "")
+			mt, _ := eng.CreateMasterTask("test", workdir, "")
 			batches, err := eng.PlanAndRun(context.Background(), "test", workdir, mt.ID)
 			if err != nil && tc.wantDone {
 				t.Errorf("plan and run failed: %v", err)
@@ -1115,9 +1115,9 @@ In-memory map[string]string with sync.RWMutex for concurrent access.`
 	mustWrite(t, workdir, "main.go", backendOutput)
 	mustWrite(t, workdir, "main_test.go", testerOutput)
 
-	mt, err := eng.CreateTaskSession("build KV store CLI", workdir, "")
+	mt, err := eng.CreateMasterTask("build KV store CLI", workdir, "")
 	if err != nil {
-		t.Fatalf("create task session: %v", err)
+		t.Fatalf("create master task: %v", err)
 	}
 
 	// Run the pipeline and collect engine log events.
@@ -1200,7 +1200,7 @@ func TestIntegration_SelfSplitPipeline(t *testing.T) {
 	mustWrite(t, workdir, "store.go", roleSeq["software-engineer"][1])
 	mustWrite(t, workdir, "main.go", roleSeq["software-engineer"][2])
 
-	mt, _ := eng.CreateTaskSession("build KV store", workdir, "")
+	mt, _ := eng.CreateMasterTask("build KV store", workdir, "")
 	batches, err := eng.PlanAndRun(context.Background(), "build KV store", workdir, mt.ID)
 	if err != nil {
 		t.Fatalf("plan and run: %v", err)
@@ -1273,9 +1273,9 @@ func TestIntegration_SoftwareTeam_AgentVerifier(t *testing.T) {
 	mustWrite(t, workdir, "gcd.go", workerOutput)
 	mustWrite(t, workdir, "go.mod", "module test\n\ngo 1.21")
 
-	mt, err := eng.CreateTaskSession("write gcd.go", workdir, "")
+	mt, err := eng.CreateMasterTask("write gcd.go", workdir, "")
 	if err != nil {
-		t.Fatalf("create task session: %v", err)
+		t.Fatalf("create master task: %v", err)
 	}
 
 	batches, err := eng.PlanAndRun(context.Background(), "write gcd.go", workdir, mt.ID)

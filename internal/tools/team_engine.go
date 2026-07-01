@@ -52,10 +52,10 @@ func toolError(format string, args ...interface{}) core.ToolResult {
 
 // --- team_plan ---
 
-// AutoExecuteTaskSession is called by the dashboard client when it receives
+// AutoExecuteMasterTask is called by the dashboard client when it receives
 // a resume command via heartbeat.  It loads the master task and executes
 // it directly without waiting for a user-initiated team_plan call.
-func (b *Toolset) AutoExecuteTaskSession(taskSessionID string) {
+func (b *Toolset) AutoExecuteMasterTask(masterTaskID string) {
 	go func() {
 		eng, err := b.newTeamEngine()
 		if err != nil {
@@ -65,10 +65,10 @@ func (b *Toolset) AutoExecuteTaskSession(taskSessionID string) {
 		}
 		defer eng.Close()
 
-		mt, err := eng.GetTaskSession(taskSessionID)
+		mt, err := eng.GetMasterTask(masterTaskID)
 		if err != nil || mt == nil {
 			logToFile(filepath.Join(b.root, ".whale", "team_tasks", "logs", "engine.log"),
-				"dashboard-resume: GetTaskSession %s failed: err=%v", taskSessionID, err)
+				"dashboard-resume: GetMasterTask %s failed: err=%v", masterTaskID, err)
 			return
 		}
 
@@ -100,10 +100,10 @@ func (b *Toolset) AutoExecuteTaskSession(taskSessionID string) {
 				})
 			}
 
-		batches, err := eng.ResumeTaskSession(ctx, taskSessionID, mt.Goal, workdir)
+		batches, err := eng.ResumeMasterTask(ctx, masterTaskID, mt.Goal, workdir)
 		if eng.Loggers != nil {
-			eng.Loggers.Engine("dashboard-resume: taskSession=%s goal=%q batches=%d err=%v",
-				taskSessionID, mt.Goal, len(batches), err)
+			eng.Loggers.Engine("dashboard-resume: masterTask=%s goal=%q batches=%d err=%v",
+				masterTaskID, mt.Goal, len(batches), err)
 		}
 	}()
 }
@@ -157,7 +157,7 @@ func (b *Toolset) RunSingleTask(taskID string) {
 	}()
 }
 
-// CancelAutoExecute cancels a running AutoExecuteTaskSession.
+// CancelAutoExecute cancels a running AutoExecuteMasterTask.
 func (b *Toolset) CancelAutoExecute() {
 	b.autoExecCancelMu.Lock()
 	defer b.autoExecCancelMu.Unlock()
@@ -227,7 +227,7 @@ func (b *Toolset) runTeamPlan(ctx context.Context, call core.ToolCall, progress 
 	// Check for a pending dashboard resume command (auto-triggered by dashboard).
 	if args.Goal == "" && b.dashboardClient != nil {
 		if mtID := b.dashboardClient.PendingResume(); mtID != "" {
-			mt, err := eng.GetTaskSession(mtID)
+			mt, err := eng.GetMasterTask(mtID)
 			if err != nil {
 				return toolError("dashboard resume: master task %s: %v", mtID, err), nil
 			}
@@ -300,15 +300,15 @@ func (b *Toolset) runTeamPlan(ctx context.Context, call core.ToolCall, progress 
 	}
 
 	// --- Phase 1: Create master task immediately so dashboard sees it ---
-			var taskSession *team_engine.TaskSession
+			var masterTask *team_engine.MasterTask
 			var mtErr error
-			existing, _ := eng.Store.ListTaskSessions()
+			existing, _ := eng.Store.ListMasterTasks()
 			for _, mt := range existing {
-				if mt.Goal == args.Goal { taskSession = mt; break }
+				if mt.Goal == args.Goal { masterTask = mt; break }
 			}
-				for _, mt := range existing { if mt != taskSession { _ = eng.DeleteTaskSession(mt.ID) } }
-			if taskSession == nil {
-				taskSession, mtErr = eng.CreateTaskSession(args.Goal, b.root, "")
+				for _, mt := range existing { if mt != masterTask { _ = eng.DeleteMasterTask(mt.ID) } }
+			if masterTask == nil {
+				masterTask, mtErr = eng.CreateMasterTask(args.Goal, b.root, "")
 				if mtErr != nil {
 					return toolError("create master task: %v", mtErr), nil
 				}
@@ -321,18 +321,18 @@ func (b *Toolset) runTeamPlan(ctx context.Context, call core.ToolCall, progress 
 		// The master task is already visible in the bridge.
 		if args.Async {
 			return core.ToolResult{
-				ModelText: fmt.Sprintf("📋 Task session created: `%s`\nRun `team_plan goal=\"...\"` (without async) to execute.", taskSession.ID),
-				Metadata: map[string]any{"master_task_id": taskSession.ID, "mode": "async"},
+				ModelText: fmt.Sprintf("📋 Master task created: `%s`\nRun `team_plan goal=\"...\"` (without async) to execute.", masterTask.ID),
+				Metadata: map[string]any{"master_task_id": masterTask.ID, "mode": "async"},
 			}, nil
 		}
 
 		// Synchronous mode: PlanAndRun handles decompose + execution in one step.
 			var batches []*team_engine.Batch
-			existingTasks, _ := eng.Store.ListTasksByTaskSession(taskSession.ID)
+			existingTasks, _ := eng.Store.ListTasksByMasterTask(masterTask.ID)
 			if len(existingTasks) > 0 {
-				batches, err = eng.ResumeTaskSession(ctx, taskSession.ID, args.Goal, b.root)
+				batches, err = eng.ResumeMasterTask(ctx, masterTask.ID, args.Goal, b.root)
 			} else {
-				batches, err = eng.PlanAndRun(ctx, args.Goal, b.root, taskSession.ID)
+				batches, err = eng.PlanAndRun(ctx, args.Goal, b.root, masterTask.ID)
 			}
 			if err != nil {
 				var s string
@@ -800,12 +800,12 @@ func (b *Toolset) teamResultTool() toolFn {
 			}
 			defer eng.Close()
 
-			mt, err := eng.GetTaskSession(args.MasterTaskID)
+			mt, err := eng.GetMasterTask(args.MasterTaskID)
 			if err != nil || mt == nil {
 				return toolError("master task %q not found", args.MasterTaskID), nil
 			}
 
-			tasks, err := eng.ListTasksByTaskSession(args.MasterTaskID)
+			tasks, err := eng.ListTasksByMasterTask(args.MasterTaskID)
 			if err != nil {
 				return toolError("list tasks: %v", err), nil
 			}
@@ -914,13 +914,13 @@ func (b *Toolset) teamDeleteTool() toolFn {
 
 			if args.All {
 				// Delete all master tasks first (each cascades to subtasks).
-				taskSessions, err := eng.Store.ListTaskSessions()
+				masterTasks, err := eng.Store.ListMasterTasks()
 				if err != nil {
 					return toolError("list master: %v", err), nil
 				}
 				masterCount := 0
-				for _, mt := range taskSessions {
-					if err := eng.DeleteTaskSession(mt.ID); err != nil {
+				for _, mt := range masterTasks {
+					if err := eng.DeleteMasterTask(mt.ID); err != nil {
 						return toolError("delete master %s: %v", mt.ID, err), nil
 					}
 					masterCount++
@@ -955,7 +955,7 @@ func (b *Toolset) teamDeleteTool() toolFn {
 			}
 
 			// Try as master task.
-			if err := eng.DeleteTaskSession(args.TaskID); err != nil {
+			if err := eng.DeleteMasterTask(args.TaskID); err != nil {
 				return toolError("delete master: %v", err), nil
 			}
 			return toolResult(fmt.Sprintf("Deleted master task %s and all subtasks.", args.TaskID)), nil
@@ -975,7 +975,7 @@ func tick(ok bool) string {
 // pushSyncState builds full master-task + subtask state from the engine
 // and pushes it to the dashboard via WebSocket for cache update.
 func pushSyncState(eng *team_engine.TeamEngine, client interface {
-	SyncState(mts []bridge.TaskSessionJSON, sts map[string][]bridge.SubtaskJSON, wsLabel string)
+	SyncState(mts []bridge.MasterTaskJSON, sts map[string][]bridge.SubtaskJSON, wsLabel string)
 }, workspacePath string) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -984,27 +984,27 @@ func pushSyncState(eng *team_engine.TeamEngine, client interface {
 			}
 		}
 	}()
-	mts, err := eng.Store.ListTaskSessions()
+	mts, err := eng.Store.ListMasterTasks()
 	if true {
 		team_engine.Log("sync", "pushSyncState: mts=%d err=%v", len(mts), err)
 	}
 	if err != nil || len(mts) == 0 {
 		return
 	}
-	var taskSessions []bridge.TaskSessionJSON
+	var masterTasks []bridge.MasterTaskJSON
 	subtaskMap := make(map[string][]bridge.SubtaskJSON)
 	for _, mt := range mts {
-		tasks, _ := eng.Store.ListTasksByTaskSession(mt.ID)
-		mj := buildTaskSessionJSON(mt, tasks, true)
+		tasks, _ := eng.Store.ListTasksByMasterTask(mt.ID)
+		mj := buildMasterTaskJSON(mt, tasks, true)
 		mj.WorkspacePath = workspacePath
-		taskSessions = append(taskSessions, mj)
+		masterTasks = append(masterTasks, mj)
 		subtaskMap[mt.ID] = buildSubtaskJSON(tasks)
 	}
-	client.SyncState(taskSessions, subtaskMap, filepath.Base(workspacePath))
+	client.SyncState(masterTasks, subtaskMap, filepath.Base(workspacePath))
 }
 
-// buildTaskSessionJSON converts team_engine types to the dashboard JSON format.
-func buildTaskSessionJSON(mt *team_engine.TaskSession, tasks []*team_engine.Task, online bool) bridge.TaskSessionJSON {
+// buildMasterTaskJSON converts team_engine types to the dashboard JSON format.
+func buildMasterTaskJSON(mt *team_engine.MasterTask, tasks []*team_engine.Task, online bool) bridge.MasterTaskJSON {
 	taskCount := len(tasks)
 	doneCount := 0
 	activeCount := 0
@@ -1023,7 +1023,7 @@ func buildTaskSessionJSON(mt *team_engine.TaskSession, tasks []*team_engine.Task
 	if activeCount == 0 && mt.Status == "running" && online {
 		activeCount = 1
 	}
-	return bridge.TaskSessionJSON{
+	return bridge.MasterTaskJSON{
 		ID:             mt.ID,
 		Goal:           mt.Goal,
 		WorkspacePath:  mt.WorkspacePath,
