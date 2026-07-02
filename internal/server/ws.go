@@ -1954,10 +1954,10 @@ func (d *Daemon) handleSessionGetMessages(client *wsClient, req wsRequest) {
 			continue
 		}
 
-		// Assistant message: accumulate
+		// Assistant message: accumulate (skip duplicates from old sessions)
 		if m.Role == core.RoleAssistant {
 			text := core.MessagePlainText(m)
-			if text != "" {
+			if text != "" && !strings.HasSuffix(accText, text) {
 				if accText != "" {
 					accText += "\n\n"
 				}
