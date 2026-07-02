@@ -240,6 +240,7 @@ type chatRequest struct {
 	SessionID string `json:"session_id,omitempty"`
 	Agent     string `json:"agent,omitempty"`
 	DeepThink bool   `json:"deep_think,omitempty"`
+	WorkDir   string `json:"workdir,omitempty"`
 }
 
 // chatStreamChunk is a single streaming event from the daemon to the pod.
@@ -772,6 +773,9 @@ func (d *Daemon) handleChat(client *wsClient, req wsRequest) {
 		m.TurnCount++
 		if p.Agent != "" {
 			m.Agent = p.Agent
+		}
+		if p.WorkDir != "" {
+			m.Workspace = p.WorkDir
 		}
 		m.Status = "active"
 	})
