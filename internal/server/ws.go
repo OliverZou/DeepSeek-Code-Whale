@@ -961,13 +961,14 @@ func (d *Daemon) handleChat(client *wsClient, req wsRequest) {
 	// Done.
 	d.pushChat(client, sessionID, chatStreamChunk{Event: "done", Done: true})
 
-	// Persist reasoning and tool call metadata that the agent's internal storage may omit.
-	if thinkingBuf != "" || len(collectedTools) > 0 {
+	// Persist reasoning the agent may have omitted — stored as hidden so
+	// handleSessionGetMessages can merge it into the preceding visible message.
+	if thinkingBuf != "" {
 		d.store.Create(context.Background(), core.Message{
 			SessionID: sessionID,
 			Role:      core.RoleAssistant,
+			Hidden:    true,
 			Text:      contentBuf,
-			ToolCalls: collectedTools,
 			Reasoning: thinkingBuf,
 		})
 	}
@@ -1868,8 +1869,13 @@ func (d *Daemon) handleSessionGetMessages(client *wsClient, req wsRequest) {
 	result := make([]map[string]interface{}, 0, len(msgs))
 		var lastContent string
 	for _, m := range msgs {
-if m.Role == core.RoleTool || m.Hidden {
-	continue // skip tool result and hidden messages
+if m.Role == core.RoleTool || (m.Hidden && m.Reasoning == "") {
+	continue // skip tool results and hidden messages without reasoning
+}
+// Hidden assistant with reasoning → merge into previous visible entry
+if m.Hidden && m.Reasoning != "" && len(result) > 0 {
+	result[len(result)-1]["thinking"] = m.Reasoning
+	continue
 }
 from := "human"
 if m.Role == core.RoleAssistant {
