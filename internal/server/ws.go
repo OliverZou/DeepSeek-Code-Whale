@@ -960,6 +960,18 @@ func (d *Daemon) handleChat(client *wsClient, req wsRequest) {
 
 	// Done.
 	d.pushChat(client, sessionID, chatStreamChunk{Event: "done", Done: true})
+
+	// Persist reasoning and tool call metadata that the agent's internal storage may omit.
+	if thinkingBuf != "" || len(collectedTools) > 0 {
+		d.store.Create(context.Background(), core.Message{
+			SessionID: sessionID,
+			Role:      core.RoleAssistant,
+			Text:      contentBuf,
+			ToolCalls: collectedTools,
+			Reasoning: thinkingBuf,
+		})
+	}
+
 	client.send(wsResponse{Type: "chat", ID: req.ID, Payload: map[string]string{
 		"session_id": sessionID,
 	}})
@@ -1885,7 +1897,7 @@ for _, tc := range m.ToolCalls {
 	tools = append(tools, tool)
 }
 			// Dedup: include tool count so tool-only turns are not lost
-			dedupKey := text + "|tools:" + strconv.Itoa(len(tools))
+			dedupKey := text + "|tools:" + strconv.Itoa(len(tools)) + "|reasoning:" + strconv.Itoa(len(m.Reasoning))
 			if dedupKey == lastContent {
 			}
 			lastContent = dedupKey
