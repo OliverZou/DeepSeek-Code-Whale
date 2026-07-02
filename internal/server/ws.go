@@ -764,17 +764,6 @@ func (d *Daemon) handleChat(client *wsClient, req wsRequest) {
 		return
 	}
 
-	// Write user message.
-	_, err = d.store.Create(context.Background(), core.Message{
-		SessionID: sessionID,
-		Role:      core.RoleUser,
-		Text:      p.Message,
-	})
-	if err != nil {
-		client.send(wsResponse{Type: "error", ID: req.ID, Payload: map[string]string{"message": fmt.Sprintf("write message: %v", err)}})
-		return
-	}
-
 	// Update session meta.
 	session.UpdateSessionMeta(d.sessionsDir, sessionID, func(m *session.SessionMeta) {
 		if m.StartedAt.IsZero() {
@@ -962,17 +951,6 @@ func (d *Daemon) handleChat(client *wsClient, req wsRequest) {
 			return
 		default:
 		}
-	}
-
-	// Write final AI message.
-	if contentBuf != "" || len(collectedTools) > 0 {
-		d.store.Create(context.Background(), core.Message{
-			SessionID: sessionID,
-			Role:      core.RoleAssistant,
-			Text:       contentBuf,
-				ToolCalls:  collectedTools,
-			Reasoning: thinkingBuf,
-		})
 	}
 
 	// Done.
