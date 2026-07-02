@@ -1969,14 +1969,8 @@ func (d *Daemon) handleSessionGetMessages(client *wsClient, req wsRequest) {
 					"input": summarizeToolInput(tc.Name, tc.Input),
 					"id":    tc.ID,
 				}
-				if r, ok := toolResultMap[tc.ID]; ok {
-					tool["has_result"] = true
-					tool["outcome"] = r.outcome
-					tool["failed"]  = r.failed
-					tool["output"]  = r.output
-				} else {
-					tool["has_result"] = false
-				}
+				_, hasResult := toolResultMap[tc.ID]
+				tool["has_result"] = hasResult
 				accTools = append(accTools, tool)
 			}
 			if m.Reasoning != "" {
