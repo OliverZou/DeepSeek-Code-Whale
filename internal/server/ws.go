@@ -175,7 +175,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -1863,6 +1862,8 @@ func (d *Daemon) expertsDir() string { return filepath.Join(d.cfg.DataDir, "expe
 func (d *Daemon) teamsDir() string   { return filepath.Join(d.cfg.DataDir, "teams") }
 
 // handleSessionGetMessages returns all messages in a session (human/agent, content, thinking, timing).
+// handleSessionGetMessages returns session messages with consecutive
+// assistant messages merged into single turns (matching live-stream behaviour).
 func (d *Daemon) handleSessionGetMessages(client *wsClient, req wsRequest) {
 	var p struct{ ID string `json:"id"` }
 	json.Unmarshal(req.Payload, &p)
@@ -1871,60 +1872,127 @@ func (d *Daemon) handleSessionGetMessages(client *wsClient, req wsRequest) {
 		client.send(wsResponse{Type: "error", ID: req.ID, Payload: map[string]string{"message": err.Error()}})
 		return
 	}
-	result := make([]map[string]interface{}, 0, len(msgs))
-		var lastContent string
+
+	// Collect tool results from RoleTool messages for correlation
+	toolResultMap := make(map[string]struct {
+		outcome string
+		failed  bool
+		output  string
+	})
 	for _, m := range msgs {
-if m.Role == core.RoleTool {
-		continue // skip tool results
-	}
-	// Hidden assistant — merge metadata into previous visible entry
-	if m.Hidden && len(result) > 0 {
-		if m.Reasoning != "" {
-			result[len(result)-1]["thinking"] = m.Reasoning
-		}
-		if m.DurationMs > 0 {
-			result[len(result)-1]["durationMs"] = m.DurationMs
-		}
-		continue
-	}
-from := "human"
-if m.Role == core.RoleAssistant {
-	from = "agent"
-}
-text := core.MessagePlainText(m)
-// Build structured tool list from stored ToolCalls, correlated with results
-var tools []map[string]interface{}
-for _, tc := range m.ToolCalls {
-	tool := map[string]interface{}{
-		"name":  tc.Name,
-		"input": summarizeToolInput(tc.Name, tc.Input),
-		"id":    tc.ID,
-	}
-		// Check if a result exists
-		hasResult := false
 		for _, tr := range m.ToolResults {
-			if tr.ToolCallID == tc.ID {
-				hasResult = true
-				break
+			outcome := string(tr.Outcome)
+			toolResultMap[tr.ToolCallID] = struct {
+				outcome string
+				failed  bool
+				output  string
+			}{
+				outcome: outcome,
+				failed:  outcome != "" && outcome != "success" && outcome != "no_result",
+				output:  core.ToolResultModelText(tr),
 			}
 		}
-		tool["has_result"] = hasResult
-		tools = append(tools, tool)
 	}
-			// Dedup: include tool count so tool-only turns are not lost
-			dedupKey := text + "|tools:" + strconv.Itoa(len(tools)) + "|reasoning:" + strconv.Itoa(len(m.Reasoning))
-			if dedupKey == lastContent {
-			}
-			lastContent = dedupKey
+
+	result := make([]map[string]interface{}, 0, len(msgs))
+
+	// Accumulator for consecutive assistant messages
+	var accText    string
+	var accTools   []map[string]interface{}
+	var accReason  string
+	var accDurMs   int64
+	var accTime    time.Time
+	flushAcc := func() {
+		if accText != "" || len(accTools) > 0 {
 			result = append(result, map[string]interface{}{
-			"time":    m.CreatedAt.Format(time.RFC3339),
-			"from":    from,
-"content": text,
-"tools": tools,
-			"thinking": m.Reasoning,
-			"durationMs": m.DurationMs,
-		})
+				"time":       accTime.Format(time.RFC3339),
+				"from":       "agent",
+				"content":    accText,
+				"tools":      accTools,
+				"thinking":   accReason,
+				"durationMs": accDurMs,
+			})
+		}
+		accText = ""
+		accTools = nil
+		accReason = ""
+		accDurMs = 0
 	}
+
+	for _, m := range msgs {
+		if m.Role == core.RoleTool {
+			continue // tool results already collected above
+		}
+
+		// User message: flush any accumulated assistant, then emit user
+		if m.Role == core.RoleUser && !m.Hidden {
+			flushAcc()
+			text := core.MessagePlainText(m)
+			result = append(result, map[string]interface{}{
+				"time":    m.CreatedAt.Format(time.RFC3339),
+				"from":    "human",
+				"content": text,
+			})
+			continue
+		}
+
+		// Hidden message: merge metadata to accumulator or last entry
+		if m.Hidden {
+			if m.Reasoning != "" {
+				if accText != "" || len(accTools) > 0 {
+					accReason = m.Reasoning
+				} else if len(result) > 0 {
+					result[len(result)-1]["thinking"] = m.Reasoning
+				}
+			}
+			if m.DurationMs > 0 {
+				if accText != "" || len(accTools) > 0 {
+					accDurMs = m.DurationMs
+				} else if len(result) > 0 {
+					result[len(result)-1]["durationMs"] = m.DurationMs
+				}
+			}
+			continue
+		}
+
+		// Assistant message: accumulate
+		if m.Role == core.RoleAssistant {
+			text := core.MessagePlainText(m)
+			if text != "" {
+				if accText != "" {
+					accText += "\n\n"
+				}
+				accText += text
+			}
+			for _, tc := range m.ToolCalls {
+				tool := map[string]interface{}{
+					"name":  tc.Name,
+					"input": summarizeToolInput(tc.Name, tc.Input),
+					"id":    tc.ID,
+				}
+				if r, ok := toolResultMap[tc.ID]; ok {
+					tool["has_result"] = true
+					tool["outcome"] = r.outcome
+					tool["failed"]  = r.failed
+					tool["output"]  = r.output
+				} else {
+					tool["has_result"] = false
+				}
+				accTools = append(accTools, tool)
+			}
+			if m.Reasoning != "" {
+				accReason = m.Reasoning
+			}
+			if m.DurationMs > 0 {
+				accDurMs = m.DurationMs
+			}
+			if accTime.IsZero() {
+				accTime = m.CreatedAt
+			}
+		}
+	}
+	flushAcc()
+
 	client.send(wsResponse{Type: "session.getMessages", ID: req.ID, Payload: map[string]interface{}{"messages": result}})
 }
 
