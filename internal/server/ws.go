@@ -175,6 +175,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -1883,10 +1884,11 @@ for _, tc := range m.ToolCalls {
 	}
 	tools = append(tools, tool)
 }
-			if text == lastContent {
-				continue
+			// Dedup: include tool count so tool-only turns are not lost
+			dedupKey := text + "|tools:" + strconv.Itoa(len(tools))
+			if dedupKey == lastContent {
 			}
-			lastContent = text
+			lastContent = dedupKey
 			result = append(result, map[string]interface{}{
 			"time":    m.CreatedAt.Format(time.RFC3339),
 			"from":    from,
