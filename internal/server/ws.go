@@ -676,6 +676,8 @@ func (d *Daemon) handleMessage(client *wsClient, req wsRequest) {
 		d.handleSessionClearEmpty(client, req)
 	case "session.getMessages":
 		d.handleSessionGetMessages(client, req)
+	case "session.getToolResult":
+		d.handleSessionGetToolResult(client, req)
 	case "agent.list":
 		d.handleAgentList(client, req)
 	case "expert.list":
@@ -780,6 +782,8 @@ func (d *Daemon) handleChat(client *wsClient, req wsRequest) {
 		}
 		m.Status = "active"
 	})
+
+	chatStart := time.Now()
 
 	// Build Agent.
 	ag := agent.NewAgentWithRegistry(prov, d.store, d.toolReg,
@@ -963,13 +967,14 @@ func (d *Daemon) handleChat(client *wsClient, req wsRequest) {
 
 	// Persist reasoning the agent may have omitted — stored as hidden so
 	// handleSessionGetMessages can merge it into the preceding visible message.
-	if thinkingBuf != "" {
+	if contentBuf != "" {
 		d.store.Create(context.Background(), core.Message{
-			SessionID: sessionID,
-			Role:      core.RoleAssistant,
-			Hidden:    true,
-			Text:      contentBuf,
-			Reasoning: thinkingBuf,
+			SessionID:  sessionID,
+			Role:       core.RoleAssistant,
+			Hidden:     true,
+			Text:       contentBuf,
+			Reasoning:  thinkingBuf,
+			DurationMs: time.Since(chatStart).Milliseconds(),
 		})
 	}
 
@@ -1869,14 +1874,19 @@ func (d *Daemon) handleSessionGetMessages(client *wsClient, req wsRequest) {
 	result := make([]map[string]interface{}, 0, len(msgs))
 		var lastContent string
 	for _, m := range msgs {
-if m.Role == core.RoleTool || (m.Hidden && m.Reasoning == "") {
-	continue // skip tool results and hidden messages without reasoning
-}
-// Hidden assistant with reasoning → merge into previous visible entry
-if m.Hidden && m.Reasoning != "" && len(result) > 0 {
-	result[len(result)-1]["thinking"] = m.Reasoning
-	continue
-}
+if m.Role == core.RoleTool {
+		continue // skip tool results
+	}
+	// Hidden assistant — merge metadata into previous visible entry
+	if m.Hidden && len(result) > 0 {
+		if m.Reasoning != "" {
+			result[len(result)-1]["thinking"] = m.Reasoning
+		}
+		if m.DurationMs > 0 {
+			result[len(result)-1]["durationMs"] = m.DurationMs
+		}
+		continue
+	}
 from := "human"
 if m.Role == core.RoleAssistant {
 	from = "agent"
@@ -1890,18 +1900,17 @@ for _, tc := range m.ToolCalls {
 		"input": summarizeToolInput(tc.Name, tc.Input),
 		"id":    tc.ID,
 	}
-	// Look up result from same message's ToolResults
-	for _, tr := range m.ToolResults {
-		if tr.ToolCallID == tc.ID {
-			outcome := string(tr.Outcome)
-			tool["outcome"] = outcome
-			tool["failed"] = outcome != "" && outcome != "success" && outcome != "no_result"
-			tool["output"] = core.ToolResultModelText(tr)
-			break
+		// Check if a result exists
+		hasResult := false
+		for _, tr := range m.ToolResults {
+			if tr.ToolCallID == tc.ID {
+				hasResult = true
+				break
+			}
 		}
+		tool["has_result"] = hasResult
+		tools = append(tools, tool)
 	}
-	tools = append(tools, tool)
-}
 			// Dedup: include tool count so tool-only turns are not lost
 			dedupKey := text + "|tools:" + strconv.Itoa(len(tools)) + "|reasoning:" + strconv.Itoa(len(m.Reasoning))
 			if dedupKey == lastContent {
