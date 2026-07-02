@@ -1881,13 +1881,25 @@ if m.Role == core.RoleAssistant {
 	from = "agent"
 }
 text := core.MessagePlainText(m)
-// Build structured tool list from stored ToolCalls
+// Build structured tool list from stored ToolCalls, correlated with results
 var tools []map[string]interface{}
 for _, tc := range m.ToolCalls {
-	tools = append(tools, map[string]interface{}{
-		"name": tc.Name,
+	tool := map[string]interface{}{
+		"name":  tc.Name,
 		"input": summarizeToolInput(tc.Name, tc.Input),
-	})
+		"id":    tc.ID,
+	}
+	// Look up result from same message's ToolResults
+	for _, tr := range m.ToolResults {
+		if tr.ToolCallID == tc.ID {
+			outcome := string(tr.Outcome)
+			tool["outcome"] = outcome
+			tool["failed"] = outcome != "" && outcome != "success" && outcome != "no_result"
+			tool["output"] = core.ToolResultModelText(tr)
+			break
+		}
+	}
+	tools = append(tools, tool)
 }
 			if text == lastContent {
 				continue
