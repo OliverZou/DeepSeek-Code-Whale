@@ -771,14 +771,13 @@ func (d *Daemon) handleChat(client *wsClient, req wsRequest) {
 	session.UpdateSessionMeta(d.sessionsDir, sessionID, func(m *session.SessionMeta) {
 		if m.StartedAt.IsZero() {
 			m.StartedAt = time.Now()
+			m.Workspace = p.WorkDir
 		}
 		m.TurnCount++
 		if p.Agent != "" {
 			m.Agent = p.Agent
 		}
-		if p.WorkDir != "" {
-			m.Workspace = p.WorkDir
-		}
+		// workspace set on first turn inside StartedAt.IsZero() block
 		m.Status = "active"
 	})
 
