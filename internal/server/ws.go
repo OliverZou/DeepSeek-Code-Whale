@@ -102,8 +102,8 @@
 //	→ {"type":"task.confirmations", "id":"5f", "payload":{"master_task_id":"..."}}
 //	← {"type":"task.confirmations", "id":"5f", "payload":{"pending":[...]}}
 //
-//	→ {"type":"task.rename", "id":"5g", "payload":{"task_id":"...","title":"..."}}
-//	← {"type":"task.renamed", "id":"5g", "payload":{"task_id":"...","title":"...","old_title":"..."}}
+//	→ {"type":"task.updateGoal", "id":"5g", "payload":{"task_id":"...","goal":"..."}}
+//	← {"type":"task.goalUpdated", "id":"5g", "payload":{"task_id":"...","goal":"...","old_goal":"..."}}
 //
 // ## Session Management
 //
@@ -355,10 +355,10 @@ type teamChatMessagesRequest struct {
 	MasterTaskID string `json:"master_task_id"`
 }
 
-// Task rename payload.
-type taskRenameRequest struct {
+// Task updateGoal payload.
+type taskUpdateGoalRequest struct {
 	TaskID string `json:"task_id"`
-	Title  string `json:"title"`
+	Goal   string `json:"goal"`
 }
 
 // taskCreateRequest is a team engine task creation request.
@@ -694,8 +694,8 @@ func (d *Daemon) handleMessage(client *wsClient, req wsRequest) {
 		d.handleTaskConfirm(client, req)
 	case "task.confirmations":
 		d.handleTaskConfirmations(client, req)
-	case "task.rename":
-		d.handleTaskRename(client, req)
+	case "task.updateGoal":
+		d.handleTaskUpdateGoal(client, req)
 	case "mcp.list":
 		d.handleMCPList(client, req)
 	case "mcp.setEnabled":
@@ -1167,6 +1167,18 @@ func (d *Daemon) handleTaskCreate(client *wsClient, req wsRequest) {
 		workDir = d.cfg.WorkDir
 	}
 
+	// Resolve team if specified.
+	if p.TeamName != "" {
+		roots := team_engine.DefaultTeamRoots(workDir)
+		tc, err := team_engine.FindTeamInRoots(roots, p.TeamName)
+		if err == nil {
+			team_engine.ResolveTeamRoles(tc)
+			d.engine.SetTeam(tc)
+		} else {
+			log.Printf("daemon: team %q not found: %v", p.TeamName, err)
+		}
+	}
+
 	mt, err := d.engine.CreateMasterTask(p.Goal, workDir, "")
 	if err != nil {
 		client.send(wsResponse{Type: "error", ID: req.ID, Payload: map[string]string{"message": fmt.Sprintf("create task: %v", err)}})
@@ -1481,27 +1493,25 @@ func (d *Daemon) handleTaskConfirmations(client *wsClient, req wsRequest) {
 	}})
 }
 
-// handleTaskRename renames a master task.
-func (d *Daemon) handleTaskRename(client *wsClient, req wsRequest) {
-	var p taskRenameRequest
+// handleTaskUpdateGoal updates a master task's goal.
+func (d *Daemon) handleTaskUpdateGoal(client *wsClient, req wsRequest) {
+	var p taskUpdateGoalRequest
 	if err := json.Unmarshal(req.Payload, &p); err != nil {
 		client.send(wsResponse{Type: "error", ID: req.ID, Payload: map[string]string{"message": "invalid payload"}})
 		return
 	}
-	// Rename by updating the master task's goal in the store.
 	mt, err := d.engine.GetMasterTask(p.TaskID)
 	if err != nil {
 		client.send(wsResponse{Type: "error", ID: req.ID, Payload: map[string]string{"message": "task not found"}})
 		return
 	}
-	// Update the goal/description in the whiteboard.
 	masterDir := d.engine.Whiteboard.MasterDir(p.TaskID)
 	goalPath := filepath.Join(masterDir, "goal.md")
 	if _, err := os.Stat(goalPath); err == nil {
-		os.WriteFile(goalPath, []byte(p.Title), 0644)
+		os.WriteFile(goalPath, []byte(p.Goal), 0644)
 	}
-	client.send(wsResponse{Type: "task.renamed", ID: req.ID, Payload: map[string]string{
-		"task_id": p.TaskID, "title": p.Title, "old_title": mt.Goal,
+	client.send(wsResponse{Type: "task.goalUpdated", ID: req.ID, Payload: map[string]string{
+		"task_id": p.TaskID, "goal": p.Goal, "old_goal": mt.Goal,
 	}})
 }
 
