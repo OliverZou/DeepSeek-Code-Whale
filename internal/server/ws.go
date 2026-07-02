@@ -965,7 +965,7 @@ func (d *Daemon) handleChat(client *wsClient, req wsRequest) {
 
 	// Persist reasoning the agent may have omitted — stored as hidden so
 	// handleSessionGetMessages can merge it into the preceding visible message.
-	if contentBuf != "" {
+	if contentBuf != "" || thinkingBuf != "" {
 		d.store.Create(context.Background(), core.Message{
 			SessionID:  sessionID,
 			Role:       core.RoleAssistant,
