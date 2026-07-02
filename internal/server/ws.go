@@ -748,10 +748,10 @@ func (d *Daemon) handleChat(client *wsClient, req wsRequest) {
 	// Determine model.
 	model := d.whaleCfg.Model
 	if model == "" {
-		model = "deepseek-chat"
+		model = "deepseek-v4-flash"
 	}
 	if p.DeepThink {
-		model = "deepseek-reasoner"
+		model = "deepseek-v4-pro"
 	}
 
 	// Build provider.
