@@ -1992,9 +1992,18 @@ func (d *Daemon) handleSessionGetMessages(client *wsClient, req wsRequest) {
 				})
 				continue
 			}
-			// Text arrives after tools — flush tools first so they appear before this content.
-			if text != "" && len(accTools) > 0 {
-				flushAcc()
+			// Tools arrived: flush text first (came before tools in LLM response).
+			if len(m.ToolCalls) > 0 && accText != "" {
+				// Flush text-only entry before processing tools
+				result = append(result, map[string]interface{}{
+					"time":    accTime.Format(time.RFC3339),
+					"from":    "agent",
+					"content":  accText,
+					"thinking": accReason,
+				})
+				accText = ""
+				accReason = ""
+				accTime = time.Time{}
 			}
 			if text != "" && !strings.HasSuffix(accText, text) {
 				if accText != "" {
@@ -2017,7 +2026,7 @@ func (d *Daemon) handleSessionGetMessages(client *wsClient, req wsRequest) {
 				}
 				accTools = append(accTools, tool)
 			}
-			// Flush tools as standalone segment — chronological order before next text.
+			// Flush tools as standalone segment.
 			if len(m.ToolCalls) > 0 {
 				flushAcc()
 			}
