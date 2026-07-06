@@ -1969,7 +1969,13 @@ func (d *Daemon) handleSessionGetMessages(client *wsClient, req wsRequest) {
 				if accText != "" || len(accTools) > 0 {
 					accDurMs = m.DurationMs
 				} else if len(result) > 0 {
+					// Apply to last entry AND the text entry before it (thinking is there).
 					result[len(result)-1]["durationMs"] = m.DurationMs
+					if len(result) >= 2 {
+						if _, ok := result[len(result)-2]["durationMs"]; !ok {
+							result[len(result)-2]["durationMs"] = m.DurationMs
+						}
+					}
 				}
 			}
 			continue
