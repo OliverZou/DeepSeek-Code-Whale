@@ -819,13 +819,7 @@ func (d *Daemon) handleChat(client *wsClient, req wsRequest) {
 	var collectedTools []core.ToolCall
 	flushThinking := func() {
 		if thinkingBuf == "" { return }
-		d.store.Create(context.Background(), core.Message{
-			SessionID: sessionID,
-			Role:      core.RoleAssistant,
-			Hidden:    false,
-			Reasoning: thinkingBuf,
-			CreatedAt: time.Now(),
-		})
+		// Reasoning persisted by agent (stream_ingest.go) — no separate store.Create here.
 		thinkingBuf = ""
 	}
 	for ev := range events {
@@ -1984,11 +1978,21 @@ func (d *Daemon) handleSessionGetMessages(client *wsClient, req wsRequest) {
 		// Assistant message: accumulate (skip duplicates from old sessions)
 		if m.Role == core.RoleAssistant {
 			text := core.MessagePlainText(m)
-			// Thinking-only message — standalone entry, skip duplicates (flushThinking
-			// fires both before assistant delta and before tool calls).
+			// Thinking-only message — standalone entry like TUI.
+			// Skip if duplicate: scan past tool entries to find last non-tool thinking.
 			if text == "" && len(m.ToolCalls) == 0 && m.Reasoning != "" {
-				if len(result) > 0 && result[len(result)-1]["thinking"] == m.Reasoning {
-					continue // duplicate — same reasoning already shown
+				dup := false
+				for j := len(result) - 1; j >= 0; j-- {
+					if _, hasTools := result[j]["tools"]; hasTools {
+						continue // skip tool entries
+					}
+					if t, _ := result[j]["thinking"].(string); t == m.Reasoning {
+						dup = true
+					}
+					break // stop at first non-tool entry
+				}
+				if dup {
+					continue
 				}
 				flushAcc()
 				result = append(result, map[string]interface{}{
