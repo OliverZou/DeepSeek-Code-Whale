@@ -279,7 +279,7 @@ type chatStreamChunk struct {
 	// Tool call
 	ToolCallID string `json:"tool_call_id,omitempty"`
 	ToolName   string `json:"tool_name,omitempty"`
-	ToolInput  string `json:"tool_input,omitempty"`
+	ToolInput  string `json:"tool_input"`
 
 	// Tool result
 	ToolOutcome string `json:"tool_outcome,omitempty"` // success, error, skipped, no_result
