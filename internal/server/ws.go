@@ -2034,12 +2034,12 @@ func (d *Daemon) handleSessionGetMessages(client *wsClient, req wsRequest) {
 				}
 				accTools = append(accTools, tool)
 			}
+			if m.Reasoning != "" {
+				accReason = m.Reasoning
+			}
 			// Flush tools as standalone segment.
 			if len(m.ToolCalls) > 0 {
 				flushAcc()
-			}
-			if m.Reasoning != "" {
-				accReason = m.Reasoning
 			}
 			if m.DurationMs > 0 {
 				accDurMs = m.DurationMs
