@@ -1996,7 +1996,7 @@ func (d *Daemon) handleSessionGetMessages(client *wsClient, req wsRequest) {
 				}
 				flushAcc()
 				result = append(result, map[string]interface{}{
-					"time": m.CreatedAt.Format(time.RFC3339), "from": "agent", "thinking": m.Reasoning,
+					"time": m.CreatedAt.Format(time.RFC3339), "from": "agent", "thinking": m.Reasoning, "durationMs": m.DurationMs,
 				})
 				continue
 			}
