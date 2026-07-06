@@ -1984,8 +1984,12 @@ func (d *Daemon) handleSessionGetMessages(client *wsClient, req wsRequest) {
 		// Assistant message: accumulate (skip duplicates from old sessions)
 		if m.Role == core.RoleAssistant {
 			text := core.MessagePlainText(m)
-			// Thinking-only message (reasoning, no text, no tools) — standalone entry.
+			// Thinking-only message — standalone entry, skip duplicates (flushThinking
+			// fires both before assistant delta and before tool calls).
 			if text == "" && len(m.ToolCalls) == 0 && m.Reasoning != "" {
+				if len(result) > 0 && result[len(result)-1]["thinking"] == m.Reasoning {
+					continue // duplicate — same reasoning already shown
+				}
 				flushAcc()
 				result = append(result, map[string]interface{}{
 					"time": m.CreatedAt.Format(time.RFC3339), "from": "agent", "thinking": m.Reasoning,
