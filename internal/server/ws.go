@@ -1984,6 +1984,18 @@ func (d *Daemon) handleSessionGetMessages(client *wsClient, req wsRequest) {
 		// Assistant message: accumulate (skip duplicates from old sessions)
 		if m.Role == core.RoleAssistant {
 			text := core.MessagePlainText(m)
+			// Thinking-only message (reasoning, no text, no tools) — standalone entry.
+			if text == "" && len(m.ToolCalls) == 0 && m.Reasoning != "" {
+				flushAcc()
+				result = append(result, map[string]interface{}{
+					"time": m.CreatedAt.Format(time.RFC3339), "from": "agent", "thinking": m.Reasoning,
+				})
+				continue
+			}
+			// Text arrives after tools — flush tools first so they appear before this content.
+			if text != "" && len(accTools) > 0 {
+				flushAcc()
+			}
 			if text != "" && !strings.HasSuffix(accText, text) {
 				if accText != "" {
 					accText += "\n\n"
@@ -2004,6 +2016,10 @@ func (d *Daemon) handleSessionGetMessages(client *wsClient, req wsRequest) {
 					tool["output"] = tr.output
 				}
 				accTools = append(accTools, tool)
+			}
+			// Flush tools as standalone segment — chronological order before next text.
+			if len(m.ToolCalls) > 0 {
+				flushAcc()
 			}
 			if m.Reasoning != "" {
 				accReason = m.Reasoning
