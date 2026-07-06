@@ -817,11 +817,23 @@ func (d *Daemon) handleChat(client *wsClient, req wsRequest) {
 	// Stream agent events to client as structured chat.stream pushes.
 	var contentBuf, thinkingBuf string
 	var collectedTools []core.ToolCall
+	flushThinking := func() {
+		if thinkingBuf == "" { return }
+		d.store.Create(context.Background(), core.Message{
+			SessionID: sessionID,
+			Role:      core.RoleAssistant,
+			Hidden:    false,
+			Reasoning: thinkingBuf,
+			CreatedAt: time.Now(),
+		})
+		thinkingBuf = ""
+	}
 	for ev := range events {
 		chunk := chatStreamChunk{SessionID: sessionID}
 
 		switch ev.Type {
 		case agent.AgentEventTypeAssistantDelta:
+		flushThinking()
 			contentBuf += ev.Content
 			chunk.Event = "assistant"
 			chunk.Content = ev.Content
@@ -832,6 +844,7 @@ func (d *Daemon) handleChat(client *wsClient, req wsRequest) {
 			chunk.Content = ev.ReasoningDelta
 
 		case agent.AgentEventTypeToolCall:
+		flushThinking()
 			if ev.ToolCall != nil {
 				chunk.Event = "tool_call"
 				chunk.ToolCallID = ev.ToolCall.ID
@@ -960,6 +973,7 @@ func (d *Daemon) handleChat(client *wsClient, req wsRequest) {
 		}
 	}
 
+	flushThinking()
 	// Done.
 	d.pushChat(client, sessionID, chatStreamChunk{Event: "done", Done: true})
 
@@ -971,7 +985,6 @@ func (d *Daemon) handleChat(client *wsClient, req wsRequest) {
 			Role:       core.RoleAssistant,
 			Hidden:     true,
 			Text:       contentBuf,
-			Reasoning:  thinkingBuf,
 			DurationMs: time.Since(chatStart).Milliseconds(),
 		})
 	}
@@ -1788,11 +1801,25 @@ if s.Meta.Agent != p.Agent {
 }
 
 // handleSessionDelete removes a single session (JSONL + meta files).
+// removeSessionFiles deletes all files associated with a session ID.
+func (d *Daemon) removeSessionFiles(id string) {
+	safe := core.SanitizeSessionID(id)
+	for _, ext := range []string{
+		".jsonl",
+		".meta.json",
+		".todo.json",
+		".approvals.json",
+		core.ToolInputEventsSuffix,
+		core.ApprovalEventsSuffix,
+	} {
+		os.Remove(filepath.Join(d.sessionsDir, safe+ext))
+	}
+}
+
 func (d *Daemon) handleSessionDelete(client *wsClient, req wsRequest) {
 	var p struct{ ID string `json:"id"` }
 	json.Unmarshal(req.Payload, &p)
-	os.Remove(filepath.Join(d.sessionsDir, p.ID+".jsonl"))
-	os.Remove(filepath.Join(d.sessionsDir, p.ID+".meta.json"))
+	d.removeSessionFiles(p.ID)
 	client.send(wsResponse{Type: "session.delete", ID: req.ID, Payload: map[string]string{"id": p.ID}})
 }
 
@@ -1805,12 +1832,11 @@ func (d *Daemon) handleSessionDeleteAll(client *wsClient, req wsRequest) {
 		if s.Meta.Kind == "subagent" {
 			continue
 		}
-// Always filter by agent — empty string means "whale" sessions.
-if s.Meta.Agent != p.Agent {
+		// Always filter by agent — empty string means "whale" sessions.
+		if s.Meta.Agent != p.Agent {
 			continue
 		}
-		os.Remove(filepath.Join(d.sessionsDir, s.ID+".jsonl"))
-		os.Remove(filepath.Join(d.sessionsDir, s.ID+".meta.json"))
+		d.removeSessionFiles(s.ID)
 	}
 	client.send(wsResponse{Type: "session.deleteAll", ID: req.ID, Payload: map[string]string{}})
 }
@@ -1938,11 +1964,12 @@ func (d *Daemon) handleSessionGetMessages(client *wsClient, req wsRequest) {
 		// Hidden message: merge metadata to accumulator or last entry
 		if m.Hidden {
 			if m.Reasoning != "" {
-				if accText != "" || len(accTools) > 0 {
-					accReason = m.Reasoning
-				} else if len(result) > 0 {
-					result[len(result)-1]["thinking"] = m.Reasoning
-				}
+				flushAcc()
+				result = append(result, map[string]interface{}{
+					"time":     m.CreatedAt.Format(time.RFC3339),
+					"from":     "agent",
+					"thinking": m.Reasoning,
+				})
 			}
 			if m.DurationMs > 0 {
 				if accText != "" || len(accTools) > 0 {
