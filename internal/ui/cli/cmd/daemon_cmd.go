@@ -35,16 +35,18 @@ func newDaemonCmd() *cobra.Command {
 func newDaemonStartCmd() *cobra.Command {
 	var port int
 	var workdir string
+	var stdio bool
 
 	c := &cobra.Command{
 		Use:   "start",
 		Short: "Start the Whale daemon",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runDaemonStart(cmd, port, workdir)
+			return runDaemonStart(cmd, port, workdir, stdio)
 		},
 	}
 	c.Flags().IntVar(&port, "port", defaultDaemonPort, "WebSocket listen port")
 	c.Flags().StringVar(&workdir, "workdir", "", "Working directory (default: data dir)")
+	c.Flags().BoolVar(&stdio, "stdio", false, "Run in stdio mode (read stdin, write stdout JSONL)")
 	return c
 }
 
@@ -72,21 +74,12 @@ func newDaemonStatusCmd() *cobra.Command {
 // start
 // ---------------------------------------------------------------------------
 
-func runDaemonStart(cmd *cobra.Command, port int, workdir string) error {
+func runDaemonStart(cmd *cobra.Command, port int, workdir string, stdio bool) error {
 	dataDir := store.DefaultDataDir()
 	if workdir == "" {
 		workdir = dataDir
 	}
 
-	// PID file check.
-	pidPath := filepath.Join(dataDir, daemonPIDFile)
-	if pid, err := readPIDFile(pidPath); err == nil && isProcessAlive(pid) {
-		fmt.Printf("daemon already running (pid %d)\n", pid)
-		return nil
-	}
-	os.Remove(pidPath)
-
-	// Resolve workdir.
 	if err := os.MkdirAll(workdir, 0755); err != nil {
 		return fmt.Errorf("create workdir: %w", err)
 	}
@@ -100,7 +93,6 @@ func runDaemonStart(cmd *cobra.Command, port int, workdir string) error {
 		return fmt.Errorf("init team engine: %w", err)
 	}
 
-	// WS server.
 	srv, err := server.NewDaemon(eng, server.DaemonConfig{
 		Port:    port,
 		DataDir: dataDir,
@@ -110,6 +102,18 @@ func runDaemonStart(cmd *cobra.Command, port int, workdir string) error {
 		eng.Close()
 		return fmt.Errorf("init daemon: %w", err)
 	}
+
+	if stdio {
+		return srv.RunStdio()
+	}
+
+	// PID file check.
+	pidPath := filepath.Join(dataDir, daemonPIDFile)
+	if pid, err := readPIDFile(pidPath); err == nil && isProcessAlive(pid) {
+		fmt.Printf("daemon already running (pid %d)\n", pid)
+		return nil
+	}
+	os.Remove(pidPath)
 
 	// Write PID file.
 	pid := os.Getpid()

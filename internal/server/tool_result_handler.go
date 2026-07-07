@@ -7,18 +7,18 @@ import (
 )
 
 // handleSessionGetToolResult returns the full output of a specific tool call.
-func (d *Daemon) handleSessionGetToolResult(client *wsClient, req wsRequest) {
+func (d *Daemon) handleSessionGetToolResult(w MessageWriter, req wsRequest) {
 	var p struct {
 		SessionID  string `json:"session_id"`
 		ToolCallID string `json:"tool_call_id"`
 	}
 	if err := json.Unmarshal(req.Payload, &p); err != nil {
-		client.send(wsResponse{Type: "error", ID: req.ID, Payload: map[string]string{"message": "invalid payload"}})
+		w.SendResponse(wsResponse{Type: "error", ID: req.ID, Payload: map[string]string{"message": "invalid payload"}})
 		return
 	}
 	msgs, err := d.store.List(nil, p.SessionID)
 	if err != nil {
-		client.send(wsResponse{Type: "error", ID: req.ID, Payload: map[string]string{"message": err.Error()}})
+		w.SendResponse(wsResponse{Type: "error", ID: req.ID, Payload: map[string]string{"message": err.Error()}})
 		return
 	}
 	for _, m := range msgs {
@@ -26,7 +26,7 @@ func (d *Daemon) handleSessionGetToolResult(client *wsClient, req wsRequest) {
 			if tr.ToolCallID == p.ToolCallID {
 				output := core.ToolResultModelText(tr)
 				outcome := string(tr.Outcome)
-				client.send(wsResponse{Type: "session.getToolResult", ID: req.ID, Payload: map[string]interface{}{
+				w.SendResponse(wsResponse{Type: "session.getToolResult", ID: req.ID, Payload: map[string]interface{}{
 					"output":  output,
 					"outcome": outcome,
 					"failed":  outcome != "" && outcome != "success" && outcome != "no_result",
@@ -35,5 +35,5 @@ func (d *Daemon) handleSessionGetToolResult(client *wsClient, req wsRequest) {
 			}
 		}
 	}
-	client.send(wsResponse{Type: "error", ID: req.ID, Payload: map[string]string{"message": "tool result not found"}})
+	w.SendResponse(wsResponse{Type: "error", ID: req.ID, Payload: map[string]string{"message": "tool result not found"}})
 }

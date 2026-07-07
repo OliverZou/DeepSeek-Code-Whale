@@ -29,7 +29,7 @@
 //	        // render based on event type (assistant, thinking, tool_call, ...)
 //	    case "chat":
 //	        sessionID := msg["payload"].(map[string]interface{})["session_id"]
-//	        // chat done — save session_id for next turn
+//	        // chat done �?save session_id for next turn
 //	    }
 //	}
 //
@@ -40,131 +40,131 @@
 //
 // ## Chat & Agent
 //
-//	→ {"type":"chat", "id":"1", "payload":{"message":"...","session_id":"(optional)","deep_think":false}}
-//	← {"type":"chat.stream", "payload":{"session_id":"...","event":"assistant","content":"delta..."}}
-//	← {"type":"chat.stream", "payload":{"session_id":"...","event":"thinking","content":"delta..."}}
-//	← {"type":"chat.stream", "payload":{"session_id":"...","event":"tool_call","tool_call_id":"...","tool_name":"...","tool_input":"..."}}
-//	← {"type":"chat.stream", "payload":{"session_id":"...","event":"tool_result","tool_call_id":"...","tool_name":"...","tool_outcome":"success","tool_status":"","content":"..."}}
-//	← {"type":"chat.stream", "payload":{"session_id":"...","event":"plan","content":"delta..."}}
-//	← {"type":"chat.stream", "payload":{"session_id":"...","event":"subagent","task_id":"...","task_title":"...","task_status":"started|progress|done"}}
-//	← {"type":"chat.stream", "payload":{"session_id":"...","event":"task","task_id":"...","task_title":"...","task_status":"started|done"}}
-//	← {"type":"chat.stream", "payload":{"session_id":"...","event":"hook","task_title":"hook_name: decision"}}
-//	← {"type":"chat.stream", "payload":{"session_id":"...","event":"error","error":"..."}}
-//	← {"type":"chat.stream", "payload":{"session_id":"...","event":"response_reset"}}
-//	← {"type":"chat.stream", "payload":{"session_id":"...","event":"context_compacted"}}
-//	← {"type":"chat.stream", "payload":{"session_id":"...","event":"provider_retry","content":"provider retrying..."}}
-//	← {"type":"chat.stream", "payload":{"session_id":"...","event":"done","done":true}}
-//	← {"type":"chat", "id":"1", "payload":{"session_id":"..."}}
+//	�?{"type":"chat", "id":"1", "payload":{"message":"...","session_id":"(optional)","deep_think":false}}
+//	�?{"type":"chat.stream", "payload":{"session_id":"...","event":"assistant","content":"delta..."}}
+//	�?{"type":"chat.stream", "payload":{"session_id":"...","event":"thinking","content":"delta..."}}
+//	�?{"type":"chat.stream", "payload":{"session_id":"...","event":"tool_call","tool_call_id":"...","tool_name":"...","tool_input":"..."}}
+//	�?{"type":"chat.stream", "payload":{"session_id":"...","event":"tool_result","tool_call_id":"...","tool_name":"...","tool_outcome":"success","tool_status":"","content":"..."}}
+//	�?{"type":"chat.stream", "payload":{"session_id":"...","event":"plan","content":"delta..."}}
+//	�?{"type":"chat.stream", "payload":{"session_id":"...","event":"subagent","task_id":"...","task_title":"...","task_status":"started|progress|done"}}
+//	�?{"type":"chat.stream", "payload":{"session_id":"...","event":"task","task_id":"...","task_title":"...","task_status":"started|done"}}
+//	�?{"type":"chat.stream", "payload":{"session_id":"...","event":"hook","task_title":"hook_name: decision"}}
+//	�?{"type":"chat.stream", "payload":{"session_id":"...","event":"error","error":"..."}}
+//	�?{"type":"chat.stream", "payload":{"session_id":"...","event":"response_reset"}}
+//	�?{"type":"chat.stream", "payload":{"session_id":"...","event":"context_compacted"}}
+//	�?{"type":"chat.stream", "payload":{"session_id":"...","event":"provider_retry","content":"provider retrying..."}}
+//	�?{"type":"chat.stream", "payload":{"session_id":"...","event":"done","done":true}}
+//	�?{"type":"chat", "id":"1", "payload":{"session_id":"..."}}
 //
-//	→ {"type":"chat.cancel", "id":"2", "payload":{"session_id":"..."}}
-//	← {"type":"chat.canceled", "id":"2", "payload":{"session_id":"..."}}
+//	�?{"type":"chat.cancel", "id":"2", "payload":{"session_id":"..."}}
+//	�?{"type":"chat.canceled", "id":"2", "payload":{"session_id":"..."}}
 //
 // ## Approval & User Input
 //
-//	← {"type":"approval.required", "payload":{"session_id":"...","tool_call_id":"...","tool_name":"...","reason":"...","code":"...","key":"..."}}
-//	→ {"type":"approval.decision", "id":"3", "payload":{"session_id":"...","tool_call_id":"...","decision":"allow|deny|allow_session|cancel"}}
+//	�?{"type":"approval.required", "payload":{"session_id":"...","tool_call_id":"...","tool_name":"...","reason":"...","code":"...","key":"..."}}
+//	�?{"type":"approval.decision", "id":"3", "payload":{"session_id":"...","tool_call_id":"...","decision":"allow|deny|allow_session|cancel"}}
 //
-//	← {"type":"user_input.required", "payload":{"session_id":"...","tool_call_id":"...","questions":[{"id":"...","header":"...","question":"...","options":[{"label":"...","description":"..."}]}]}}
-//	→ {"type":"user_input.response", "id":"4", "payload":{"session_id":"...","tool_call_id":"...","answer":"..."}}
+//	�?{"type":"user_input.required", "payload":{"session_id":"...","tool_call_id":"...","questions":[{"id":"...","header":"...","question":"...","options":[{"label":"...","description":"..."}]}]}}
+//	�?{"type":"user_input.response", "id":"4", "payload":{"session_id":"...","tool_call_id":"...","answer":"..."}}
 //
 // ## Task Management (Team Engine)
 //
-//	→ {"type":"task.create", "id":"5", "payload":{"goal":"...","workdir":"...","team_name":"(optional)"}}
-//	← {"type":"task.created", "id":"5", "payload":{"master_task_id":"..."}}
+//	�?{"type":"task.create", "id":"5", "payload":{"goal":"...","workdir":"...","team_name":"(optional)"}}
+//	�?{"type":"task.created", "id":"5", "payload":{"master_task_id":"..."}}
 //
-//	→ {"type":"task.list", "id":"6"}
-//	← {"type":"task.list", "id":"6", "payload":{"tasks":[{"id":"...","goal":"...","status":"...","workdir":"...","created_at":"...","task_count":0}]}}
+//	�?{"type":"task.list", "id":"6"}
+//	�?{"type":"task.list", "id":"6", "payload":{"tasks":[{"id":"...","goal":"...","status":"...","workdir":"...","created_at":"...","task_count":0}]}}
 //
-//	→ {"type":"task.cancel", "id":"7", "payload":{"task_id":"..."}}
-//	← {"type":"task.canceled", "id":"7", "payload":{"task_id":"..."}}
+//	�?{"type":"task.cancel", "id":"7", "payload":{"task_id":"..."}}
+//	�?{"type":"task.canceled", "id":"7", "payload":{"task_id":"..."}}
 //
-//	→ {"type":"task.delete", "id":"8", "payload":{"task_id":"..."}}
-//	← {"type":"task.deleted", "id":"8", "payload":{"task_id":"..."}}
+//	�?{"type":"task.delete", "id":"8", "payload":{"task_id":"..."}}
+//	�?{"type":"task.deleted", "id":"8", "payload":{"task_id":"..."}}
 //
-//	← {"type":"task.state_changed", "payload":{"task_id":"...","title":"...","old_state":"...","new_state":"...","progress":50}}
-//	← {"type":"task.log", "payload":{"task_id":"...","role":"leader|agent"}}
+//	�?{"type":"task.state_changed", "payload":{"task_id":"...","title":"...","old_state":"...","new_state":"...","progress":50}}
+//	�?{"type":"task.log", "payload":{"task_id":"...","role":"leader|agent"}}
 //
-//	→ {"type":"task.subtasks", "id":"5a", "payload":{"master_task_id":"..."}}
-//	← {"type":"task.subtasks", "id":"5a", "payload":{"subtasks":[{...recursive...}]}}
+//	�?{"type":"task.subtasks", "id":"5a", "payload":{"master_task_id":"..."}}
+//	�?{"type":"task.subtasks", "id":"5a", "payload":{"subtasks":[{...recursive...}]}}
 //
-//	→ {"type":"task.dialogue", "id":"5b", "payload":{"task_id":"..."}}
-//	← {"type":"task.dialogue", "id":"5b", "payload":{"task_id":"...","output":"...","verifier":"...","confirmation":"..."}}
+//	�?{"type":"task.dialogue", "id":"5b", "payload":{"task_id":"..."}}
+//	�?{"type":"task.dialogue", "id":"5b", "payload":{"task_id":"...","output":"...","verifier":"...","confirmation":"..."}}
 //
-//	→ {"type":"task.plan", "id":"5c", "payload":{"master_task_id":"..."}}
-//	← {"type":"task.plan", "id":"5c", "payload":{"master_task_id":"...","plan_md":"...","plan_json":"...","spec_md":"..."}}
+//	�?{"type":"task.plan", "id":"5c", "payload":{"master_task_id":"..."}}
+//	�?{"type":"task.plan", "id":"5c", "payload":{"master_task_id":"...","plan_md":"...","plan_json":"...","spec_md":"..."}}
 //
-//	→ {"type":"task.feedback", "id":"5d", "payload":{"task_id":"...","message":"..."}}
-//	← {"type":"task.feedback", "id":"5d", "payload":{"task_id":"...","status":"sent"}}
+//	�?{"type":"task.feedback", "id":"5d", "payload":{"task_id":"...","message":"..."}}
+//	�?{"type":"task.feedback", "id":"5d", "payload":{"task_id":"...","status":"sent"}}
 //
-//	→ {"type":"task.confirm", "id":"5e", "payload":{"task_id":"...","decision":"confirm|reject","comment":"(optional)"}}
-//	← {"type":"task.confirmed", "id":"5e", "payload":{"task_id":"...","decision":"..."}}
+//	�?{"type":"task.confirm", "id":"5e", "payload":{"task_id":"...","decision":"confirm|reject","comment":"(optional)"}}
+//	�?{"type":"task.confirmed", "id":"5e", "payload":{"task_id":"...","decision":"..."}}
 //
-//	→ {"type":"task.confirmations", "id":"5f", "payload":{"master_task_id":"..."}}
-//	← {"type":"task.confirmations", "id":"5f", "payload":{"pending":[...]}}
+//	�?{"type":"task.confirmations", "id":"5f", "payload":{"master_task_id":"..."}}
+//	�?{"type":"task.confirmations", "id":"5f", "payload":{"pending":[...]}}
 //
-//	→ {"type":"task.updateGoal", "id":"5g", "payload":{"task_id":"...","goal":"..."}}
-//	← {"type":"task.goalUpdated", "id":"5g", "payload":{"task_id":"...","goal":"...","old_goal":"..."}}
+//	�?{"type":"task.updateGoal", "id":"5g", "payload":{"task_id":"...","goal":"..."}}
+//	�?{"type":"task.goalUpdated", "id":"5g", "payload":{"task_id":"...","goal":"...","old_goal":"..."}}
 //
 // ## Session Management
 //
-//	→ {"type":"session.list", "id":"9"}
-//	← {"type":"session.list", "id":"9", "payload":{"sessions":[{"id":"...","goal":"...","agent":"...","workspace_path":"...","workspace_label":"...","workspace_id":"...","session_path":"...","status":"...","created_at":"...","task_count":0,"done_count":0,"active_count":0,"suspended_count":0,"workspace_online":true}]}}
+//	�?{"type":"session.list", "id":"9"}
+//	�?{"type":"session.list", "id":"9", "payload":{"sessions":[{"id":"...","goal":"...","agent":"...","workspace_path":"...","workspace_label":"...","workspace_id":"...","session_path":"...","status":"...","created_at":"...","task_count":0,"done_count":0,"active_count":0,"suspended_count":0,"workspace_online":true}]}}
 //
-//	→ {"type":"session.listByAgent", "id":"10", "payload":{"agent":"...","offset":0,"limit":20}}
-//	← {"type":"session.listByAgent", "id":"10", "payload":{"sessions":[...],"has_more":false}}
+//	�?{"type":"session.listByAgent", "id":"10", "payload":{"agent":"...","offset":0,"limit":20}}
+//	�?{"type":"session.listByAgent", "id":"10", "payload":{"sessions":[...],"has_more":false}}
 //
-//	→ {"type":"session.getMessages", "id":"11", "payload":{"id":"session-uuid"}}
-//	← {"type":"session.getMessages", "id":"11", "payload":{"messages":[{"time":"...","from":"human|agent","content":"...","thinking":"...","durationMs":0}]}}
+//	�?{"type":"session.getMessages", "id":"11", "payload":{"id":"session-uuid"}}
+//	�?{"type":"session.getMessages", "id":"11", "payload":{"messages":[{"time":"...","from":"human|agent","content":"...","thinking":"...","durationMs":0}]}}
 //
-//	→ {"type":"session.delete", "id":"12", "payload":{"id":"session-uuid"}}
-//	← {"type":"session.delete", "id":"12", "payload":{"id":"session-uuid"}}
+//	�?{"type":"session.delete", "id":"12", "payload":{"id":"session-uuid"}}
+//	�?{"type":"session.delete", "id":"12", "payload":{"id":"session-uuid"}}
 //
-//	→ {"type":"session.deleteAll", "id":"13", "payload":{"agent":"(optional)"}}
-//	← {"type":"session.deleteAll", "id":"13", "payload":{}}
+//	�?{"type":"session.deleteAll", "id":"13", "payload":{"agent":"(optional)"}}
+//	�?{"type":"session.deleteAll", "id":"13", "payload":{}}
 //
-//	→ {"type":"session.clearEmpty", "id":"14", "payload":{"agent":"(optional)"}}
-//	← {"type":"session.clearEmpty", "id":"14", "payload":{}}
+//	�?{"type":"session.clearEmpty", "id":"14", "payload":{"agent":"(optional)"}}
+//	�?{"type":"session.clearEmpty", "id":"14", "payload":{}}
 //
 // ## Resource Listing
 //
-//	→ {"type":"agent.list", "id":"15"}
-//	← {"type":"agent.list", "id":"15", "payload":{"agents":[...]}}
+//	�?{"type":"agent.list", "id":"15"}
+//	�?{"type":"agent.list", "id":"15", "payload":{"agents":[...]}}
 //
-//	→ {"type":"expert.list", "id":"16"}
-//	← {"type":"expert.list", "id":"16", "payload":{"experts":[...]}}
+//	�?{"type":"expert.list", "id":"16"}
+//	�?{"type":"expert.list", "id":"16", "payload":{"experts":[...]}}
 //
-//	→ {"type":"team.list", "id":"17"}
-//	← {"type":"team.list", "id":"17", "payload":{"teams":[...]}}
+//	�?{"type":"team.list", "id":"17"}
+//	�?{"type":"team.list", "id":"17", "payload":{"teams":[...]}}
 //
 // ## MCP Management
 //
-//	→ {"type":"mcp.list", "id":"18"}
-//	← {"type":"mcp.list", "id":"18", "payload":{"servers":[{"name":"...","status":"...","disabled":false,"tools":0}]}}
+//	�?{"type":"mcp.list", "id":"18"}
+//	�?{"type":"mcp.list", "id":"18", "payload":{"servers":[{"name":"...","status":"...","disabled":false,"tools":0}]}}
 //
-//	→ {"type":"mcp.setEnabled", "id":"19", "payload":{"name":"...","enabled":true}}
-//	← {"type":"mcp.setEnabled", "id":"19", "payload":{"name":"...","enabled":true}}
+//	�?{"type":"mcp.setEnabled", "id":"19", "payload":{"name":"...","enabled":true}}
+//	�?{"type":"mcp.setEnabled", "id":"19", "payload":{"name":"...","enabled":true}}
 //
 // ## File Read
 //
-//	→ {"type":"file.read", "id":"20", "payload":{"path":"relative/or/absolute"}}
-//	← {"type":"file.read", "id":"20", "payload":{"path":"...","content":"...","size":1234}}
+//	�?{"type":"file.read", "id":"20", "payload":{"path":"relative/or/absolute"}}
+//	�?{"type":"file.read", "id":"20", "payload":{"path":"...","content":"...","size":1234}}
 //
 // ## Team Chat
 //
-//	→ {"type":"team.chat.send", "id":"21", "payload":{"master_task_id":"...","from":"...","to":"...","content":"..."}}
-//	← {"type":"team.chat.sent", "id":"21", "payload":{...}}
-//	← {"type":"team.chat.message", "payload":{...}} (broadcast push)
+//	�?{"type":"team.chat.send", "id":"21", "payload":{"master_task_id":"...","from":"...","to":"...","content":"..."}}
+//	�?{"type":"team.chat.sent", "id":"21", "payload":{...}}
+//	�?{"type":"team.chat.message", "payload":{...}} (broadcast push)
 //
-//	→ {"type":"team.chat.messages", "id":"22", "payload":{"master_task_id":"..."}}
-//	← {"type":"team.chat.messages", "id":"22", "payload":{"messages":[...]}}
+//	�?{"type":"team.chat.messages", "id":"22", "payload":{"master_task_id":"..."}}
+//	�?{"type":"team.chat.messages", "id":"22", "payload":{"messages":[...]}}
 //
 // ## Health
 //
-//	GET /health → 200 "ok"
+//	GET /health �?200 "ok"
 //
 // ## Errors
 //
-//	← {"type":"error", "id":"...", "payload":{"message":"..."}}
+//	�?{"type":"error", "id":"...", "payload":{"message":"..."}}
 package server
 
 import (
@@ -188,6 +188,7 @@ import (
 	"github.com/usewhale/whale/internal/core"
 	"github.com/usewhale/whale/internal/llm/deepseek"
 	whalemcp "github.com/usewhale/whale/internal/mcp"
+	"github.com/usewhale/whale/internal/plugins"
 	"github.com/usewhale/whale/internal/policy"
 	"github.com/usewhale/whale/internal/session"
 	"github.com/usewhale/whale/internal/store"
@@ -232,6 +233,13 @@ type wsPush struct {
 	Payload interface{} `json:"payload"`
 }
 
+// MessageWriter is the interface for daemon push output.
+// Both WS and stdio transports implement this interface.
+type MessageWriter interface {
+	SendResponse(resp wsResponse) error
+	Push(p wsPush) error
+}
+
 // chatRequest is a chat message from the pod to the daemon.
 // SessionID is optional; omit to create a new session.
 // Set DeepThink to true for deepseek-reasoner model.
@@ -247,23 +255,23 @@ type chatRequest struct {
 //
 // The pod should switch on the "event" field to decide how to render:
 //
-//	event="assistant"  → append Content to the markdown message body
-//	event="thinking"   → append Content to the collapsible reasoning area
-//	event="tool_call"  → show a tool-call card (ToolCallID + ToolName + ToolInput)
-//	event="tool_result"→ show a tool-result card (ToolOutcome + ToolStatus + Content)
-//	event="plan"       → append Content as plan step delta, or show PlanText as complete plan
-//	event="subagent"   → update subagent card (TaskID + TaskTitle + TaskStatus)
-//	event="task"       → update parallel-reason card
-//	event="hook"       → show hook notification (TaskTitle = "name: decision")
-//	event="error"      → show error banner (Content or Error field)
-//	event="response_reset" → clear previous partial assistant content
-//	event="context_compacted" → note that context was compacted (no Content)
-//	event="provider_retry" → show "retrying..." indicator
-//	event="done"       → turn complete (Done=true), finalize the message
+//	event="assistant"  �?append Content to the markdown message body
+//	event="thinking"   �?append Content to the collapsible reasoning area
+//	event="tool_call"  �?show a tool-call card (ToolCallID + ToolName + ToolInput)
+//	event="tool_result"�?show a tool-result card (ToolOutcome + ToolStatus + Content)
+//	event="plan"       �?append Content as plan step delta, or show PlanText as complete plan
+//	event="subagent"   �?update subagent card (TaskID + TaskTitle + TaskStatus)
+//	event="task"       �?update parallel-reason card
+//	event="hook"       �?show hook notification (TaskTitle = "name: decision")
+//	event="error"      �?show error banner (Content or Error field)
+//	event="response_reset" �?clear previous partial assistant content
+//	event="context_compacted" �?note that context was compacted (no Content)
+//	event="provider_retry" �?show "retrying..." indicator
+//	event="done"       �?turn complete (Done=true), finalize the message
 //
 // IMPORTANT: Both "assistant" and "thinking" events use the Content field.
 // The pod must check the "event" field to know where to render the text.
-// There is no separate "thinking" field — reasoning deltas arrive as
+// There is no separate "thinking" field �?reasoning deltas arrive as
 // event="thinking" with the text in Content.
 //
 // ToolOutcome: "success", "error", "skipped", "no_result"
@@ -442,6 +450,10 @@ type Daemon struct {
 	clients    map[string]*wsClient
 	mu         sync.Mutex
 
+	permissionPolicy policy.RulePolicy
+	hookRunner       *agent.HookRunner
+	pluginManager    *plugins.Manager
+
 	// pendingApproval maps toolCallID to a channel.
 	pendingApproval   map[string]chan policy.ApprovalDecision
 	pendingApprovalMu sync.Mutex
@@ -456,6 +468,10 @@ type Daemon struct {
 
 	// MCP manager for mcp.list / mcp.setEnabled.
 	mcpManager *whalemcp.Manager
+
+	// stdioWriter holds the single writer when running in --stdio mode.
+	// nil when running in WS mode.
+	stdioWriter *stdioWriter
 
 	wg sync.WaitGroup
 }
@@ -472,6 +488,16 @@ type wsClient struct {
 	daemon  *Daemon
 }
 
+func (c *wsClient) SendResponse(resp wsResponse) error {
+	c.send(resp)
+	return nil
+}
+
+func (c *wsClient) Push(p wsPush) error {
+	c.send(p)
+	return nil
+}
+
 var wsUpgrader = websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
 
 // =========================================================================
@@ -485,7 +511,7 @@ var wsUpgrader = websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { re
 //   - Session store (JSONL)
 //   - Tool registry (all built-in tools)
 //   - Whale config (model, effort, etc.)
-//   - Team engine event → WebSocket broadcast bridge
+//   - Team engine event �?WebSocket broadcast bridge
 //   - HTTP mux with /ws and /health endpoints
 func NewDaemon(eng *team_engine.TeamEngine, cfg DaemonConfig) (*Daemon, error) {
 	if err := os.MkdirAll(cfg.DataDir, 0755); err != nil {
@@ -526,8 +552,29 @@ func NewDaemon(eng *team_engine.TeamEngine, cfg DaemonConfig) (*Daemon, error) {
 	// MCP manager.
 	mcpConfigPath := whalemcp.DefaultConfigPath(cfg.DataDir)
 	mcpCfg, _ := whalemcp.LoadConfig(mcpConfigPath)
+
+	pluginManager := plugins.NewManager(plugins.Context{DataDir: cfg.DataDir, WorkspaceRoot: cfg.WorkDir}, nil)
+	pluginOutcome := pluginManager.Outcome()
+	mergePluginMCPServers(&mcpCfg, pluginOutcome.MCPServers)
+
 	mcpMgr := whalemcp.NewManager(mcpCfg, cfg.WorkDir)
 	mcpMgr.SetSecretsDir(cfg.DataDir)
+
+	hooks, _, hookLoadErr := agent.LoadHooks(cfg.WorkDir, cfg.DataDir)
+	if hookLoadErr != nil {
+		log.Printf("daemon: load hooks: %v", hookLoadErr)
+	}
+	hookStates, _ := loadHookStates(cfg.DataDir, cfg.WorkDir)
+	allHooks := append([]agent.ResolvedHook{}, hooks...)
+	allHooks = append(allHooks, pluginOutcome.CommandHooks...)
+	hookRunner := agent.NewHookRunnerWithState(allHooks, cfg.WorkDir, hookStates)
+	hookRunner.AddHandlers(pluginOutcome.HookHandlers...)
+
+	permissionPolicy := policy.RulePolicy{
+		Default:       whaleCfg.PermissionDefault,
+		Rules:         append([]policy.PermissionRule{}, whaleCfg.PermissionRules...),
+		WorkspaceRoot: cfg.WorkDir,
+	}
 
 	d := &Daemon{
 		cfg:              cfg,
@@ -542,9 +589,12 @@ func NewDaemon(eng *team_engine.TeamEngine, cfg DaemonConfig) (*Daemon, error) {
 		pendingUserInput: make(map[string]chan userInputResp),
 		pendingCancels:   make(map[string]context.CancelFunc),
 		mcpManager:       mcpMgr,
+		permissionPolicy: permissionPolicy,
+		hookRunner:       hookRunner,
+		pluginManager:    pluginManager,
 	}
 
-	// Team engine events → broadcast.
+	// Team engine events �?broadcast.
 	eng.OnEvent(func(evt team_engine.TaskEvent) {
 		switch evt.Type {
 		case team_engine.EventStateChanged, team_engine.EventTaskDone,
@@ -602,9 +652,11 @@ func (d *Daemon) ListenAndServe() error {
 
 // Close shuts down the daemon gracefully.
 func (d *Daemon) Close() {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	d.httpServer.Shutdown(ctx)
+	if d.httpServer != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		d.httpServer.Shutdown(ctx)
+	}
 	d.wg.Wait()
 }
 
@@ -644,79 +696,79 @@ func (d *Daemon) handleWS(w http.ResponseWriter, r *http.Request) {
 		}
 		var req wsRequest
 		if err := json.Unmarshal(raw, &req); err != nil {
-			client.send(wsResponse{Type: "error", ID: req.ID, Payload: map[string]string{"message": "invalid json"}})
+			client.SendResponse(wsResponse{Type: "error", ID: req.ID, Payload: map[string]string{"message": "invalid json"}})
 			continue
 		}
 		d.handleMessage(client, req)
 	}
 }
 
-func (d *Daemon) handleMessage(client *wsClient, req wsRequest) {
+func (d *Daemon) handleMessage(w MessageWriter, req wsRequest) {
 	switch req.Type {
 	case "chat":
-		go d.handleChat(client, req)
+		go d.handleChat(w, req)
 	case "task.create":
-		go d.handleTaskCreate(client, req)
+		go d.handleTaskCreate(w, req)
 	case "task.list":
-		d.handleTaskList(client, req)
+		d.handleTaskList(w, req)
 	case "task.cancel":
-		d.handleTaskCancel(client, req)
+		d.handleTaskCancel(w, req)
 	case "task.delete":
-		d.handleTaskDelete(client, req)
+		d.handleTaskDelete(w, req)
 	case "session.list":
-		d.handleSessionList(client, req)
+		d.handleSessionList(w, req)
 	case "session.listByAgent":
-		d.handleSessionListByAgent(client, req)
+		d.handleSessionListByAgent(w, req)
 	case "session.delete":
-		d.handleSessionDelete(client, req)
+		d.handleSessionDelete(w, req)
 	case "session.deleteAll":
-		d.handleSessionDeleteAll(client, req)
+		d.handleSessionDeleteAll(w, req)
 	case "session.clearEmpty":
-		d.handleSessionClearEmpty(client, req)
+		d.handleSessionClearEmpty(w, req)
 	case "session.getMessages":
-		d.handleSessionGetMessages(client, req)
+		d.handleSessionGetMessages(w, req)
 	case "session.getToolResult":
-		d.handleSessionGetToolResult(client, req)
+		d.handleSessionGetToolResult(w, req)
 	case "agent.list":
-		d.handleAgentList(client, req)
+		d.handleAgentList(w, req)
 	case "expert.list":
-		d.handleExpertList(client, req)
+		d.handleExpertList(w, req)
 	case "team.list":
-		d.handleTeamList(client, req)
+		d.handleTeamList(w, req)
 	case "chat.cancel":
-		d.handleChatCancel(client, req)
+		d.handleChatCancel(w, req)
 	case "task.subtasks":
-		d.handleTaskSubtasks(client, req)
+		d.handleTaskSubtasks(w, req)
 	case "task.dialogue":
-		d.handleTaskDialogue(client, req)
+		d.handleTaskDialogue(w, req)
 	case "task.plan":
-		d.handleTaskPlan(client, req)
+		d.handleTaskPlan(w, req)
 	case "task.feedback":
-		d.handleTaskFeedback(client, req)
+		d.handleTaskFeedback(w, req)
 	case "task.confirm":
-		d.handleTaskConfirm(client, req)
+		d.handleTaskConfirm(w, req)
 	case "task.confirmations":
-		d.handleTaskConfirmations(client, req)
+		d.handleTaskConfirmations(w, req)
 	case "task.updateGoal":
-		d.handleTaskUpdateGoal(client, req)
+		d.handleTaskUpdateGoal(w, req)
 	case "mcp.list":
-		d.handleMCPList(client, req)
+		d.handleMCPList(w, req)
 	case "mcp.setEnabled":
-		d.handleMCPSetEnabled(client, req)
+		d.handleMCPSetEnabled(w, req)
 	case "mcp.setEnv":
-		d.handleMCPSetEnv(client, req)
+		d.handleMCPSetEnv(w, req)
 	case "file.read":
-		d.handleFileRead(client, req)
+		d.handleFileRead(w, req)
 	case "team.chat.send":
-		d.handleTeamChatSend(client, req)
+		d.handleTeamChatSend(w, req)
 	case "team.chat.messages":
-		d.handleTeamChatMessages(client, req)
+		d.handleTeamChatMessages(w, req)
 	case "approval.decision":
-		d.handleApprovalDecision(client, req)
+		d.handleApprovalDecision(w, req)
 	case "user_input.response":
-		d.handleUserInputResponse(client, req)
+		d.handleUserInputResponse(w, req)
 	default:
-		client.send(wsResponse{Type: "error", ID: req.ID, Payload: map[string]string{"message": fmt.Sprintf("unknown type: %s", req.Type)}})
+		w.SendResponse(wsResponse{Type: "error", ID: req.ID, Payload: map[string]string{"message": fmt.Sprintf("unknown type: %s", req.Type)}})
 	}
 }
 
@@ -729,14 +781,14 @@ func (d *Daemon) handleMessage(client *wsClient, req wsRequest) {
 // and streams all events as structured chat.stream pushes.
 // The response is sent asynchronously via push; the final "chat" response
 // carries the session_id for subsequent turns.
-func (d *Daemon) handleChat(client *wsClient, req wsRequest) {
+func (d *Daemon) handleChat(w MessageWriter, req wsRequest) {
 	var p chatRequest
 	if err := json.Unmarshal(req.Payload, &p); err != nil {
-		client.send(wsResponse{Type: "error", ID: req.ID, Payload: map[string]string{"message": "invalid payload"}})
+		w.SendResponse(wsResponse{Type: "error", ID: req.ID, Payload: map[string]string{"message": "invalid payload"}})
 		return
 	}
 	if strings.TrimSpace(p.Message) == "" {
-		client.send(wsResponse{Type: "error", ID: req.ID, Payload: map[string]string{"message": "empty message"}})
+		w.SendResponse(wsResponse{Type: "error", ID: req.ID, Payload: map[string]string{"message": "empty message"}})
 		return
 	}
 
@@ -763,7 +815,7 @@ func (d *Daemon) handleChat(client *wsClient, req wsRequest) {
 		deepseek.WithThinking(p.DeepThink),
 	)
 	if err != nil {
-		client.send(wsResponse{Type: "error", ID: req.ID, Payload: map[string]string{"message": fmt.Sprintf("init provider: %v", err)}})
+		w.SendResponse(wsResponse{Type: "error", ID: req.ID, Payload: map[string]string{"message": fmt.Sprintf("init provider: %v", err)}})
 		return
 	}
 
@@ -783,12 +835,32 @@ func (d *Daemon) handleChat(client *wsClient, req wsRequest) {
 
 	chatStart := time.Now()
 
-	// Build Agent.
+	var pluginBlocks []string
+	if d.pluginManager != nil {
+		pluginBlocks = d.pluginManager.StartupBlocks(context.Background())
+	}
+
 	ag := agent.NewAgentWithRegistry(prov, d.store, d.toolReg,
 		agent.WithSessionMode(session.ModeAgent),
 		agent.WithSessionsDir(d.sessionsDir),
-		agent.WithApprovalFunc(d.makeApprovalFunc(client)),
-		agent.WithUserInputFunc(d.makeUserInputFunc(client)),
+		agent.WithBudgetWarningUSD(d.whaleCfg.BudgetWarningUSD),
+		agent.WithUsageLogPath(filepath.Join(d.cfg.DataDir, "usage.jsonl")),
+		agent.WithAutoCompact(d.whaleCfg.AutoCompact, d.whaleCfg.AutoCompactThreshold, 0),
+		agent.WithToolPolicy(d.permissionPolicy),
+		agent.WithToolRefresh(func(ctx context.Context) error {
+			d.mcpManager.Initialize(ctx)
+			return nil
+		}),
+		agent.WithHookRunner(d.hookRunner),
+		agent.WithExtraSystemBlocks(pluginBlocks...),
+		agent.WithDynamicSystemBlocksForTurn(nil),
+		agent.WithProjectMemory(d.whaleCfg.MemoryEnabled, d.whaleCfg.MemoryMaxChars, parseCSVList(d.whaleCfg.MemoryFileOrder), d.cfg.WorkDir),
+		agent.WithWorktreeContext("", ""),
+		agent.WithMaxParallelSubagents(d.whaleCfg.MaxParallelSubagents),
+		agent.WithDisabledSkills(d.whaleCfg.SkillsDisabled),
+		agent.WithExtraSkills(d.pluginManager.Skills()),
+		agent.WithApprovalFunc(d.makeApprovalFunc(w)),
+		agent.WithUserInputFunc(d.makeUserInputFunc(w)),
 	)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -810,7 +882,7 @@ func (d *Daemon) handleChat(client *wsClient, req wsRequest) {
 		agent.RunOptions{},
 	)
 	if err != nil {
-		d.pushChat(client, sessionID, chatStreamChunk{Event: "error", Error: err.Error(), Done: true})
+		d.pushChat(w, sessionID, chatStreamChunk{Event: "error", Error: err.Error(), Done: true})
 		return
 	}
 
@@ -819,7 +891,7 @@ func (d *Daemon) handleChat(client *wsClient, req wsRequest) {
 	var collectedTools []core.ToolCall
 	flushThinking := func() {
 		if thinkingBuf == "" { return }
-		// Reasoning persisted by agent (stream_ingest.go) — no separate store.Create here.
+		// Reasoning persisted by agent (stream_ingest.go) �?no separate store.Create here.
 		thinkingBuf = ""
 	}
 	for ev := range events {
@@ -926,7 +998,7 @@ func (d *Daemon) handleChat(client *wsClient, req wsRequest) {
 			chunk.Content = "provider retrying..."
 
 		case agent.AgentEventTypeToolArgsRepaired:
-			// Transparent to frontend — agent auto-repaired broken JSON.
+			// Transparent to frontend �?agent auto-repaired broken JSON.
 
 		case agent.AgentEventTypeResponseReset:
 			chunk.Event = "response_reset"
@@ -957,7 +1029,7 @@ func (d *Daemon) handleChat(client *wsClient, req wsRequest) {
 
 		// Only send if we populated the chunk.
 		if chunk.Event != "" {
-			d.pushChat(client, sessionID, chunk)
+			d.pushChat(w, sessionID, chunk)
 		}
 
 		select {
@@ -969,9 +1041,9 @@ func (d *Daemon) handleChat(client *wsClient, req wsRequest) {
 
 	flushThinking()
 	// Done.
-	d.pushChat(client, sessionID, chatStreamChunk{Event: "done", Done: true})
+	d.pushChat(w, sessionID, chatStreamChunk{Event: "done", Done: true})
 
-	// Persist reasoning the agent may have omitted — stored as hidden so
+	// Persist reasoning the agent may have omitted �?stored as hidden so
 	// handleSessionGetMessages can merge it into the preceding visible message.
 	if contentBuf != "" || thinkingBuf != "" {
 		d.store.Create(context.Background(), core.Message{
@@ -983,7 +1055,7 @@ func (d *Daemon) handleChat(client *wsClient, req wsRequest) {
 		})
 	}
 
-	client.send(wsResponse{Type: "chat", ID: req.ID, Payload: map[string]string{
+	w.SendResponse(wsResponse{Type: "chat", ID: req.ID, Payload: map[string]string{
 		"session_id": sessionID,
 	}})
 }
@@ -991,10 +1063,10 @@ func (d *Daemon) handleChat(client *wsClient, req wsRequest) {
 // handleChatCancel cancels an in-flight chat for the given session.
 // The pod sends this when the user clicks the "stop" button during generation.
 // The running agent will receive context cancellation and stop at the next yield point.
-func (d *Daemon) handleChatCancel(client *wsClient, req wsRequest) {
+func (d *Daemon) handleChatCancel(w MessageWriter, req wsRequest) {
 	var p chatCancelRequest
 	if err := json.Unmarshal(req.Payload, &p); err != nil {
-		client.send(wsResponse{Type: "error", ID: req.ID, Payload: map[string]string{"message": "invalid payload"}})
+		w.SendResponse(wsResponse{Type: "error", ID: req.ID, Payload: map[string]string{"message": "invalid payload"}})
 		return
 	}
 	d.pendingCancelsMu.Lock()
@@ -1003,23 +1075,23 @@ func (d *Daemon) handleChatCancel(client *wsClient, req wsRequest) {
 	if ok {
 		cancel()
 	}
-	client.send(wsResponse{Type: "chat.canceled", ID: req.ID, Payload: map[string]string{
+	w.SendResponse(wsResponse{Type: "chat.canceled", ID: req.ID, Payload: map[string]string{
 		"session_id": p.SessionID,
 	}})
 }
 
 // pushChat sends a chat.stream push to the requesting client only.
 // Chat messages are per-session and must not leak across connections.
-func (d *Daemon) pushChat(client *wsClient, sessionID string, chunk chatStreamChunk) {
+func (d *Daemon) pushChat(w MessageWriter, sessionID string, chunk chatStreamChunk) {
 	chunk.SessionID = sessionID
-	client.send(wsPush{Type: "chat.stream", Payload: chunk})
+	w.Push(wsPush{Type: "chat.stream", Payload: chunk})
 }
 
 // =========================================================================
 // Approval / UserInput bridges
 // =========================================================================
 
-func (d *Daemon) makeApprovalFunc(client *wsClient) policy.ApprovalFunc {
+func (d *Daemon) makeApprovalFunc(w MessageWriter) policy.ApprovalFunc {
 	return func(req policy.ApprovalRequest) policy.ApprovalDecision {
 		ch := make(chan policy.ApprovalDecision, 1)
 		d.pendingApprovalMu.Lock()
@@ -1032,7 +1104,7 @@ func (d *Daemon) makeApprovalFunc(client *wsClient) policy.ApprovalFunc {
 			d.pendingApprovalMu.Unlock()
 		}()
 
-		client.send(wsPush{Type: "approval.required", Payload: approvalRequired{
+		w.Push(wsPush{Type: "approval.required", Payload: approvalRequired{
 			SessionID:  req.SessionID,
 			ToolCallID: req.ToolCall.ID,
 			ToolName:   req.ToolCall.Name,
@@ -1052,7 +1124,7 @@ func (d *Daemon) makeApprovalFunc(client *wsClient) policy.ApprovalFunc {
 
 // handleApprovalDecision receives the pod's response to an approval.required push.
 // Decisions: "allow", "deny", "allow_session", "cancel".
-func (d *Daemon) handleApprovalDecision(client *wsClient, req wsRequest) {
+func (d *Daemon) handleApprovalDecision(w MessageWriter, req wsRequest) {
 	var p approvalDecision
 	if err := json.Unmarshal(req.Payload, &p); err != nil {
 		return
@@ -1084,7 +1156,7 @@ func (d *Daemon) handleApprovalDecision(client *wsClient, req wsRequest) {
 	}
 }
 
-func (d *Daemon) makeUserInputFunc(client *wsClient) agent.UserInputFunc {
+func (d *Daemon) makeUserInputFunc(w MessageWriter) agent.UserInputFunc {
 	return func(req agent.UserInputRequest) (core.UserInputResponse, bool) {
 		ch := make(chan userInputResp, 1)
 		d.pendingUserInputMu.Lock()
@@ -1111,7 +1183,7 @@ func (d *Daemon) makeUserInputFunc(client *wsClient) agent.UserInputFunc {
 			}
 		}
 
-		client.send(wsPush{Type: "user_input.required", Payload: userInputRequired{
+		w.Push(wsPush{Type: "user_input.required", Payload: userInputRequired{
 			SessionID:  req.SessionID,
 			ToolCallID: req.ToolCall.ID,
 			Questions:  qs,
@@ -1130,7 +1202,7 @@ func (d *Daemon) makeUserInputFunc(client *wsClient) agent.UserInputFunc {
 }
 
 // handleUserInputResponse receives the pod's answer to a user_input.required push.
-func (d *Daemon) handleUserInputResponse(client *wsClient, req wsRequest) {
+func (d *Daemon) handleUserInputResponse(w MessageWriter, req wsRequest) {
 	var p userInputResponsePayload
 	if err := json.Unmarshal(req.Payload, &p); err != nil {
 		return
@@ -1161,10 +1233,10 @@ func (d *Daemon) handleUserInputResponse(client *wsClient, req wsRequest) {
 // handleTaskCreate creates a master task and starts PlanAndRun in a goroutine.
 // Returns immediately with the master_task_id; progress is delivered via
 // task.state_changed and task.log pushes.
-func (d *Daemon) handleTaskCreate(client *wsClient, req wsRequest) {
+func (d *Daemon) handleTaskCreate(w MessageWriter, req wsRequest) {
 	var p taskCreateRequest
 	if err := json.Unmarshal(req.Payload, &p); err != nil {
-		client.send(wsResponse{Type: "error", ID: req.ID, Payload: map[string]string{"message": "invalid payload"}})
+		w.SendResponse(wsResponse{Type: "error", ID: req.ID, Payload: map[string]string{"message": "invalid payload"}})
 		return
 	}
 
@@ -1187,7 +1259,7 @@ func (d *Daemon) handleTaskCreate(client *wsClient, req wsRequest) {
 
 	mt, err := d.engine.CreateMasterTask(p.Goal, workDir, "")
 	if err != nil {
-		client.send(wsResponse{Type: "error", ID: req.ID, Payload: map[string]string{"message": fmt.Sprintf("create task: %v", err)}})
+		w.SendResponse(wsResponse{Type: "error", ID: req.ID, Payload: map[string]string{"message": fmt.Sprintf("create task: %v", err)}})
 		return
 	}
 
@@ -1195,16 +1267,16 @@ func (d *Daemon) handleTaskCreate(client *wsClient, req wsRequest) {
 		d.engine.PlanAndRun(context.Background(), p.Goal, workDir, mt.ID)
 	}()
 
-	client.send(wsResponse{Type: "task.created", ID: req.ID, Payload: map[string]string{
+	w.SendResponse(wsResponse{Type: "task.created", ID: req.ID, Payload: map[string]string{
 		"master_task_id": mt.ID,
 	}})
 }
 
 // handleTaskList returns all master tasks with their subtask counts.
-func (d *Daemon) handleTaskList(client *wsClient, req wsRequest) {
+func (d *Daemon) handleTaskList(w MessageWriter, req wsRequest) {
 	tasks, err := d.engine.ListMasterTasks()
 	if err != nil {
-		client.send(wsResponse{Type: "error", ID: req.ID, Payload: map[string]string{"message": fmt.Sprintf("list tasks: %v", err)}})
+		w.SendResponse(wsResponse{Type: "error", ID: req.ID, Payload: map[string]string{"message": fmt.Sprintf("list tasks: %v", err)}})
 		return
 	}
 	result := make([]map[string]interface{}, len(tasks))
@@ -1233,38 +1305,38 @@ func (d *Daemon) handleTaskList(client *wsClient, req wsRequest) {
 			"suspended_count": suspendedCount,
 		}
 	}
-	client.send(wsResponse{Type: "task.list", ID: req.ID, Payload: map[string]interface{}{
+	w.SendResponse(wsResponse{Type: "task.list", ID: req.ID, Payload: map[string]interface{}{
 		"tasks": result,
 	}})
 }
 
 // handleTaskCancel cancels a running master task.
-func (d *Daemon) handleTaskCancel(client *wsClient, req wsRequest) {
+func (d *Daemon) handleTaskCancel(w MessageWriter, req wsRequest) {
 	var p struct {
 		TaskID string `json:"task_id"`
 	}
 	if err := json.Unmarshal(req.Payload, &p); err != nil {
-		client.send(wsResponse{Type: "error", ID: req.ID, Payload: map[string]string{"message": "invalid payload"}})
+		w.SendResponse(wsResponse{Type: "error", ID: req.ID, Payload: map[string]string{"message": "invalid payload"}})
 		return
 	}
 	d.engine.CancelMasterTaskExecution(p.TaskID)
-	client.send(wsResponse{Type: "task.canceled", ID: req.ID, Payload: map[string]string{"task_id": p.TaskID}})
+	w.SendResponse(wsResponse{Type: "task.canceled", ID: req.ID, Payload: map[string]string{"task_id": p.TaskID}})
 }
 
 // handleTaskDelete deletes a master task and all its children.
-func (d *Daemon) handleTaskDelete(client *wsClient, req wsRequest) {
+func (d *Daemon) handleTaskDelete(w MessageWriter, req wsRequest) {
 	var p struct {
 		TaskID string `json:"task_id"`
 	}
 	if err := json.Unmarshal(req.Payload, &p); err != nil {
-		client.send(wsResponse{Type: "error", ID: req.ID, Payload: map[string]string{"message": "invalid payload"}})
+		w.SendResponse(wsResponse{Type: "error", ID: req.ID, Payload: map[string]string{"message": "invalid payload"}})
 		return
 	}
 	if err := d.engine.DeleteMasterTaskAndChildren(p.TaskID); err != nil {
-		client.send(wsResponse{Type: "error", ID: req.ID, Payload: map[string]string{"message": fmt.Sprintf("delete task: %v", err)}})
+		w.SendResponse(wsResponse{Type: "error", ID: req.ID, Payload: map[string]string{"message": fmt.Sprintf("delete task: %v", err)}})
 		return
 	}
-	client.send(wsResponse{Type: "task.deleted", ID: req.ID, Payload: map[string]string{"task_id": p.TaskID}})
+	w.SendResponse(wsResponse{Type: "task.deleted", ID: req.ID, Payload: map[string]string{"task_id": p.TaskID}})
 }
 
 // =========================================================================
@@ -1272,10 +1344,10 @@ func (d *Daemon) handleTaskDelete(client *wsClient, req wsRequest) {
 // =========================================================================
 
 // handleTaskSubtasks returns the full subtask tree for a master task.
-func (d *Daemon) handleTaskSubtasks(client *wsClient, req wsRequest) {
+func (d *Daemon) handleTaskSubtasks(w MessageWriter, req wsRequest) {
 	var p subtaskRequest
 	if err := json.Unmarshal(req.Payload, &p); err != nil {
-		client.send(wsResponse{Type: "error", ID: req.ID, Payload: map[string]string{"message": "invalid payload"}})
+		w.SendResponse(wsResponse{Type: "error", ID: req.ID, Payload: map[string]string{"message": "invalid payload"}})
 		return
 	}
 	masterID := p.MasterTaskID
@@ -1287,17 +1359,17 @@ func (d *Daemon) handleTaskSubtasks(client *wsClient, req wsRequest) {
 		}
 	}
 	if masterID == "" {
-		client.send(wsResponse{Type: "error", ID: req.ID, Payload: map[string]string{"message": "master_task_id or session_id required"}})
+		w.SendResponse(wsResponse{Type: "error", ID: req.ID, Payload: map[string]string{"message": "master_task_id or session_id required"}})
 		return
 	}
 
 	subtasks, err := d.engine.ListTasksByMasterTask(masterID)
 	if err != nil {
-		client.send(wsResponse{Type: "error", ID: req.ID, Payload: map[string]string{"message": err.Error()}})
+		w.SendResponse(wsResponse{Type: "error", ID: req.ID, Payload: map[string]string{"message": err.Error()}})
 		return
 	}
 
-	client.send(wsResponse{Type: "task.subtasks", ID: req.ID, Payload: map[string]interface{}{
+	w.SendResponse(wsResponse{Type: "task.subtasks", ID: req.ID, Payload: map[string]interface{}{
 		"subtasks": buildSubtaskTree(subtasks),
 	}})
 }
@@ -1373,14 +1445,14 @@ func buildSubtaskTree(tasks []*team_engine.Task) []map[string]interface{} {
 }
 
 // handleTaskDialogue returns agent dialogue logs for a subtask.
-func (d *Daemon) handleTaskDialogue(client *wsClient, req wsRequest) {
+func (d *Daemon) handleTaskDialogue(w MessageWriter, req wsRequest) {
 	var p dialogueRequest
 	if err := json.Unmarshal(req.Payload, &p); err != nil {
-		client.send(wsResponse{Type: "error", ID: req.ID, Payload: map[string]string{"message": "invalid payload"}})
+		w.SendResponse(wsResponse{Type: "error", ID: req.ID, Payload: map[string]string{"message": "invalid payload"}})
 		return
 	}
 	if p.TaskID == "" {
-		client.send(wsResponse{Type: "error", ID: req.ID, Payload: map[string]string{"message": "task_id required"}})
+		w.SendResponse(wsResponse{Type: "error", ID: req.ID, Payload: map[string]string{"message": "task_id required"}})
 		return
 	}
 
@@ -1389,7 +1461,7 @@ func (d *Daemon) handleTaskDialogue(client *wsClient, req wsRequest) {
 	verifier, _ := d.engine.Whiteboard.ReadVerifier(p.TaskID)
 	confirmation, _ := d.engine.Whiteboard.ReadConfirmation(p.TaskID)
 
-	client.send(wsResponse{Type: "task.dialogue", ID: req.ID, Payload: map[string]interface{}{
+	w.SendResponse(wsResponse{Type: "task.dialogue", ID: req.ID, Payload: map[string]interface{}{
 		"task_id":      p.TaskID,
 		"output":       output,
 		"verifier":     verifier,
@@ -1398,14 +1470,14 @@ func (d *Daemon) handleTaskDialogue(client *wsClient, req wsRequest) {
 }
 
 // handleTaskPlan returns the leader's decomposition plan for a master task.
-func (d *Daemon) handleTaskPlan(client *wsClient, req wsRequest) {
+func (d *Daemon) handleTaskPlan(w MessageWriter, req wsRequest) {
 	var p planRequest
 	if err := json.Unmarshal(req.Payload, &p); err != nil {
-		client.send(wsResponse{Type: "error", ID: req.ID, Payload: map[string]string{"message": "invalid payload"}})
+		w.SendResponse(wsResponse{Type: "error", ID: req.ID, Payload: map[string]string{"message": "invalid payload"}})
 		return
 	}
 	if p.MasterTaskID == "" {
-		client.send(wsResponse{Type: "error", ID: req.ID, Payload: map[string]string{"message": "master_task_id required"}})
+		w.SendResponse(wsResponse{Type: "error", ID: req.ID, Payload: map[string]string{"message": "master_task_id required"}})
 		return
 	}
 
@@ -1415,7 +1487,7 @@ func (d *Daemon) handleTaskPlan(client *wsClient, req wsRequest) {
 	planJSON, _ := os.ReadFile(filepath.Join(masterDir, "plan.json"))
 	specMD, _ := os.ReadFile(filepath.Join(masterDir, "spec.md"))
 
-	client.send(wsResponse{Type: "task.plan", ID: req.ID, Payload: map[string]interface{}{
+	w.SendResponse(wsResponse{Type: "task.plan", ID: req.ID, Payload: map[string]interface{}{
 		"master_task_id": p.MasterTaskID,
 		"plan_md":        string(planMD),
 		"plan_json":      string(planJSON),
@@ -1428,30 +1500,30 @@ func (d *Daemon) handleTaskPlan(client *wsClient, req wsRequest) {
 // =========================================================================
 
 // handleTaskFeedback sends human feedback to a running subtask.
-func (d *Daemon) handleTaskFeedback(client *wsClient, req wsRequest) {
+func (d *Daemon) handleTaskFeedback(w MessageWriter, req wsRequest) {
 	var p feedbackRequest
 	if err := json.Unmarshal(req.Payload, &p); err != nil {
-		client.send(wsResponse{Type: "error", ID: req.ID, Payload: map[string]string{"message": "invalid payload"}})
+		w.SendResponse(wsResponse{Type: "error", ID: req.ID, Payload: map[string]string{"message": "invalid payload"}})
 		return
 	}
 	if err := d.engine.SendFeedback(p.TaskID, p.Message); err != nil {
-		client.send(wsResponse{Type: "error", ID: req.ID, Payload: map[string]string{"message": err.Error()}})
+		w.SendResponse(wsResponse{Type: "error", ID: req.ID, Payload: map[string]string{"message": err.Error()}})
 		return
 	}
-	client.send(wsResponse{Type: "task.feedback", ID: req.ID, Payload: map[string]string{
+	w.SendResponse(wsResponse{Type: "task.feedback", ID: req.ID, Payload: map[string]string{
 		"task_id": p.TaskID, "status": "sent",
 	}})
 }
 
 // handleTaskConfirm handles user confirmation/rejection of a pending confirmation.
-func (d *Daemon) handleTaskConfirm(client *wsClient, req wsRequest) {
+func (d *Daemon) handleTaskConfirm(w MessageWriter, req wsRequest) {
 	var p confirmRequest
 	if err := json.Unmarshal(req.Payload, &p); err != nil {
-		client.send(wsResponse{Type: "error", ID: req.ID, Payload: map[string]string{"message": "invalid payload"}})
+		w.SendResponse(wsResponse{Type: "error", ID: req.ID, Payload: map[string]string{"message": "invalid payload"}})
 		return
 	}
 	if !d.engine.Whiteboard.HasConfirmation(p.TaskID) {
-		client.send(wsResponse{Type: "error", ID: req.ID, Payload: map[string]string{"message": "no pending confirmation"}})
+		w.SendResponse(wsResponse{Type: "error", ID: req.ID, Payload: map[string]string{"message": "no pending confirmation"}})
 		return
 	}
 	if p.Decision == "confirm" {
@@ -1469,16 +1541,16 @@ func (d *Daemon) handleTaskConfirm(client *wsClient, req wsRequest) {
 		}
 		d.engine.SendFeedback(p.TaskID, msg)
 	}
-	client.send(wsResponse{Type: "task.confirmed", ID: req.ID, Payload: map[string]string{
+	w.SendResponse(wsResponse{Type: "task.confirmed", ID: req.ID, Payload: map[string]string{
 		"task_id": p.TaskID, "decision": p.Decision,
 	}})
 }
 
 // handleTaskConfirmations lists all pending confirmations for a master task.
-func (d *Daemon) handleTaskConfirmations(client *wsClient, req wsRequest) {
+func (d *Daemon) handleTaskConfirmations(w MessageWriter, req wsRequest) {
 	var p confirmationsRequest
 	if err := json.Unmarshal(req.Payload, &p); err != nil {
-		client.send(wsResponse{Type: "error", ID: req.ID, Payload: map[string]string{"message": "invalid payload"}})
+		w.SendResponse(wsResponse{Type: "error", ID: req.ID, Payload: map[string]string{"message": "invalid payload"}})
 		return
 	}
 	subtasks, _ := d.engine.ListTasksByMasterTask(p.MasterTaskID)
@@ -1494,21 +1566,21 @@ func (d *Daemon) handleTaskConfirmations(client *wsClient, req wsRequest) {
 			})
 		}
 	}
-	client.send(wsResponse{Type: "task.confirmations", ID: req.ID, Payload: map[string]interface{}{
+	w.SendResponse(wsResponse{Type: "task.confirmations", ID: req.ID, Payload: map[string]interface{}{
 		"pending": pending,
 	}})
 }
 
 // handleTaskUpdateGoal updates a master task's goal.
-func (d *Daemon) handleTaskUpdateGoal(client *wsClient, req wsRequest) {
+func (d *Daemon) handleTaskUpdateGoal(w MessageWriter, req wsRequest) {
 	var p taskUpdateGoalRequest
 	if err := json.Unmarshal(req.Payload, &p); err != nil {
-		client.send(wsResponse{Type: "error", ID: req.ID, Payload: map[string]string{"message": "invalid payload"}})
+		w.SendResponse(wsResponse{Type: "error", ID: req.ID, Payload: map[string]string{"message": "invalid payload"}})
 		return
 	}
 	mt, err := d.engine.GetMasterTask(p.TaskID)
 	if err != nil {
-		client.send(wsResponse{Type: "error", ID: req.ID, Payload: map[string]string{"message": "task not found"}})
+		w.SendResponse(wsResponse{Type: "error", ID: req.ID, Payload: map[string]string{"message": "task not found"}})
 		return
 	}
 	masterDir := d.engine.Whiteboard.MasterDir(p.TaskID)
@@ -1516,7 +1588,7 @@ func (d *Daemon) handleTaskUpdateGoal(client *wsClient, req wsRequest) {
 	if _, err := os.Stat(goalPath); err == nil {
 		os.WriteFile(goalPath, []byte(p.Goal), 0644)
 	}
-	client.send(wsResponse{Type: "task.goalUpdated", ID: req.ID, Payload: map[string]string{
+	w.SendResponse(wsResponse{Type: "task.goalUpdated", ID: req.ID, Payload: map[string]string{
 		"task_id": p.TaskID, "goal": p.Goal, "old_goal": mt.Goal,
 	}})
 }
@@ -1526,9 +1598,9 @@ func (d *Daemon) handleTaskUpdateGoal(client *wsClient, req wsRequest) {
 // =========================================================================
 
 // handleMCPList returns all MCP servers and their status.
-func (d *Daemon) handleMCPList(client *wsClient, req wsRequest) {
+func (d *Daemon) handleMCPList(w MessageWriter, req wsRequest) {
 	if d.mcpManager == nil {
-		client.send(wsResponse{Type: "mcp.list", ID: req.ID, Payload: map[string]interface{}{"servers": []interface{}{}}})
+		w.SendResponse(wsResponse{Type: "mcp.list", ID: req.ID, Payload: map[string]interface{}{"servers": []interface{}{}}})
 		return
 	}
 	states := d.mcpManager.States()
@@ -1546,18 +1618,18 @@ func (d *Daemon) handleMCPList(client *wsClient, req wsRequest) {
 			"url":       s.URL,
 		})
 	}
-	client.send(wsResponse{Type: "mcp.list", ID: req.ID, Payload: map[string]interface{}{"servers": result}})
+	w.SendResponse(wsResponse{Type: "mcp.list", ID: req.ID, Payload: map[string]interface{}{"servers": result}})
 }
 
 // handleMCPSetEnabled enables or disables an MCP server.
-func (d *Daemon) handleMCPSetEnabled(client *wsClient, req wsRequest) {
+func (d *Daemon) handleMCPSetEnabled(w MessageWriter, req wsRequest) {
 	var p mcpSetEnabledRequest
 	if err := json.Unmarshal(req.Payload, &p); err != nil {
-		client.send(wsResponse{Type: "error", ID: req.ID, Payload: map[string]string{"message": "invalid payload"}})
+		w.SendResponse(wsResponse{Type: "error", ID: req.ID, Payload: map[string]string{"message": "invalid payload"}})
 		return
 	}
 	if d.mcpManager == nil {
-		client.send(wsResponse{Type: "error", ID: req.ID, Payload: map[string]string{"message": "mcp not available"}})
+		w.SendResponse(wsResponse{Type: "error", ID: req.ID, Payload: map[string]string{"message": "mcp not available"}})
 		return
 	}
 
@@ -1568,34 +1640,34 @@ func (d *Daemon) handleMCPSetEnabled(client *wsClient, req wsRequest) {
 		err = d.mcpManager.DisableServer(p.Name)
 	}
 	if err != nil {
-		client.send(wsResponse{Type: "error", ID: req.ID, Payload: map[string]string{"message": err.Error()}})
+		w.SendResponse(wsResponse{Type: "error", ID: req.ID, Payload: map[string]string{"message": err.Error()}})
 		return
 	}
-	client.send(wsResponse{Type: "mcp.setEnabled", ID: req.ID, Payload: map[string]interface{}{
+	w.SendResponse(wsResponse{Type: "mcp.setEnabled", ID: req.ID, Payload: map[string]interface{}{
 		"name": p.Name, "enabled": p.Enabled,
 	}})
 }
 
 // handleMCPSetEnv stores a secret env value (e.g. token) for an MCP server.
-func (d *Daemon) handleMCPSetEnv(client *wsClient, req wsRequest) {
+func (d *Daemon) handleMCPSetEnv(w MessageWriter, req wsRequest) {
 	var p struct {
 		Server string `json:"server"`
 		Key    string `json:"key"`
 		Value  string `json:"value"`
 	}
 	if err := json.Unmarshal(req.Payload, &p); err != nil {
-		client.send(wsResponse{Type: "error", ID: req.ID, Payload: map[string]string{"message": "invalid payload"}})
+		w.SendResponse(wsResponse{Type: "error", ID: req.ID, Payload: map[string]string{"message": "invalid payload"}})
 		return
 	}
 	if d.mcpManager == nil {
-		client.send(wsResponse{Type: "error", ID: req.ID, Payload: map[string]string{"message": "mcp not available"}})
+		w.SendResponse(wsResponse{Type: "error", ID: req.ID, Payload: map[string]string{"message": "mcp not available"}})
 		return
 	}
 	if err := d.mcpManager.SetServerEnv(p.Server, p.Key, p.Value); err != nil {
-		client.send(wsResponse{Type: "error", ID: req.ID, Payload: map[string]string{"message": err.Error()}})
+		w.SendResponse(wsResponse{Type: "error", ID: req.ID, Payload: map[string]string{"message": err.Error()}})
 		return
 	}
-	client.send(wsResponse{Type: "mcp.setEnv", ID: req.ID, Payload: map[string]interface{}{
+	w.SendResponse(wsResponse{Type: "mcp.setEnv", ID: req.ID, Payload: map[string]interface{}{
 		"server": p.Server, "key": p.Key,
 	}})
 }
@@ -1606,14 +1678,14 @@ func (d *Daemon) handleMCPSetEnv(client *wsClient, req wsRequest) {
 // =========================================================================
 
 // handleFileRead reads a file from the daemon's workdir or an allowed path.
-func (d *Daemon) handleFileRead(client *wsClient, req wsRequest) {
+func (d *Daemon) handleFileRead(w MessageWriter, req wsRequest) {
 	var p fileReadRequest
 	if err := json.Unmarshal(req.Payload, &p); err != nil {
-		client.send(wsResponse{Type: "error", ID: req.ID, Payload: map[string]string{"message": "invalid payload"}})
+		w.SendResponse(wsResponse{Type: "error", ID: req.ID, Payload: map[string]string{"message": "invalid payload"}})
 		return
 	}
 	if p.Path == "" {
-		client.send(wsResponse{Type: "error", ID: req.ID, Payload: map[string]string{"message": "path required"}})
+		w.SendResponse(wsResponse{Type: "error", ID: req.ID, Payload: map[string]string{"message": "path required"}})
 		return
 	}
 
@@ -1625,16 +1697,16 @@ func (d *Daemon) handleFileRead(client *wsClient, req wsRequest) {
 	// Basic safety: ensure path is under workdir or data dir.
 	abs, _ := filepath.Abs(readPath)
 	if !strings.HasPrefix(abs, d.cfg.WorkDir) && !strings.HasPrefix(abs, d.cfg.DataDir) {
-		client.send(wsResponse{Type: "error", ID: req.ID, Payload: map[string]string{"message": "access denied: path outside workspace"}})
+		w.SendResponse(wsResponse{Type: "error", ID: req.ID, Payload: map[string]string{"message": "access denied: path outside workspace"}})
 		return
 	}
 
 	data, err := os.ReadFile(abs)
 	if err != nil {
-		client.send(wsResponse{Type: "error", ID: req.ID, Payload: map[string]string{"message": err.Error()}})
+		w.SendResponse(wsResponse{Type: "error", ID: req.ID, Payload: map[string]string{"message": err.Error()}})
 		return
 	}
-	client.send(wsResponse{Type: "file.read", ID: req.ID, Payload: map[string]interface{}{
+	w.SendResponse(wsResponse{Type: "file.read", ID: req.ID, Payload: map[string]interface{}{
 		"path":    abs,
 		"content": string(data),
 		"size":    len(data),
@@ -1646,14 +1718,14 @@ func (d *Daemon) handleFileRead(client *wsClient, req wsRequest) {
 // =========================================================================
 
 // handleTeamChatSend sends a chat message within a team task context.
-func (d *Daemon) handleTeamChatSend(client *wsClient, req wsRequest) {
+func (d *Daemon) handleTeamChatSend(w MessageWriter, req wsRequest) {
 	var p teamChatSendRequest
 	if err := json.Unmarshal(req.Payload, &p); err != nil {
-		client.send(wsResponse{Type: "error", ID: req.ID, Payload: map[string]string{"message": "invalid payload"}})
+		w.SendResponse(wsResponse{Type: "error", ID: req.ID, Payload: map[string]string{"message": "invalid payload"}})
 		return
 	}
 	if err := d.engine.Whiteboard.WriteChatMessage(p.MasterTaskID, p.From, p.To, p.Content); err != nil {
-		client.send(wsResponse{Type: "error", ID: req.ID, Payload: map[string]string{"message": err.Error()}})
+		w.SendResponse(wsResponse{Type: "error", ID: req.ID, Payload: map[string]string{"message": err.Error()}})
 		return
 	}
 
@@ -1667,14 +1739,14 @@ func (d *Daemon) handleTeamChatSend(client *wsClient, req wsRequest) {
 	}
 	d.broadcast(wsPush{Type: "team.chat.message", Payload: msg})
 
-	client.send(wsResponse{Type: "team.chat.sent", ID: req.ID, Payload: msg})
+	w.SendResponse(wsResponse{Type: "team.chat.sent", ID: req.ID, Payload: msg})
 }
 
 // handleTeamChatMessages returns all chat messages for a master task.
-func (d *Daemon) handleTeamChatMessages(client *wsClient, req wsRequest) {
+func (d *Daemon) handleTeamChatMessages(w MessageWriter, req wsRequest) {
 	var p teamChatMessagesRequest
 	if err := json.Unmarshal(req.Payload, &p); err != nil {
-		client.send(wsResponse{Type: "error", ID: req.ID, Payload: map[string]string{"message": "invalid payload"}})
+		w.SendResponse(wsResponse{Type: "error", ID: req.ID, Payload: map[string]string{"message": "invalid payload"}})
 		return
 	}
 	messages, _ := d.engine.Whiteboard.ReadChatMessages(p.MasterTaskID)
@@ -1687,16 +1759,16 @@ func (d *Daemon) handleTeamChatMessages(client *wsClient, req wsRequest) {
 			"timestamp": m.Timestamp,
 		})
 	}
-	client.send(wsResponse{Type: "team.chat.messages", ID: req.ID, Payload: map[string]interface{}{
+	w.SendResponse(wsResponse{Type: "team.chat.messages", ID: req.ID, Payload: map[string]interface{}{
 		"messages": result,
 	}})
 }
 
 // handleSessionList returns recent sessions (excluding subagent sessions).
-func (d *Daemon) handleSessionList(client *wsClient, req wsRequest) {
+func (d *Daemon) handleSessionList(w MessageWriter, req wsRequest) {
 	sessions, err := session.ListSessions(d.sessionsDir, 50)
 	if err != nil {
-		client.send(wsResponse{Type: "error", ID: req.ID, Payload: map[string]string{"message": err.Error()}})
+		w.SendResponse(wsResponse{Type: "error", ID: req.ID, Payload: map[string]string{"message": err.Error()}})
 		return
 	}
 	result := make([]map[string]interface{}, 0, len(sessions))
@@ -1747,11 +1819,11 @@ func (d *Daemon) handleSessionList(client *wsClient, req wsRequest) {
 			"workspace_online": true,
 		})
 	}
-	client.send(wsResponse{Type: "session.list", ID: req.ID, Payload: map[string]interface{}{"sessions": result}})
+	w.SendResponse(wsResponse{Type: "session.list", ID: req.ID, Payload: map[string]interface{}{"sessions": result}})
 }
 
 // handleSessionListByAgent returns sessions filtered by agent name, with offset/limit pagination.
-func (d *Daemon) handleSessionListByAgent(client *wsClient, req wsRequest) {
+func (d *Daemon) handleSessionListByAgent(w MessageWriter, req wsRequest) {
 	var p struct {
 		Agent  string `json:"agent"`
 		Offset int    `json:"offset"`
@@ -1768,7 +1840,7 @@ func (d *Daemon) handleSessionListByAgent(client *wsClient, req wsRequest) {
 		if s.Meta.Kind == "subagent" {
 			continue
 		}
-// Always filter by agent — empty string means "whale" sessions.
+// Always filter by agent �?empty string means "whale" sessions.
 if s.Meta.Agent != p.Agent {
 			continue
 		}
@@ -1791,7 +1863,7 @@ if s.Meta.Agent != p.Agent {
 		}
 	}
 	hasMore := count > p.Offset+len(result)
-	client.send(wsResponse{Type: "session.listByAgent", ID: req.ID, Payload: map[string]interface{}{"sessions": result, "has_more": hasMore}})
+	w.SendResponse(wsResponse{Type: "session.listByAgent", ID: req.ID, Payload: map[string]interface{}{"sessions": result, "has_more": hasMore}})
 }
 
 // handleSessionDelete removes a single session (JSONL + meta files).
@@ -1810,15 +1882,15 @@ func (d *Daemon) removeSessionFiles(id string) {
 	}
 }
 
-func (d *Daemon) handleSessionDelete(client *wsClient, req wsRequest) {
+func (d *Daemon) handleSessionDelete(w MessageWriter, req wsRequest) {
 	var p struct{ ID string `json:"id"` }
 	json.Unmarshal(req.Payload, &p)
 	d.removeSessionFiles(p.ID)
-	client.send(wsResponse{Type: "session.delete", ID: req.ID, Payload: map[string]string{"id": p.ID}})
+	w.SendResponse(wsResponse{Type: "session.delete", ID: req.ID, Payload: map[string]string{"id": p.ID}})
 }
 
 // handleSessionDeleteAll removes all sessions, optionally filtered by agent.
-func (d *Daemon) handleSessionDeleteAll(client *wsClient, req wsRequest) {
+func (d *Daemon) handleSessionDeleteAll(w MessageWriter, req wsRequest) {
 	var p struct{ Agent string `json:"agent"` }
 	json.Unmarshal(req.Payload, &p)
 	sessions, _ := session.ListSessions(d.sessionsDir, 0)
@@ -1826,17 +1898,17 @@ func (d *Daemon) handleSessionDeleteAll(client *wsClient, req wsRequest) {
 		if s.Meta.Kind == "subagent" {
 			continue
 		}
-		// Always filter by agent — empty string means "whale" sessions.
+		// Always filter by agent �?empty string means "whale" sessions.
 		if s.Meta.Agent != p.Agent {
 			continue
 		}
 		d.removeSessionFiles(s.ID)
 	}
-	client.send(wsResponse{Type: "session.deleteAll", ID: req.ID, Payload: map[string]string{}})
+	w.SendResponse(wsResponse{Type: "session.deleteAll", ID: req.ID, Payload: map[string]string{}})
 }
 
 // handleSessionClearEmpty removes sessions with empty/trivial meta files.
-func (d *Daemon) handleSessionClearEmpty(client *wsClient, req wsRequest) {
+func (d *Daemon) handleSessionClearEmpty(w MessageWriter, req wsRequest) {
 	var p struct{ Agent string `json:"agent"` }
 	json.Unmarshal(req.Payload, &p)
 	entries, _ := os.ReadDir(d.sessionsDir)
@@ -1855,25 +1927,25 @@ func (d *Daemon) handleSessionClearEmpty(client *wsClient, req wsRequest) {
 			os.Remove(metaPath)
 		}
 	}
-	client.send(wsResponse{Type: "session.clearEmpty", ID: req.ID, Payload: map[string]string{}})
+	w.SendResponse(wsResponse{Type: "session.clearEmpty", ID: req.ID, Payload: map[string]string{}})
 }
 
 // handleExpertList returns experts from YAML definitions in the data dir.
-func (d *Daemon) handleExpertList(client *wsClient, req wsRequest) {
+func (d *Daemon) handleExpertList(w MessageWriter, req wsRequest) {
 	result := listExpertYAML(d.expertsDir())
-	client.send(wsResponse{Type: "expert.list", ID: req.ID, Payload: map[string]interface{}{"experts": result}})
+	w.SendResponse(wsResponse{Type: "expert.list", ID: req.ID, Payload: map[string]interface{}{"experts": result}})
 }
 
 // handleAgentList returns agents from markdown definitions in the data dir.
-func (d *Daemon) handleAgentList(client *wsClient, req wsRequest) {
+func (d *Daemon) handleAgentList(w MessageWriter, req wsRequest) {
 	result := listAgentMarkdown(d.agentsDir())
-	client.send(wsResponse{Type: "agent.list", ID: req.ID, Payload: map[string]interface{}{"agents": result}})
+	w.SendResponse(wsResponse{Type: "agent.list", ID: req.ID, Payload: map[string]interface{}{"agents": result}})
 }
 
 // handleTeamList returns teams from team.yaml files in the data dir.
-func (d *Daemon) handleTeamList(client *wsClient, req wsRequest) {
+func (d *Daemon) handleTeamList(w MessageWriter, req wsRequest) {
 	result := listTeamsFromDisk(d.teamsDir())
-	client.send(wsResponse{Type: "team.list", ID: req.ID, Payload: map[string]interface{}{"teams": result}})
+	w.SendResponse(wsResponse{Type: "team.list", ID: req.ID, Payload: map[string]interface{}{"teams": result}})
 }
 
 func (d *Daemon) agentsDir() string  { return filepath.Join(d.cfg.DataDir, "agents") }
@@ -1883,12 +1955,12 @@ func (d *Daemon) teamsDir() string   { return filepath.Join(d.cfg.DataDir, "team
 // handleSessionGetMessages returns all messages in a session (human/agent, content, thinking, timing).
 // handleSessionGetMessages returns session messages with consecutive
 // assistant messages merged into single turns (matching live-stream behaviour).
-func (d *Daemon) handleSessionGetMessages(client *wsClient, req wsRequest) {
+func (d *Daemon) handleSessionGetMessages(w MessageWriter, req wsRequest) {
 	var p struct{ ID string `json:"id"` }
 	json.Unmarshal(req.Payload, &p)
 	msgs, err := d.store.List(context.Background(), p.ID)
 	if err != nil {
-		client.send(wsResponse{Type: "error", ID: req.ID, Payload: map[string]string{"message": err.Error()}})
+		w.SendResponse(wsResponse{Type: "error", ID: req.ID, Payload: map[string]string{"message": err.Error()}})
 		return
 	}
 
@@ -1984,7 +2056,7 @@ func (d *Daemon) handleSessionGetMessages(client *wsClient, req wsRequest) {
 		// Assistant message: accumulate (skip duplicates from old sessions)
 		if m.Role == core.RoleAssistant {
 			text := core.MessagePlainText(m)
-			// Thinking-only message — standalone entry like TUI.
+			// Thinking-only message �?standalone entry like TUI.
 			// Skip if duplicate: scan past tool entries to find last non-tool thinking.
 			if text == "" && len(m.ToolCalls) == 0 && m.Reasoning != "" {
 				dup := false
@@ -2057,7 +2129,7 @@ func (d *Daemon) handleSessionGetMessages(client *wsClient, req wsRequest) {
 	}
 	flushAcc()
 
-	client.send(wsResponse{Type: "session.getMessages", ID: req.ID, Payload: map[string]interface{}{"messages": result}})
+	w.SendResponse(wsResponse{Type: "session.getMessages", ID: req.ID, Payload: map[string]interface{}{"messages": result}})
 }
 
 // broadcast sends a push message to all connected WebSocket clients.
@@ -2079,7 +2151,7 @@ func (c *wsClient) send(msg interface{}) {
 
 // resolveAPIKey reads the DeepSeek API key from:
 //   1. DEEPSEEK_API_KEY environment variable (preferred)
-//   2. {dataDir}/credentials.json → deepseek_api_key field
+//   2. {dataDir}/credentials.json �?deepseek_api_key field
 // Returns empty string if neither is set.
 func resolveAPIKey(dataDir string) string {
 	if key := os.Getenv("DEEPSEEK_API_KEY"); key != "" {
@@ -2176,15 +2248,15 @@ func listAgentMarkdown(dir string) []map[string]interface{} {
 // summarizeToolInput returns a short human-readable summary of a tool call's JSON input.
 //
 // Each tool gets a custom extraction:
-//   - shell_run      → the command string
-//   - read_file/write/edit → the file path
-//   - grep           → the pattern
-//   - web_search     → the query
-//   - web_fetch      → the URL
-//   - spawn_subagent → "role: task summary"
-//   - parallel_reason → "N prompts"
-//   - multi_edit     → "file (N edits)"
-//   - empty/unknown  → the original input or tool name
+//   - shell_run      �?the command string
+//   - read_file/write/edit �?the file path
+//   - grep           �?the pattern
+//   - web_search     �?the query
+//   - web_fetch      �?the URL
+//   - spawn_subagent �?"role: task summary"
+//   - parallel_reason �?"N prompts"
+//   - multi_edit     �?"file (N edits)"
+//   - empty/unknown  �?the original input or tool name
 //
 // This is the value sent as ToolInput in chat.stream tool_call events.
 func toolLabel(name string) string {
@@ -2357,4 +2429,51 @@ func listTeamsFromDisk(dir string) []map[string]interface{} {
 		})
 	}
 	return result
+}
+
+func parseCSVList(raw string) []string {
+	parts := strings.Split(raw, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+func loadHookStates(dataDir, workspaceRoot string) (agent.HookStates, error) {
+	path := filepath.Join(dataDir, "hooks", plugins.WorkspaceHash(workspaceRoot)+".json")
+	b, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return agent.HookStates{}, nil
+		}
+		return nil, err
+	}
+	var raw struct {
+		Hooks agent.HookStates `json:"hooks"`
+	}
+	if err := json.Unmarshal(b, &raw); err != nil {
+		return nil, err
+	}
+	return raw.Hooks, nil
+}
+
+func mergePluginMCPServers(cfg *whalemcp.Config, servers map[string]whalemcp.ServerConfig) {
+	if cfg == nil || len(servers) == 0 {
+		return
+	}
+	if cfg.Servers == nil {
+		cfg.Servers = map[string]whalemcp.ServerConfig{}
+	}
+	for name, srv := range servers {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		srv.Name = name
+		cfg.Servers[name] = srv
+	}
 }
