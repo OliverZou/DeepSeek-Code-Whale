@@ -36,17 +36,19 @@ func newDaemonStartCmd() *cobra.Command {
 	var port int
 	var workdir string
 	var stdio bool
+	var sessionID string
 
 	c := &cobra.Command{
 		Use:   "start",
 		Short: "Start the Whale daemon",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runDaemonStart(cmd, port, workdir, stdio)
+			return runDaemonStart(cmd, port, workdir, stdio, sessionID)
 		},
 	}
 	c.Flags().IntVar(&port, "port", defaultDaemonPort, "WebSocket listen port")
 	c.Flags().StringVar(&workdir, "workdir", "", "Working directory (default: data dir)")
 	c.Flags().BoolVar(&stdio, "stdio", false, "Run in stdio mode (read stdin, write stdout JSONL)")
+	c.Flags().StringVar(&sessionID, "session-id", "", "Resume an existing session (stdio mode only)")
 	return c
 }
 
@@ -74,7 +76,7 @@ func newDaemonStatusCmd() *cobra.Command {
 // start
 // ---------------------------------------------------------------------------
 
-func runDaemonStart(cmd *cobra.Command, port int, workdir string, stdio bool) error {
+func runDaemonStart(cmd *cobra.Command, port int, workdir string, stdio bool, sessionID string) error {
 	dataDir := store.DefaultDataDir()
 	if workdir == "" {
 		workdir = dataDir
@@ -104,7 +106,7 @@ func runDaemonStart(cmd *cobra.Command, port int, workdir string, stdio bool) er
 	}
 
 	if stdio {
-		return srv.RunStdio()
+		return srv.RunStdioWithSession(sessionID)
 	}
 
 	// PID file check.

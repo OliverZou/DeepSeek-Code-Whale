@@ -33,14 +33,20 @@ func (s *stdioWriter) Push(p wsPush) error {
 	return s.enc.Encode(p)
 }
 
-// RunStdio runs the daemon in stdio mode: reads JSON requests from stdin,
-// writes JSON responses/pushes to stdout. Blocks until stdin EOF or
-// a "shutdown" request is received.
+// RunStdio runs the daemon in stdio mode with a new session.
 func (d *Daemon) RunStdio() error {
+	return d.RunStdioWithSession("")
+}
+
+// RunStdioWithSession runs the daemon in stdio mode. If sessionID is non-empty,
+// the daemon will resume that existing session; otherwise a new one is created.
+func (d *Daemon) RunStdioWithSession(sessionID string) error {
 	sw := newStdioWriter(os.Stdout)
 	d.stdioWriter = sw
 
-	sessionID := uuid.New().String()
+	if sessionID == "" {
+		sessionID = uuid.New().String()
+	}
 
 	sw.Push(wsPush{
 		Type: "ready",
