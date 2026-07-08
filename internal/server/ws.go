@@ -172,7 +172,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -180,7 +179,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/gorilla/websocket"
 	"gopkg.in/yaml.v3"
 
 	"github.com/usewhale/whale/internal/agent"
@@ -191,7 +189,9 @@ import (
 	"github.com/usewhale/whale/internal/plugins"
 	"github.com/usewhale/whale/internal/policy"
 	"github.com/usewhale/whale/internal/session"
+	"github.com/usewhale/whale/internal/skills"
 	"github.com/usewhale/whale/internal/store"
+	"github.com/usewhale/whale/internal/tasks"
 	"github.com/usewhale/whale/internal/team_engine"
 	teamlog "github.com/usewhale/whale/internal/team_engine/log"
 	"github.com/usewhale/whale/internal/tools"
@@ -202,12 +202,7 @@ import (
 // =========================================================================
 
 // DaemonConfig holds daemon startup parameters.
-//
-// Port: WebSocket listen port (default 18900).
-// DataDir: whale data directory (~/.whale) for sessions, creds, agents, etc.
-// WorkDir: working directory for team engine tasks and whiteboard.
 type DaemonConfig struct {
-	Port    int
 	DataDir string
 	WorkDir string
 }
@@ -423,18 +418,7 @@ type userInputResponsePayload struct {
 // Daemon
 // =========================================================================
 
-// Daemon is the WebSocket server that hosts the Agent and TeamEngine.
-//
-// Create with NewDaemon(), start with ListenAndServe(). A single Daemon
-// handles multiple concurrent WebSocket clients. All clients receive the
-// same broadcast pushes (task_state_changed, chat.stream).
-//
-// Lifecycle:
-//
-//	eng := team_engine.New(...)
-//	d, _ := server.NewDaemon(eng, server.DaemonConfig{Port: 18900, ...})
-//	go d.ListenAndServe()  // blocks
-//	defer d.Close()        // graceful shutdown
+// Daemon hosts the Agent and TeamEngine, communicating via stdio.
 type Daemon struct {
 	cfg    DaemonConfig
 	engine *team_engine.TeamEngine
@@ -445,10 +429,6 @@ type Daemon struct {
 	sessionsDir string
 
 	whaleCfg app.Config
-
-	httpServer *http.Server
-	clients    map[string]*wsClient
-	mu         sync.Mutex
 
 	permissionPolicy policy.RulePolicy
 	hookRunner       *agent.HookRunner
@@ -469,6 +449,9 @@ type Daemon struct {
 	// MCP manager for mcp.list / mcp.setEnabled.
 	mcpManager *whalemcp.Manager
 
+	// agentLibrary resolves .md agent definitions for expert skill injection.
+	agentLibrary *tasks.AgentDefinitionLibrary
+
 	// stdioWriter holds the single writer when running in --stdio mode.
 	// nil when running in WS mode.
 	stdioWriter *stdioWriter
@@ -481,38 +464,13 @@ type userInputResp struct {
 	Cancelled bool
 }
 
-type wsClient struct {
-	id      string
-	conn    *websocket.Conn
-	writeMu sync.Mutex
-	daemon  *Daemon
-}
-
-func (c *wsClient) SendResponse(resp wsResponse) error {
-	c.send(resp)
-	return nil
-}
-
-func (c *wsClient) Push(p wsPush) error {
-	c.send(p)
-	return nil
-}
-
-var wsUpgrader = websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
 
 // =========================================================================
 // NewDaemon
 // =========================================================================
 
 // NewDaemon creates a daemon with TeamEngine, Agent, and all tools.
-//
-// It initializes:
-//   - Team engine logging (team_tasks/logs/)
-//   - Session store (JSONL)
-//   - Tool registry (all built-in tools)
-//   - Whale config (model, effort, etc.)
-//   - Team engine event �?WebSocket broadcast bridge
-//   - HTTP mux with /ws and /health endpoints
+
 func NewDaemon(eng *team_engine.TeamEngine, cfg DaemonConfig) (*Daemon, error) {
 	if err := os.MkdirAll(cfg.DataDir, 0755); err != nil {
 		return nil, fmt.Errorf("create data dir: %w", err)
@@ -584,7 +542,8 @@ func NewDaemon(eng *team_engine.TeamEngine, cfg DaemonConfig) (*Daemon, error) {
 		store:            sessStore,
 		sessionsDir:      sessionsDir,
 		whaleCfg:         whaleCfg,
-		clients:          make(map[string]*wsClient),
+		agentLibrary:     tasks.NewAgentDefinitionLibrary(cfg.WorkDir),
+
 		pendingApproval:  make(map[string]chan policy.ApprovalDecision),
 		pendingUserInput: make(map[string]chan userInputResp),
 		pendingCancels:   make(map[string]context.CancelFunc),
@@ -595,11 +554,11 @@ func NewDaemon(eng *team_engine.TeamEngine, cfg DaemonConfig) (*Daemon, error) {
 	}
 
 	// Team engine events �?broadcast.
-	eng.OnEvent(func(evt team_engine.TaskEvent) {
+		eng.OnEvent(func(evt team_engine.TaskEvent) {
 		switch evt.Type {
 		case team_engine.EventStateChanged, team_engine.EventTaskDone,
 			team_engine.EventWorkerOutput, team_engine.EventVerifierResult:
-			d.broadcast(wsPush{
+			d.pushIfStdio(wsPush{
 				Type: "task.state_changed",
 				Payload: map[string]interface{}{
 					"task_id":   evt.TaskID,
@@ -611,7 +570,7 @@ func NewDaemon(eng *team_engine.TeamEngine, cfg DaemonConfig) (*Daemon, error) {
 				},
 			})
 		case team_engine.EventLeaderLog:
-			d.broadcast(wsPush{
+			d.pushIfStdio(wsPush{
 				Type: "task.log",
 				Payload: map[string]interface{}{
 					"task_id": evt.TaskID,
@@ -619,7 +578,7 @@ func NewDaemon(eng *team_engine.TeamEngine, cfg DaemonConfig) (*Daemon, error) {
 				},
 			})
 		case team_engine.EventAgentLog:
-			d.broadcast(wsPush{
+			d.pushIfStdio(wsPush{
 				Type: "task.log",
 				Payload: map[string]interface{}{
 					"task_id": evt.TaskID,
@@ -629,80 +588,53 @@ func NewDaemon(eng *team_engine.TeamEngine, cfg DaemonConfig) (*Daemon, error) {
 		}
 	})
 
-	// HTTP mux.
-	mux := http.NewServeMux()
-	mux.HandleFunc("/ws", d.handleWS)
-	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("ok"))
-	})
-
-	d.httpServer = &http.Server{
-		Addr:    fmt.Sprintf(":%d", cfg.Port),
-		Handler: mux,
-	}
-
 	return d, nil
-}
-
-// ListenAndServe starts the HTTP server (blocking).
-func (d *Daemon) ListenAndServe() error {
-	return d.httpServer.ListenAndServe()
 }
 
 // Close shuts down the daemon gracefully.
 func (d *Daemon) Close() {
-	if d.httpServer != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		d.httpServer.Shutdown(ctx)
-	}
 	d.wg.Wait()
 }
 
 // =========================================================================
-// WebSocket handler
-// =========================================================================
-
-func (d *Daemon) handleWS(w http.ResponseWriter, r *http.Request) {
-	conn, err := wsUpgrader.Upgrade(w, r, nil)
-	if err != nil {
-		log.Printf("daemon: ws upgrade: %v", err)
-		return
-	}
-
-	client := &wsClient{
-		id:     uuid.New().String(),
-		conn:   conn,
-		daemon: d,
-	}
-
-	d.mu.Lock()
-	d.clients[client.id] = client
-	d.mu.Unlock()
-
-	defer func() {
-		d.mu.Lock()
-		delete(d.clients, client.id)
-		d.mu.Unlock()
-		conn.Close()
-	}()
-
-	// Read loop.
-	for {
-		_, raw, err := conn.ReadMessage()
-		if err != nil {
-			break
-		}
-		var req wsRequest
-		if err := json.Unmarshal(raw, &req); err != nil {
-			client.SendResponse(wsResponse{Type: "error", ID: req.ID, Payload: map[string]string{"message": "invalid json"}})
-			continue
-		}
-		d.handleMessage(client, req)
-	}
-}
-
+// Request dispatch
+//
+// Interface usage status (as of 2025-07):
+//   Pod (whale-pod) uses stdio mode — each session is a separate `whale daemon start --stdio`
+//   process. It calls these interfaces via stdin/stdout JSONL, NOT via WebSocket.
+//
+//   ✅ Used by Pod (stdio)  |  ❌ Not used by Pod  |  ⚠️ Used only by old WS dashboard
+//
+//   ✅ chat                    — start/continue a chat session
+//   ✅ chat.cancel             — abort in-flight chat
+//   ✅ session.listByAgent     — list sessions for an agent
+//   ✅ session.delete          — delete a session
+//   ✅ session.deleteAll       — delete all sessions for an agent
+//   ✅ session.clearEmpty      — remove empty sessions
+//   ✅ session.getMessages     — retrieve chat history
+//   ✅ session.getToolResult   — lazy-load tool output
+//   ✅ task.create             — create a team task
+//   ✅ task.list               — list tasks (via master daemon)
+//   ✅ task.cancel             — cancel a task
+//   ✅ task.delete             — delete a task
+//   ✅ task.subtasks           — get subtasks for a master task
+//   ✅ task.dialogue           — get agent dialogue
+//   ✅ task.plan               — get leader plan
+//   ✅ task.feedback           — send feedback to a subtask
+//   ✅ task.confirm            — approve/deny a task
+//   ✅ task.confirmations      — list pending confirmations
+//   ✅ task.updateGoal         — rename a task
+//   ✅ agent.list              — list all agents (experts + teams)
+//   ✅ expert.list             — list experts only
+//   ✅ team.list               — list teams only
+//   ✅ mcp.setEnabled          — enable/disable MCP server
+//   ✅ mcp.setEnv              — set MCP server env vars
+//   ✅ approval.decision       — respond to approval request
+//   ✅ user_input.response     — respond to user input request
+//   ✅ team.chat.send          — send team chat message
+//   ✅ team.chat.messages      — get team chat history
+//   ❌ session.list            — not called by Pod (uses listByAgent instead)
+//   ⚠️ file.read              — not used by Pod; was for old WS dashboard file preview
 func (d *Daemon) handleMessage(w MessageWriter, req wsRequest) {
 	switch req.Type {
 	case "chat":
@@ -835,12 +767,44 @@ func (d *Daemon) handleChat(w MessageWriter, req wsRequest) {
 
 	chatStart := time.Now()
 
+	workspaceRoot := d.cfg.WorkDir
+	if p.WorkDir != "" {
+		workspaceRoot = p.WorkDir
+	}
+
 	var pluginBlocks []string
 	if d.pluginManager != nil {
 		pluginBlocks = d.pluginManager.StartupBlocks(context.Background())
 	}
 
-	ag := agent.NewAgentWithRegistry(prov, d.store, d.toolReg,
+	// Resolve agent definition from p.Agent (e.g. "expert:code-reviewer").
+	var agentDef *tasks.AgentDefinition
+	var agentExtraSkills []*skills.Skill
+	agentName := p.Agent
+	if strings.HasPrefix(agentName, "expert:") {
+		agentName = strings.TrimPrefix(agentName, "expert:")
+	} else if strings.HasPrefix(agentName, "team:") {
+		agentName = strings.TrimPrefix(agentName, "team:")
+	}
+	if agentName != "" && d.agentLibrary != nil {
+		if def, ok, err := d.agentLibrary.Resolve(agentName); err == nil && ok {
+			agentDef = &def
+			if len(def.Skills) > 0 {
+				allSkills := skills.Discover(skills.DefaultRoots(workspaceRoot))
+				skillMap := make(map[string]*skills.Skill, len(allSkills))
+				for _, s := range allSkills {
+					skillMap[s.Name] = s
+				}
+				for _, name := range def.Skills {
+					if s, found := skillMap[name]; found {
+						agentExtraSkills = append(agentExtraSkills, s)
+					}
+				}
+			}
+		}
+	}
+
+	agentOpts := []agent.AgentOption{
 		agent.WithSessionMode(session.ModeAgent),
 		agent.WithSessionsDir(d.sessionsDir),
 		agent.WithBudgetWarningUSD(d.whaleCfg.BudgetWarningUSD),
@@ -854,14 +818,29 @@ func (d *Daemon) handleChat(w MessageWriter, req wsRequest) {
 		agent.WithHookRunner(d.hookRunner),
 		agent.WithExtraSystemBlocks(pluginBlocks...),
 		agent.WithDynamicSystemBlocksForTurn(nil),
-		agent.WithProjectMemory(d.whaleCfg.MemoryEnabled, d.whaleCfg.MemoryMaxChars, parseCSVList(d.whaleCfg.MemoryFileOrder), d.cfg.WorkDir),
+		agent.WithProjectMemory(d.whaleCfg.MemoryEnabled, d.whaleCfg.MemoryMaxChars, parseCSVList(d.whaleCfg.MemoryFileOrder), workspaceRoot),
 		agent.WithWorktreeContext("", ""),
 		agent.WithMaxParallelSubagents(d.whaleCfg.MaxParallelSubagents),
 		agent.WithDisabledSkills(d.whaleCfg.SkillsDisabled),
-		agent.WithExtraSkills(d.pluginManager.Skills()),
 		agent.WithApprovalFunc(d.makeApprovalFunc(w)),
 		agent.WithUserInputFunc(d.makeUserInputFunc(w)),
-	)
+	}
+	if agentDef != nil {
+		if agentDef.Prompt != "" {
+			agentOpts = append(agentOpts, agent.WithExtraSystemBlocks(agentDef.Prompt))
+		}
+		if agentDef.MaxTurns > 0 {
+			agentOpts = append(agentOpts, agent.WithMaxTurns(agentDef.MaxTurns))
+		}
+	}
+	// Merge plugin skills + agent-specific skills into a single WithExtraSkills call.
+	allExtraSkills := append([]*skills.Skill{}, d.pluginManager.Skills()...)
+	allExtraSkills = append(allExtraSkills, agentExtraSkills...)
+	if len(allExtraSkills) > 0 {
+		agentOpts = append(agentOpts, agent.WithExtraSkills(allExtraSkills))
+	}
+
+	ag := agent.NewAgentWithRegistry(prov, d.store, d.toolReg, agentOpts...)
 
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -1737,7 +1716,7 @@ func (d *Daemon) handleTeamChatSend(w MessageWriter, req wsRequest) {
 		"content":         p.Content,
 		"timestamp":       time.Now().UTC().Format(time.RFC3339),
 	}
-	d.broadcast(wsPush{Type: "team.chat.message", Payload: msg})
+	d.pushIfStdio(wsPush{Type: "team.chat.message", Payload: msg})
 
 	w.SendResponse(wsResponse{Type: "team.chat.sent", ID: req.ID, Payload: msg})
 }
@@ -2134,19 +2113,10 @@ func (d *Daemon) handleSessionGetMessages(w MessageWriter, req wsRequest) {
 
 // broadcast sends a push message to all connected WebSocket clients.
 // Non-blocking: slow clients may miss messages but won't stall the server.
-func (d *Daemon) broadcast(msg wsPush) {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	for _, c := range d.clients {
-		c.send(msg)
+func (d *Daemon) pushIfStdio(msg wsPush) {
+	if d.stdioWriter != nil {
+		d.stdioWriter.Push(msg)
 	}
-}
-
-func (c *wsClient) send(msg interface{}) {
-	c.writeMu.Lock()
-	defer c.writeMu.Unlock()
-	c.conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
-	c.conn.WriteJSON(msg)
 }
 
 // resolveAPIKey reads the DeepSeek API key from:
@@ -2350,6 +2320,8 @@ func listExpertYAML(dir string) []map[string]interface{} {
 			Experts []struct {
 				Name        string        `yaml:"name"`
 				NameEn      string        `yaml:"name_en"`
+				Agent       string        `yaml:"agent"`
+				Icon        string        `yaml:"icon"`
 				Description string        `yaml:"description"`
 				Skills      []interface{} `yaml:"skills"`
 			} `yaml:"experts"`
@@ -2377,6 +2349,7 @@ func listExpertYAML(dir string) []map[string]interface{} {
 			}
 			result = append(result, map[string]interface{}{
 			"name": name, "role": exp.NameEn,
+			"agent":      exp.Agent,
 			"description": exp.Description,
 			"category":    ef.Domain,
 			"skills":      skills,
