@@ -4,34 +4,39 @@
 
 Team Engine 实现了**递归的 Plan → Work → Verify 协作模型**。每个任务环节都满足 Plan → Work → Verify 的闭环。Plan 是主动的规划者——理解目标、规划方案、分解任务、分配工作。这个 loop 是递归的——总任务和子任务遵循同一个模式，只是规划者、执行者和验证者的身份随任务性质变化。
 
-### 与 Team 对话 = 通过 Team Engine 编排任务
+### 有产出物 = 任务 = 走 Team Engine
 
-当用户在 Pod 中选择一个专家团（team）并发起对话时，**必须通过 Team Engine 编排任务**，而不是让 leader agent 自行用 `spawn_subagent` 调度成员。
+**核心判断标准：有用户级产出物的请求就是任务，统一走 Team Engine 编排。** 与对话对象是 expert 还是 team 无关。
 
-**架构规则**：
+| 场景 | 是否创建任务 | Team Engine 配置 |
+|------|------------|-----------------|
+| 简单问答（无产出物） | 否，direct chat | — |
+| Expert 执行任务（有产出物） | 是 | `mode: agent`，单 Worker，无 Verifier（仅 Checker） |
+| Team 快捷模式 | 是 | `mode: team`，Worker + Verifier，2 轮 |
+| Team 标准 SOP | 是 | `mode: team`，多 Worker + Verifier，完整轮次 |
 
-| 对话对象 | 编排方式 | 说明 |
-|---------|---------|------|
-| Expert（专家） | Direct Chat + prompt/skills 注入 | 单 agent 直接工作 |
-| Team（专家团） | Team Engine 任务编排 | Leader 通过 Team Engine 分解和调度 |
+**为什么统一走 Team Engine**：
 
-**为什么 Team 对话必须走 Team Engine**：
-
-1. **任务可观测**：Team Engine 的 `task.state_changed` 事件让 Pod 的 TaskPanel 能实时展示子任务树、进度、状态
-2. **状态持久化**：Team Engine 的 `FileTaskStore` 保证任务状态可恢复（暂停/继续）
-3. **协作闭环**：Worker-Verifier 轮次、Push Back 机制、Checker 自动检查——这些都是 Team Engine 的核心能力
-4. **事件一致**：所有 team 任务走同一套事件通道，前端只需一套渲染逻辑
+1. **一套任务系统**：前端只有一个 TaskPanel，一套事件通道（`task.state_changed`），一套状态持久化（`FileTaskStore`）
+2. **Expert 任务也是任务**：有产出物的工作应该可观测、可追踪、可暂停恢复——不因执行者是单 agent 就丢失这些能力
+3. **渐进复杂度**：从单 Worker 到多 Worker+Verifier 是配置差异，不是架构差异。Expert 任务 = Team 任务的最简配置
+4. **事件一致**：所有任务走同一套事件通道，前端只需一套渲染逻辑
 
 **实现方式**：
 
-- Leader agent 在 direct chat 中接收用户需求
-- Leader 判断工作流类型（快捷模式 / BugFix / 标准 SOP / 部分工作流）
-- Leader 通过 `team_create` 工具调用 `d.engine.CreateTask()` 创建 Team Engine 任务
-- Team Engine 接管后续编排：分配 Worker、调度 Verifier、管理轮次
+- Agent（expert 或 team leader）在 direct chat 中接收用户请求
+- Agent 判断请求是否需要产出物：是 → 创建 Team Engine 任务；否 → 直接回答
+- Agent 通过 `team_create` 工具调用 `d.engine.CreateTask()` 创建任务
+- Team Engine 接管后续编排：分配 Worker、调度 Verifier（如有）、管理轮次
 - Team Engine 事件通过 `task.state_changed` 推送到 Pod
-- Leader 监控 Team Engine 任务进度，向用户汇报
+- Agent 监控 Team Engine 任务进度，向用户汇报
 
-**快捷模式也是 Team Engine 任务**，只是配置不同（角色少、轮次少），不是绕过 Team Engine。
+**Expert 任务的 Team Engine 配置**：
+
+- `mode: agent`：单 Worker 执行，无 Verifier 角色
+- Checker 仍然自动运行（基础完整性检查）
+- 任务生命周期与 team 任务一致：pending → assigned → producing → produced → checking → checked → done
+- 产出物通过 `task.subtasks` 的 `output` 字段呈现
 
 ### 核心设计哲学
 
