@@ -795,6 +795,13 @@ func (d *Daemon) handleChat(w MessageWriter, req wsRequest) {
 			resolvedName = mapped
 			if def, ok, err := d.agentLibrary.Resolve(mapped); err == nil && ok {
 				agentDef = &def
+			} else if idx := strings.LastIndex(mapped, "/"); idx >= 0 {
+				// mapped may be a path like "workbuddy/技术工程/gstack-lead" — try the leaf name.
+				leaf := mapped[idx+1:]
+				if def, ok, err := d.agentLibrary.Resolve(leaf); err == nil && ok {
+					agentDef = &def
+					resolvedName = leaf
+				}
 			}
 		}
 		if agentDef != nil && len(agentDef.Skills) > 0 {
