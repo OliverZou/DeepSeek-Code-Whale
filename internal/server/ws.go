@@ -781,26 +781,42 @@ func (d *Daemon) handleChat(w MessageWriter, req wsRequest) {
 	var agentDef *tasks.AgentDefinition
 	var agentExtraSkills []*skills.Skill
 	agentName := p.Agent
+	isTeam := strings.HasPrefix(agentName, "team:")
 	if strings.HasPrefix(agentName, "expert:") {
 		agentName = strings.TrimPrefix(agentName, "expert:")
-	} else if strings.HasPrefix(agentName, "team:") {
+	} else if isTeam {
 		agentName = strings.TrimPrefix(agentName, "team:")
 	}
 	if agentName != "" && d.agentLibrary != nil {
-		// If direct resolve fails (e.g. Chinese name), try expert YAML → agent field mapping.
 		resolvedName := agentName
 		if def, ok, err := d.agentLibrary.Resolve(agentName); err == nil && ok {
 			agentDef = &def
-		} else if mapped := resolveExpertAgentField(d.expertsDir(), agentName); mapped != "" {
-			resolvedName = mapped
-			if def, ok, err := d.agentLibrary.Resolve(mapped); err == nil && ok {
-				agentDef = &def
-			} else if idx := strings.LastIndex(mapped, "/"); idx >= 0 {
-				// mapped may be a path like "workbuddy/技术工程/gstack-lead" — try the leaf name.
-				leaf := mapped[idx+1:]
-				if def, ok, err := d.agentLibrary.Resolve(leaf); err == nil && ok {
+		} else if !isTeam {
+			// Expert: try expert YAML → agent field mapping.
+			if mapped := resolveExpertAgentField(d.expertsDir(), agentName); mapped != "" {
+				resolvedName = mapped
+				if def, ok, err := d.agentLibrary.Resolve(mapped); err == nil && ok {
 					agentDef = &def
-					resolvedName = leaf
+				} else if idx := strings.LastIndex(mapped, "/"); idx >= 0 {
+					leaf := mapped[idx+1:]
+					if def, ok, err := d.agentLibrary.Resolve(leaf); err == nil && ok {
+						agentDef = &def
+						resolvedName = leaf
+					}
+				}
+			}
+		} else {
+			// Team: resolve leader role from team.yaml → leader.role → .md definition.
+			if leaderRole := resolveTeamLeaderRole(d.teamsDir(), agentName); leaderRole != "" {
+				resolvedName = leaderRole
+				if def, ok, err := d.agentLibrary.Resolve(leaderRole); err == nil && ok {
+					agentDef = &def
+				} else if idx := strings.LastIndex(leaderRole, "/"); idx >= 0 {
+					leaf := leaderRole[idx+1:]
+					if def, ok, err := d.agentLibrary.Resolve(leaf); err == nil && ok {
+						agentDef = &def
+						resolvedName = leaf
+					}
 				}
 			}
 		}
@@ -822,6 +838,7 @@ func (d *Daemon) handleChat(w MessageWriter, req wsRequest) {
 			log.Printf("[handleChat] could not resolve agent %q (mapped=%q)", agentName, resolvedName)
 		}
 	}
+
 
 	agentOpts := []agent.AgentOption{
 		agent.WithSessionMode(session.ModeAgent),
@@ -2509,3 +2526,41 @@ func resolveExpertAgentField(dir string, expertName string) string {
 	}
 	return ""
 }
+
+// resolveTeamLeaderRole looks up a team by label/name in team.yaml files
+// and returns the value of its leader.role field (e.g. "software-team-lead").
+// Returns "" if not found.
+func resolveTeamLeaderRole(dir string, teamName string) string {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return ""
+	}
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(dir, e.Name(), "team.yaml"))
+		if err != nil {
+			continue
+		}
+		var raw struct {
+			Name  string `yaml:"name"`
+			Label string `yaml:"label"`
+			Leader struct {
+				Role string `yaml:"role"`
+			} `yaml:"leader"`
+		}
+		if yaml.Unmarshal(data, &raw) != nil {
+			continue
+		}
+		label := raw.Label
+		if label == "" {
+			label = raw.Name
+		}
+		if label == teamName || raw.Name == teamName || e.Name() == teamName {
+			return raw.Leader.Role
+		}
+	}
+	return ""
+}
+
