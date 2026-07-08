@@ -787,20 +787,32 @@ func (d *Daemon) handleChat(w MessageWriter, req wsRequest) {
 		agentName = strings.TrimPrefix(agentName, "team:")
 	}
 	if agentName != "" && d.agentLibrary != nil {
+		// If direct resolve fails (e.g. Chinese name), try expert YAML → agent field mapping.
+		resolvedName := agentName
 		if def, ok, err := d.agentLibrary.Resolve(agentName); err == nil && ok {
 			agentDef = &def
-			if len(def.Skills) > 0 {
-				allSkills := skills.Discover(skills.DefaultRoots(workspaceRoot))
-				skillMap := make(map[string]*skills.Skill, len(allSkills))
-				for _, s := range allSkills {
-					skillMap[s.Name] = s
-				}
-				for _, name := range def.Skills {
-					if s, found := skillMap[name]; found {
-						agentExtraSkills = append(agentExtraSkills, s)
-					}
+		} else if mapped := resolveExpertAgentField(d.expertsDir(), agentName); mapped != "" {
+			resolvedName = mapped
+			if def, ok, err := d.agentLibrary.Resolve(mapped); err == nil && ok {
+				agentDef = &def
+			}
+		}
+		if agentDef != nil && len(agentDef.Skills) > 0 {
+			allSkills := skills.Discover(skills.DefaultRoots(workspaceRoot))
+			skillMap := make(map[string]*skills.Skill, len(allSkills))
+			for _, s := range allSkills {
+				skillMap[s.Name] = s
+			}
+			for _, name := range agentDef.Skills {
+				if s, found := skillMap[name]; found {
+					agentExtraSkills = append(agentExtraSkills, s)
 				}
 			}
+		}
+		if agentDef != nil {
+			log.Printf("[handleChat] resolved agent %q → definition %q (prompt=%d bytes, skills=%v)", agentName, resolvedName, len(agentDef.Prompt), agentDef.Skills)
+		} else {
+			log.Printf("[handleChat] could not resolve agent %q (mapped=%q)", agentName, resolvedName)
 		}
 	}
 
@@ -2449,4 +2461,44 @@ func mergePluginMCPServers(cfg *whalemcp.Config, servers map[string]whalemcp.Ser
 		srv.Name = name
 		cfg.Servers[name] = srv
 	}
+}
+
+// resolveExpertAgentField looks up an expert by display name in expert YAML files
+// and returns the value of its "agent" field (e.g. "equity-research-expert").
+// Returns "" if not found.
+func resolveExpertAgentField(dir string, expertName string) string {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return ""
+	}
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".yaml") {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(dir, e.Name()))
+		if err != nil {
+			continue
+		}
+		var ef struct {
+			Experts []struct {
+				Name   string `yaml:"name"`
+				NameEn string `yaml:"name_en"`
+				Agent  string `yaml:"agent"`
+			} `yaml:"experts"`
+		}
+		if yaml.Unmarshal(data, &ef) != nil {
+			continue
+		}
+		for _, exp := range ef.Experts {
+			if exp.Name == expertName || exp.NameEn == expertName || exp.Agent == expertName {
+				if exp.Agent != "" {
+					return exp.Agent
+				}
+				if exp.NameEn != "" {
+					return exp.NameEn
+				}
+			}
+		}
+	}
+	return ""
 }
