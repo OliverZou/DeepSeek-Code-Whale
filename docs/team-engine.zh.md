@@ -38,6 +38,27 @@ Team Engine 实现了**递归的 Plan → Work → Verify 协作模型**。每�
 - 任务生命周期与 team 任务一致：pending → assigned → producing → produced → checking → checked → done
 - 产出物通过 `task.subtasks` 的 `output` 字段呈现
 
+### Expert 与 Team Leader 的任务创建权限
+
+**Expert 只能创建 `mode: agent` 任务，不能创建 `mode: team` 任务。**
+
+| Agent 角色 | `mode: agent` 任务 | `mode: team` 任务 |
+|-----------|-------------------|-------------------|
+| Expert | ✅ 可以创建 | ❌ 不可以 |
+| Team Leader | ✅ 可以（快捷模式单 Worker） | ✅ 可以（标准 SOP 多 Worker） |
+
+**理由**：
+
+- Expert 是单一角色专家，职责是**执行或建议**，不是编排
+- Team 任务需要 Leader 角色来编排多 agent 协作，Expert 不是 Leader
+- 概念边界清晰：Expert = 执行者，Team Leader = 编排者
+
+**Expert 遇到超出自身能力的任务时**，应建议用户使用 Team，而非自行创建 Team 任务。例如：
+
+> "这个需求涉及架构设计和测试验证，建议使用软件开发团队来执行。"
+
+这与现实世界一致：专科医生不会自己组建医疗团队，而是推荐患者去多学科会诊。
+
 ### 核心设计哲学
 
 **Team Engine 是委托系统，不是工作流引擎。**
