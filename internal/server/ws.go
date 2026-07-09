@@ -1871,21 +1871,27 @@ func (d *Daemon) handleSessionListByAgent(w MessageWriter, req wsRequest) {
 	if p.Limit <= 0 {
 		p.Limit = 20
 	}
-	sessions, _ := session.ListSessions(d.sessionsDir, p.Offset+p.Limit)
-	result := make([]map[string]interface{}, 0)
-	count := 0
+	// Scan all sessions first, then filter by agent, then paginate.
+	// This avoids missing sessions that fall outside the scan window.
+	sessions, _ := session.ListSessions(d.sessionsDir, 0)
+	matched := make([]session.SessionSummary, 0)
 	for _, s := range sessions {
 		if s.Meta.Kind == "subagent" {
 			continue
 		}
-		// Always filter by agent �?empty string means "whale" sessions.
 		if s.Meta.Agent != p.Agent {
 			continue
 		}
-		count++
-		if count <= p.Offset {
-			continue
-		}
+		matched = append(matched, s)
+	}
+	total := len(matched)
+	end := p.Offset + p.Limit
+	if end > total {
+		end = total
+	}
+	result := make([]map[string]interface{}, 0, end-p.Offset)
+	for i := p.Offset; i < end; i++ {
+		s := matched[i]
 		goal := s.Meta.Title
 		if goal == "" {
 			goal = s.Conversation
@@ -1896,13 +1902,11 @@ func (d *Daemon) handleSessionListByAgent(w MessageWriter, req wsRequest) {
 			"status":         s.Meta.Status,
 			"created_at":     s.Meta.StartedAt,
 		})
-		if len(result) >= p.Limit {
-			break
-		}
 	}
-	hasMore := count > p.Offset+len(result)
+	hasMore := end < total
 	w.SendResponse(wsResponse{Type: "session.listByAgent", ID: req.ID, Payload: map[string]interface{}{"sessions": result, "has_more": hasMore}})
 }
+
 
 // handleSessionDelete removes a single session (JSONL + meta files).
 // removeSessionFiles deletes all files associated with a session ID.
