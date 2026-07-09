@@ -8,8 +8,8 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/usewhale/whale/internal/core"
 	"github.com/usewhale/whale/internal/bridge"
+	"github.com/usewhale/whale/internal/core"
 	"github.com/usewhale/whale/internal/team_engine"
 )
 
@@ -38,7 +38,7 @@ func (b *Toolset) newTeamEngine() (*team_engine.TeamEngine, error) {
 	dbPath, wbDir := b.teamEnginePaths()
 	// Shell spawner by default — independent OS processes.
 	spawner := team_engine.NewShellSubagentSpawner()
-	team_engine.SpawnerType("default", "shell", "", 0)
+	team_engine.LogSpawnerType("default", "shell", "", 0)
 	return team_engine.New(dbPath, wbDir, "", spawner)
 }
 
@@ -88,17 +88,22 @@ func (b *Toolset) AutoExecuteMasterTask(masterTaskID string) {
 			b.autoExecCancelMu.Unlock()
 		}()
 
-			// Forward events and sync state to dashboard during auto-resume.
-			if b.dashboardClient != nil {
-				var lastSync time.Time
-				eng.OnEvent(func(event team_engine.TaskEvent) { defer func() { if r := recover(); r != nil && true { team_engine.Log("sync", "event callback panic: %v", r) } }()
-					if (event.Type == team_engine.EventStateChanged || event.Type == team_engine.EventAgentLog) && time.Since(lastSync) > 2*time.Second {
-						lastSync = time.Now()
-						pushSyncState(eng, b.dashboardClient, b.root)
+		// Forward events and sync state to dashboard during auto-resume.
+		if b.dashboardClient != nil {
+			var lastSync time.Time
+			eng.OnEvent(func(event team_engine.TaskEvent) {
+				defer func() {
+					if r := recover(); r != nil && true {
+						team_engine.Log("sync", "event callback panic: %v", r)
 					}
-					b.dashboardClient.SendTaskEvent(bridge.TaskEvent{Type: bridge.TaskEventType(event.Type), TaskID: event.TaskID, Title: event.Title, Progress: event.Progress, NewState: event.NewState})
-				})
-			}
+				}()
+				if (event.Type == team_engine.EventStateChanged || event.Type == team_engine.EventAgentLog) && time.Since(lastSync) > 2*time.Second {
+					lastSync = time.Now()
+					pushSyncState(eng, b.dashboardClient, b.root)
+				}
+				b.dashboardClient.SendTaskEvent(bridge.TaskEvent{Type: bridge.TaskEventType(event.Type), TaskID: event.TaskID, Title: event.Title, Progress: event.Progress, NewState: event.NewState})
+			})
+		}
 
 		batches, err := eng.ResumeMasterTask(ctx, masterTaskID, mt.Goal, workdir)
 		if eng.Loggers != nil {
@@ -255,7 +260,12 @@ func (b *Toolset) runTeamPlan(ctx context.Context, call core.ToolCall, progress 
 	// Forward engine events to dashboard for real-time UI updates.
 	if b.dashboardClient != nil {
 		var lastSync time.Time
-		eng.OnEvent(func(event team_engine.TaskEvent) { defer func() { if r := recover(); r != nil && true { team_engine.Log("sync", "event callback panic: %v", r) } }()
+		eng.OnEvent(func(event team_engine.TaskEvent) {
+			defer func() {
+				if r := recover(); r != nil && true {
+					team_engine.Log("sync", "event callback panic: %v", r)
+				}
+			}()
 			// Throttled full sync (max 1 per 2s) after state changes.
 			if (event.Type == team_engine.EventStateChanged || event.Type == team_engine.EventAgentLog) && time.Since(lastSync) > 2*time.Second {
 				lastSync = time.Now()
@@ -272,7 +282,12 @@ func (b *Toolset) runTeamPlan(ctx context.Context, call core.ToolCall, progress 
 	// Throttled to at most 1 update per 500ms to avoid TUI flickering.
 	if progress != nil {
 		var lastProgress time.Time
-		eng.OnEvent(func(event team_engine.TaskEvent) { defer func() { if r := recover(); r != nil && true { team_engine.Log("sync", "event callback panic: %v", r) } }()
+		eng.OnEvent(func(event team_engine.TaskEvent) {
+			defer func() {
+				if r := recover(); r != nil && true {
+					team_engine.Log("sync", "event callback panic: %v", r)
+				}
+			}()
 			summary := ""
 			switch event.Type {
 			case team_engine.EventStateChanged:
@@ -300,133 +315,140 @@ func (b *Toolset) runTeamPlan(ctx context.Context, call core.ToolCall, progress 
 	}
 
 	// --- Phase 1: Create master task immediately so dashboard sees it ---
-			var masterTask *team_engine.MasterTask
-			var mtErr error
-			existing, _ := eng.Store.ListMasterTasks()
-			for _, mt := range existing {
-				if mt.Goal == args.Goal { masterTask = mt; break }
-			}
-				for _, mt := range existing { if mt != masterTask { _ = eng.DeleteMasterTask(mt.ID) } }
-			if masterTask == nil {
-				masterTask, mtErr = eng.CreateMasterTask(args.Goal, b.root, "")
-				if mtErr != nil {
-					return toolError("create master task: %v", mtErr), nil
-				}
-			}
-			if mtErr != nil {
-				return toolError("create master task: %v", mtErr), nil
-			}
-
-			// Async mode: return immediately so the agent can review later.
-		// The master task is already visible in the bridge.
-		if args.Async {
-			return core.ToolResult{
-				ModelText: fmt.Sprintf("📋 Master task created: `%s`\nRun `team_plan goal=\"...\"` (without async) to execute.", masterTask.ID),
-				Metadata: map[string]any{"master_task_id": masterTask.ID, "mode": "async"},
-			}, nil
+	var masterTask *team_engine.MasterTask
+	var mtErr error
+	existing, _ := eng.Store.ListMasterTasks()
+	for _, mt := range existing {
+		if mt.Goal == args.Goal {
+			masterTask = mt
+			break
 		}
+	}
+	for _, mt := range existing {
+		if mt != masterTask {
+			_ = eng.DeleteMasterTask(mt.ID)
+		}
+	}
+	if masterTask == nil {
+		masterTask, mtErr = eng.CreateMasterTask(args.Goal, b.root, "")
+		if mtErr != nil {
+			return toolError("create master task: %v", mtErr), nil
+		}
+	}
+	if mtErr != nil {
+		return toolError("create master task: %v", mtErr), nil
+	}
 
-		// Synchronous mode: PlanAndRun handles decompose + execution in one step.
-			var batches []*team_engine.Batch
-			existingTasks, _ := eng.Store.ListTasksByMasterTask(masterTask.ID)
-			if len(existingTasks) > 0 {
-				batches, err = eng.ResumeMasterTask(ctx, masterTask.ID, args.Goal, b.root)
-			} else {
-				batches, err = eng.PlanAndRun(ctx, args.Goal, b.root, masterTask.ID)
+	// Async mode: return immediately so the agent can review later.
+	// The master task is already visible in the bridge.
+	if args.Async {
+		return core.ToolResult{
+			ModelText: fmt.Sprintf("📋 Master task created: `%s`\nRun `team_plan goal=\"...\"` (without async) to execute.", masterTask.ID),
+			Metadata:  map[string]any{"master_task_id": masterTask.ID, "mode": "async"},
+		}, nil
+	}
+
+	// Synchronous mode: PlanAndRun handles decompose + execution in one step.
+	var batches []*team_engine.Batch
+	existingTasks, _ := eng.Store.ListTasksByMasterTask(masterTask.ID)
+	if len(existingTasks) > 0 {
+		batches, err = eng.ResumeMasterTask(ctx, masterTask.ID, args.Goal, b.root)
+	} else {
+		batches, err = eng.PlanAndRun(ctx, args.Goal, b.root, masterTask.ID)
+	}
+	if err != nil {
+		var s string
+		for _, batch := range batches {
+			icon := tick(batch.Status == team_engine.BatchStatusPassed)
+			s += fmt.Sprintf("%s Batch %s [%s]\n", icon, batch.LabelOrID(), batch.Status)
+			for _, t := range batch.Tasks {
+				s += fmt.Sprintf("  %s %s [%s] %s\n", tick(t.State == team_engine.TaskStateDone), t.ID, t.State, t.Title)
 			}
-			if err != nil {
-				var s string
-				for _, batch := range batches {
-					icon := tick(batch.Status == team_engine.BatchStatusPassed)
-					s += fmt.Sprintf("%s Batch %s [%s]\n", icon, batch.LabelOrID(), batch.Status)
-					for _, t := range batch.Tasks {
- 					s += fmt.Sprintf("  %s %s [%s] %s\n", tick(t.State == team_engine.TaskStateDone), t.ID, t.State, t.Title)
-					}
+		}
+		if s != "" {
+			s = "\n---\n## Results (partial)\n\n" + s + fmt.Sprintf("\nCancelled: %v", err)
+			return toolResult(s), nil
+		}
+		return toolError("plan: %v", err), nil
+	}
+
+	// Build rich result with task details, file paths, and output previews.
+	var mdResults string
+	type taskSummary struct {
+		Title   string `json:"title"`
+		Role    string `json:"role"`
+		State   string `json:"state"`
+		Workdir string `json:"workdir"`
+		Output  string `json:"output,omitempty"`
+		Files   string `json:"files,omitempty"`
+	}
+	allTasks := make([]taskSummary, 0)
+	doneCount := 0
+
+	for _, batch := range batches {
+		icon := tick(batch.Status == team_engine.BatchStatusPassed)
+		mdResults += fmt.Sprintf("\n### %s Batch: %s [%s]\n", icon, batch.LabelOrID(), batch.Status)
+		for _, t := range batch.Tasks {
+			stateIcon := tick(t.State == team_engine.TaskStateDone)
+			if t.State == team_engine.TaskStateFailed {
+				stateIcon = "❌"
+			} else if t.State == team_engine.TaskStateSuspended {
+				stateIcon = "⏸"
+			}
+			if t.State == team_engine.TaskStateDone {
+				doneCount++
+			}
+			mdResults += fmt.Sprintf("\n  **%s** `%s`\n", stateIcon, t.Title)
+			mdResults += fmt.Sprintf("  - 角色: %s | 状态: %s | 进度: %d%%\n", t.Role, t.State, team_engine.GetProgress(t.State))
+			if t.Workdir != "" {
+				mdResults += fmt.Sprintf("  - 工作目录: `%s`\n", t.Workdir)
+			}
+
+			ts := taskSummary{
+				Title:   t.Title,
+				Role:    string(t.Role),
+				State:   string(t.State),
+				Workdir: t.Workdir,
+			}
+
+			// Read output preview.
+			if output, err := eng.Whiteboard.ReadOutput(t.ID); err == nil && len(output) > 0 {
+				preview := output
+				if len(preview) > 200 {
+					preview = preview[:200] + "..."
 				}
-				if s != "" {
-					s = "\n---\n## Results (partial)\n\n" + s + fmt.Sprintf("\nCancelled: %v", err)
-					return toolResult(s), nil
+				mdResults += fmt.Sprintf("  - 输出摘要: %s\n", preview)
+				ts.Output = preview
+			}
+
+			// List artifacts.
+			if artifacts, err := eng.Whiteboard.ListArtifacts(t.ID); err == nil && len(artifacts) > 0 {
+				files := ""
+				for _, a := range artifacts {
+					files += a + ", "
+					mdResults += fmt.Sprintf("  - 📎 产出文件: `%s`\n", a)
 				}
-				return toolError("plan: %v", err), nil
+				ts.Files = files
 			}
+			allTasks = append(allTasks, ts)
+		}
+	}
 
-			// Build rich result with task details, file paths, and output previews.
-			var mdResults string
-			type taskSummary struct {
-				Title    string `json:"title"`
-				Role     string `json:"role"`
-				State    string `json:"state"`
-				Workdir  string `json:"workdir"`
-				Output   string `json:"output,omitempty"`
-				Files    string `json:"files,omitempty"`
-			}
-			allTasks := make([]taskSummary, 0)
-			doneCount := 0
+	overallStatus := "✅ 全部完成"
+	if doneCount < len(allTasks) {
+		overallStatus = fmt.Sprintf("⏳ 部分完成 (%d/%d)", doneCount, len(allTasks))
+	}
 
-			for _, batch := range batches {
-				icon := tick(batch.Status == team_engine.BatchStatusPassed)
-				mdResults += fmt.Sprintf("\n### %s Batch: %s [%s]\n", icon, batch.LabelOrID(), batch.Status)
-				for _, t := range batch.Tasks {
-					stateIcon := tick(t.State == team_engine.TaskStateDone)
-					if t.State == team_engine.TaskStateFailed {
-						stateIcon = "❌"
-					} else if t.State == team_engine.TaskStateSuspended {
-						stateIcon = "⏸"
-					}
-					if t.State == team_engine.TaskStateDone {
-						doneCount++
-					}
-					mdResults += fmt.Sprintf("\n  **%s** `%s`\n", stateIcon, t.Title)
-					mdResults += fmt.Sprintf("  - 角色: %s | 状态: %s | 进度: %d%%\n", t.Role, t.State, team_engine.GetProgress(t.State))
-					if t.Workdir != "" {
-						mdResults += fmt.Sprintf("  - 工作目录: `%s`\n", t.Workdir)
-					}
+	fullResult := fmt.Sprintf("## 执行结果: %s\n%s", overallStatus, mdResults)
 
-					ts := taskSummary{
-						Title:   t.Title,
-						Role:    string(t.Role),
-						State:   string(t.State),
-						Workdir: t.Workdir,
-					}
-
-					// Read output preview.
-					if output, err := eng.Whiteboard.ReadOutput(t.ID); err == nil && len(output) > 0 {
-						preview := output
-						if len(preview) > 200 {
-							preview = preview[:200] + "..."
-						}
-						mdResults += fmt.Sprintf("  - 输出摘要: %s\n", preview)
-						ts.Output = preview
-					}
-
-					// List artifacts.
-					if artifacts, err := eng.Whiteboard.ListArtifacts(t.ID); err == nil && len(artifacts) > 0 {
-						files := ""
-						for _, a := range artifacts {
-							files += a + ", "
-							mdResults += fmt.Sprintf("  - 📎 产出文件: `%s`\n", a)
-						}
-						ts.Files = files
-					}
-					allTasks = append(allTasks, ts)
-				}
-			}
-
-			overallStatus := "✅ 全部完成"
-			if doneCount < len(allTasks) {
-				overallStatus = fmt.Sprintf("⏳ 部分完成 (%d/%d)", doneCount, len(allTasks))
-			}
-
-			fullResult := fmt.Sprintf("## 执行结果: %s\n%s", overallStatus, mdResults)
-
-			// Also return structured metadata for programmatic consumption.
-			metadata := map[string]any{
-				"status":      overallStatus,
-				"total_tasks": len(allTasks),
-				"done_count":  doneCount,
-				"tasks":       allTasks,
-			}
-			return core.ToolResult{ModelText: fullResult, Metadata: metadata}, nil
+	// Also return structured metadata for programmatic consumption.
+	metadata := map[string]any{
+		"status":      overallStatus,
+		"total_tasks": len(allTasks),
+		"done_count":  doneCount,
+		"tasks":       allTasks,
+	}
+	return core.ToolResult{ModelText: fullResult, Metadata: metadata}, nil
 }
 
 // --- team_create ---
@@ -463,7 +485,7 @@ func (b *Toolset) teamCreateTool() toolFn {
 			if err != nil {
 				return toolError("create: %v", err), nil
 			}
- 			return toolResult(fmt.Sprintf("Created task %s: %s [%s]", task.ID, task.Title, task.State)), nil
+			return toolResult(fmt.Sprintf("Created task %s: %s [%s]", task.ID, task.Title, task.State)), nil
 		},
 	}
 }
@@ -482,7 +504,9 @@ func (b *Toolset) teamRunTool() toolFn {
 			"required": []string{"task_id"},
 		},
 		fn: func(ctx context.Context, call core.ToolCall) (core.ToolResult, error) {
-			var args struct{ TaskID string `json:"task_id"` }
+			var args struct {
+				TaskID string `json:"task_id"`
+			}
 			if err := json.Unmarshal([]byte(call.Input), &args); err != nil {
 				return toolError("invalid args: %v", err), nil
 			}
@@ -498,7 +522,7 @@ func (b *Toolset) teamRunTool() toolFn {
 			}
 			task, _ := eng.GetTask(args.TaskID)
 			mark := tick(ok)
- 			return toolResult(fmt.Sprintf("%s %s %s -> %s", mark, args.TaskID, task.Title, task.State)), nil
+			return toolResult(fmt.Sprintf("%s %s %s -> %s", mark, args.TaskID, task.Title, task.State)), nil
 		},
 	}
 }
@@ -518,7 +542,9 @@ func (b *Toolset) teamStatusTool() toolFn {
 			"required": []string{"task_id"},
 		},
 		fn: func(ctx context.Context, call core.ToolCall) (core.ToolResult, error) {
-			var args struct{ TaskID string `json:"task_id"` }
+			var args struct {
+				TaskID string `json:"task_id"`
+			}
 			if err := json.Unmarshal([]byte(call.Input), &args); err != nil {
 				return toolError("invalid args: %v", err), nil
 			}
@@ -532,8 +558,8 @@ func (b *Toolset) teamStatusTool() toolFn {
 			if err != nil || task == nil {
 				return toolError("task %q not found", args.TaskID), nil
 			}
- 			s := fmt.Sprintf("Task: %s\nTitle: %s\nRole: %s\nState: %s (%d%%)\nRetries: %d/%d\nBatch: %s\nCreated: %s",
- 				task.ID, task.Title, task.Role, task.State,
+			s := fmt.Sprintf("Task: %s\nTitle: %s\nRole: %s\nState: %s (%d%%)\nRetries: %d/%d\nBatch: %s\nCreated: %s",
+				task.ID, task.Title, task.Role, task.State,
 				team_engine.GetProgress(task.State), task.RetryCount, task.MaxRetries,
 				task.BatchID, task.CreatedAt)
 			if task.VerifierFeedback != "" {
@@ -572,7 +598,7 @@ func (b *Toolset) teamListTool() toolFn {
 			}
 			var s string
 			for _, t := range tasks {
- 				s += fmt.Sprintf("%s %s [%s] %d%% %s\n", tick(t.State == team_engine.TaskStateDone), t.ID, t.State, team_engine.GetProgress(t.State), t.Title)
+				s += fmt.Sprintf("%s %s [%s] %d%% %s\n", tick(t.State == team_engine.TaskStateDone), t.ID, t.State, team_engine.GetProgress(t.State), t.Title)
 			}
 			return toolResult(s), nil
 		},
@@ -610,7 +636,7 @@ func (b *Toolset) teamFeedbackTool() toolFn {
 			if err := eng.SendFeedback(args.TaskID, args.Message); err != nil {
 				return toolError("feedback: %v", err), nil
 			}
- 			return toolResult("Feedback sent to " + args.TaskID), nil
+			return toolResult("Feedback sent to " + args.TaskID), nil
 		},
 	}
 }
@@ -630,7 +656,9 @@ func (b *Toolset) teamHistoryTool() toolFn {
 			"required": []string{"task_id"},
 		},
 		fn: func(ctx context.Context, call core.ToolCall) (core.ToolResult, error) {
-			var args struct{ TaskID string `json:"task_id"` }
+			var args struct {
+				TaskID string `json:"task_id"`
+			}
 			if err := json.Unmarshal([]byte(call.Input), &args); err != nil {
 				return toolError("invalid args: %v", err), nil
 			}
@@ -645,7 +673,7 @@ func (b *Toolset) teamHistoryTool() toolFn {
 				return toolError("history: %v", err), nil
 			}
 			if len(entries) == 0 {
- 				return toolResult("No history for " + args.TaskID), nil
+				return toolResult("No history for " + args.TaskID), nil
 			}
 			var s string
 			for _, e := range entries {
@@ -678,7 +706,9 @@ func (b *Toolset) teamExportTool() toolFn {
 			"required": []string{"task_id"},
 		},
 		fn: func(ctx context.Context, call core.ToolCall) (core.ToolResult, error) {
-			var args struct{ TaskID string `json:"task_id"` }
+			var args struct {
+				TaskID string `json:"task_id"`
+			}
 			if err := json.Unmarshal([]byte(call.Input), &args); err != nil {
 				return toolError("invalid args: %v", err), nil
 			}
@@ -712,7 +742,9 @@ func (b *Toolset) teamOutputTool() toolFn {
 			"required": []string{"task_id"},
 		},
 		fn: func(ctx context.Context, call core.ToolCall) (core.ToolResult, error) {
-			var args struct{ TaskID string `json:"task_id"` }
+			var args struct {
+				TaskID string `json:"task_id"`
+			}
 			if err := json.Unmarshal([]byte(call.Input), &args); err != nil {
 				return toolError("invalid args: %v", err), nil
 			}
@@ -764,11 +796,11 @@ func (b *Toolset) teamOutputTool() toolFn {
 			}
 
 			metadata := map[string]any{
-				"task_id":    task.ID,
-				"title":      task.Title,
-				"state":      string(task.State),
-				"progress":   team_engine.GetProgress(task.State),
-				"workdir":    task.Workdir,
+				"task_id":  task.ID,
+				"title":    task.Title,
+				"state":    string(task.State),
+				"progress": team_engine.GetProgress(task.State),
+				"workdir":  task.Workdir,
 			}
 			return core.ToolResult{ModelText: md, Metadata: metadata}, nil
 		},
@@ -790,7 +822,9 @@ func (b *Toolset) teamResultTool() toolFn {
 			"required": []string{"master_task_id"},
 		},
 		fn: func(ctx context.Context, call core.ToolCall) (core.ToolResult, error) {
-			var args struct{ MasterTaskID string `json:"master_task_id"` }
+			var args struct {
+				MasterTaskID string `json:"master_task_id"`
+			}
 			if err := json.Unmarshal([]byte(call.Input), &args); err != nil {
 				return toolError("invalid args: %v", err), nil
 			}
@@ -811,13 +845,13 @@ func (b *Toolset) teamResultTool() toolFn {
 			}
 
 			type taskInfo struct {
-				ID       string `json:"id"`
-				Title    string `json:"title"`
-				Role     string `json:"role"`
-				State    string `json:"state"`
-				Progress int    `json:"progress"`
-				Workdir  string `json:"workdir"`
-				Output   string `json:"output,omitempty"`
+				ID       string   `json:"id"`
+				Title    string   `json:"title"`
+				Role     string   `json:"role"`
+				State    string   `json:"state"`
+				Progress int      `json:"progress"`
+				Workdir  string   `json:"workdir"`
+				Output   string   `json:"output,omitempty"`
 				Files    []string `json:"files,omitempty"`
 			}
 

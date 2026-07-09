@@ -65,13 +65,13 @@ type TeamEngine struct {
 
 	// Worktree integration for Coding Harness (场景2).
 	worktreeEnabled bool
-	worktreeDir     string // path to the repo for worktree creation
+	worktreeDir     string            // path to the repo for worktree creation
 	activeTrees     map[string]string // taskID → branch name
 
 	// activeCancels tracks cancel functions for running subagent spawns.
 	activeCancels map[string]context.CancelFunc // taskID → cancel
 	// activeAgents tracks the OS process ID for each running agent task.
-	activeAgents  map[string]int // taskID → PID
+	activeAgents       map[string]int            // taskID → PID
 	activeStdinWriters map[string]io.WriteCloser // taskID → stdin pipe
 
 	// masterTaskCancels stores cancel functions for active PlanAndRun /
@@ -92,9 +92,9 @@ type TeamEngine struct {
 	eventCallbacks []TaskEventCallback
 
 	// Current team configuration (optional).
-	team *TeamConfig
-		shellSpawner       *ShellSubagentSpawner
-		persistentSessions map[string]*PersistentSession
+	team               *TeamConfig
+	shellSpawner       *ShellSubagentSpawner
+	persistentSessions map[string]*PersistentSession
 }
 
 // OnEvent 注册一个事件回调函数。
@@ -150,29 +150,31 @@ func New(_, whiteboardDir, configPath string, spawner SubagentSpawner) (*TeamEng
 	shutdownCtx, shutdownCancel := context.WithCancel(context.Background())
 
 	eng := &TeamEngine{
-		Store:      store,
-		Whiteboard: wb,
-		Config:     cfg,
-		Router:     NewRouter(cfg),
-		Runner:     runner,
-		Escalation: NewEscalationManager(),
-		Loggers:    loggers,
-		timeout:    defaultTimeout,
-		activeTrees:    make(map[string]string),
-		activeCancels:  make(map[string]context.CancelFunc),
-		activeAgents:   make(map[string]int),
+		Store:              store,
+		Whiteboard:         wb,
+		Config:             cfg,
+		Router:             NewRouter(cfg),
+		Runner:             runner,
+		Escalation:         NewEscalationManager(),
+		Loggers:            loggers,
+		timeout:            defaultTimeout,
+		activeTrees:        make(map[string]string),
+		activeCancels:      make(map[string]context.CancelFunc),
+		activeAgents:       make(map[string]int),
 		activeStdinWriters: make(map[string]io.WriteCloser),
-	masterTaskCancels: make(map[string]context.CancelFunc),
-		shutdownCtx:    shutdownCtx,
+		masterTaskCancels:  make(map[string]context.CancelFunc),
+		shutdownCtx:        shutdownCtx,
 		persistentSessions: make(map[string]*PersistentSession),
-		shutdownCancel: shutdownCancel,
+		shutdownCancel:     shutdownCancel,
 	}
 
 	// cleanupInterruptedTasks is called separately by the CLI on startup.
 	// Engine instances created for sync/dashboard must never modify state.
 	_ = spawner
 
-	if ss, ok := spawner.(*ShellSubagentSpawner); ok { eng.shellSpawner = ss }
+	if ss, ok := spawner.(*ShellSubagentSpawner); ok {
+		eng.shellSpawner = ss
+	}
 	return eng, nil
 }
 
@@ -415,8 +417,8 @@ func (e *TeamEngine) cleanupWorktree(taskID string) {
 	exec.Command("git", "branch", "-D", branch).Dir = e.worktreeDir
 }
 
-// isCodingRole returns true if the role modifies code and benefits from worktree isolation.
-func isCodingRole(role AgentRole) bool {
+// isWorktreeEligibleRole returns true if the role modifies code and benefits from worktree isolation.
+func isWorktreeEligibleRole(role AgentRole) bool {
 	switch role {
 	case RoleDeveloper, RoleTester:
 		return true
@@ -724,7 +726,7 @@ func (e *TeamEngine) ResumeMasterTask(ctx context.Context, masterTaskID, goal, w
 	leader := NewLeader(e.Runner).WithLoggers(e.Loggers).WithTeam(e.team).WithOnLog(func() {
 		e.fireEvent(TaskEvent{Type: EventLeaderLog})
 	})
-	escalator := NewEscalator(leader.planner).WithLoggers(e.Loggers)
+	escalator := NewEscalator().WithLoggers(e.Loggers)
 	decomposerTimeout := time.Duration(e.Router.ResolveDecomposerTimeout()) * time.Second
 	leaderModel := e.Router.ResolveModel("planner")
 
@@ -806,27 +808,27 @@ func (e *TeamEngine) ResumeMasterTask(ctx context.Context, masterTaskID, goal, w
 				}
 			}
 		}
-}
+	}
 
-if delContent := e.Whiteboard.BuildDeliverableContent(batches); delContent != "" {
-	_ = e.Whiteboard.WriteDeliverable(delContent)
-}
-if e.Loggers != nil {
-	summary := e.buildExecutionSummary(batches, goal, workdir)
-	e.Loggers.LogLeader("summary", goal, summary, 0, nil)
-	e.fireEvent(TaskEvent{Type: EventLeaderLog})
-}
-e.saveCheckpoint(masterTaskID, completedBatches, passedBatches, cp.CompletedOutputs, batches)
-return batches, nil
+	if delContent := e.Whiteboard.BuildDeliverableContent(batches); delContent != "" {
+		_ = e.Whiteboard.WriteDeliverable(delContent)
+	}
+	if e.Loggers != nil {
+		summary := e.buildExecutionSummary(batches, goal, workdir)
+		e.Loggers.LogLeader("summary", goal, summary, 0, nil)
+		e.fireEvent(TaskEvent{Type: EventLeaderLog})
+	}
+	e.saveCheckpoint(masterTaskID, completedBatches, passedBatches, cp.CompletedOutputs, batches)
+	return batches, nil
 }
 
 // leaderWatchLoop gives the Leader real-time oversight during execution.
 func (e *TeamEngine) leaderWatchLoop(ctx context.Context, leader *Leader, masterTaskID, goal, workdir string) {
-eventCh := make(chan TaskEvent, 256)
-cancel := e.OnEvent(func(event TaskEvent) {
-	select {
-	case eventCh <- event:
-	default:
+	eventCh := make(chan TaskEvent, 256)
+	cancel := e.OnEvent(func(event TaskEvent) {
+		select {
+		case eventCh <- event:
+		default:
 		}
 	})
 	defer cancel()
@@ -1040,7 +1042,9 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 			// Worker session instead of re-spawning.
 			if ws := e.persistentSessions[workerKey]; ws != nil && e.shellSpawner != nil {
 				fbPrompt := verifierFeedbackForWorker(task.VerifierFeedback)
-				if e.Loggers != nil { e.Loggers.Engine("task %s worker CONTINUE retry=%d", taskID[:8], attempt) }
+				if e.Loggers != nil {
+					e.Loggers.Engine("task %s worker CONTINUE retry=%d", taskID[:8], attempt)
+				}
 				workerStart := time.Now()
 				resp := e.shellSpawner.ContinueSession(ws, fbPrompt)
 				contResult := &RunResult{
@@ -1053,7 +1057,9 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 					PID:             resp.PID,
 				}
 				Log("timing", "task %s worker continue done in %.1fs", taskID[:8], time.Since(workerStart).Seconds())
-				if e.Loggers != nil { e.Loggers.Engine("task %s worker CONTINUE DONE in %.1fs (success=%v)", taskID[:8], time.Since(workerStart).Seconds(), resp.Success) }
+				if e.Loggers != nil {
+					e.Loggers.Engine("task %s worker CONTINUE DONE in %.1fs (success=%v)", taskID[:8], time.Since(workerStart).Seconds(), resp.Success)
+				}
 				if contResult.Stdout != "" {
 					e.Whiteboard.WriteOutput(task.ID, contResult.Stdout)
 				}
@@ -1062,248 +1068,260 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 
 			// Read team template and memory.
 			template := e.readTeamTemplate(task.Output)
-		memory, _ := e.BuildMemoryContext(task.Role, task.Title)
+			memory, _ := e.BuildMemoryContext(task.Role, task.Title)
 
-		// Write structured inbox.md.
-		inboxParams := InboxParams{
-			Title:           task.Title,
-			Role:            string(task.Role),
-			Description:     task.Description,
-			Output:          task.Output,
-			UpstreamOutputs: upstreamRefs,
-			Template:        template,
-			Memory:          memory,
-			AllowSelfSplit:  len(task.ParentIDs) == 0,
-			RetryFeedback:   task.VerifierFeedback,
-		}
-		if err := e.Whiteboard.WriteInboxFile(task.ID, inboxParams); err != nil {
-			return false, fmt.Errorf("write inbox: %w", err)
-		}
-
-		// Agent prompt: reference inbox.md, working dir is out/.
-		inboxPath := filepath.Join(e.Whiteboard.TaskDir(task.ID), "input.md")
-		outDir := filepath.Join(e.Whiteboard.TaskDir(task.ID), "out")
-		prompt := fmt.Sprintf("[Role: %s]\n\n工作目录: %s\n任务文件: %s\n产出: %s\n\n将产出文件写在你的工作目录下。只汇报实际完成的内容，不虚构数字。",
-			task.Role, outDir, inboxPath, task.Output)
-		if len(task.ParentIDs) == 0 {
-			prompt += "\n\n如果任务过大无法一次完成，在产出开头输出 [SPLIT_PLAN] 拆分。"
-		}
-
-		// State: assigned → producing (under lock).
-		e.mu.Lock()
-		if err := e.Store.TransitionState(taskID, TaskStateProducing, "", ""); err != nil {
-			e.mu.Unlock()
-			return false, fmt.Errorf("transition to producing: %w", err)
-		}
-		e.mu.Unlock()
-		e.fireEvent(TaskEvent{Type: EventStateChanged, TaskID: taskID, NewState: string(TaskStateProducing)})
-
-		workdir := task.Workdir
-		if workdir == "" {
-			workdir = "."
-		}
-		// Agent runs in a sandboxed out/ directory.
-		// task.Workdir keeps the original workspace for checker/build reference.
-		agentWorkdir := filepath.Join(e.Whiteboard.TaskDir(taskID), "out")
-		os.MkdirAll(agentWorkdir, 0755)
-
-		// Coding Harness (场景2): create isolated git worktree for coding tasks.
-		var hasWorktree bool
-		if e.worktreeEnabled && isCodingRole(task.Role) {
-			wtPath, branch, err := e.createWorktree(task.ID)
-			if err == nil {
-				agentWorkdir = wtPath
-				task.Workdir = wtPath
-				task.ArtifactPath = branch
-				hasWorktree = true
-				// Append worktree info to prompt so the Worker knows where it is.
-				prompt += fmt.Sprintf("\n\n## Git Worktree: %s\nYou are working in an isolated git branch `%s`. All changes are safe.\nWhen finished, describe what you changed.",
-					wtPath, branch)
+			// Write structured inbox.md.
+			inboxParams := InboxParams{
+				Title:           task.Title,
+				Role:            string(task.Role),
+				Description:     task.Description,
+				Output:          task.Output,
+				UpstreamOutputs: upstreamRefs,
+				Template:        template,
+				Memory:          memory,
+				AllowSelfSplit:  len(task.ParentIDs) == 0,
+				RetryFeedback:   task.VerifierFeedback,
 			}
-		}
+			if err := e.Whiteboard.WriteInboxFile(task.ID, inboxParams); err != nil {
+				return false, fmt.Errorf("write inbox: %w", err)
+			}
 
-		toolNames := ProfileToToolNames(task.Profile)
-		toolsStr := strings.Join(toolNames, ",")
+			// Agent prompt: reference inbox.md, working dir is out/.
+			inboxPath := filepath.Join(e.Whiteboard.TaskDir(task.ID), "input.md")
+			outDir := filepath.Join(e.Whiteboard.TaskDir(task.ID), "out")
+			prompt := fmt.Sprintf("[Role: %s]\n\n工作目录: %s\n任务文件: %s\n产出: %s\n\n将产出文件写在你的工作目录下。只汇报实际完成的内容，不虚构数字。",
+				task.Role, outDir, inboxPath, task.Output)
+			if len(task.ParentIDs) == 0 {
+				prompt += "\n\n如果任务过大无法一次完成，在产出开头输出 [SPLIT_PLAN] 拆分。"
+			}
 
-		// Live streaming: write each agent output line to whiteboard in real-time.
-		liveOutput := func(status, summary, toolName string) {
-			if summary != "" {
-				if err := e.Whiteboard.AppendTaskOutput(task.ID,
-					fmt.Sprintf("[%s] %s: %s", status, toolName, summary)); err != nil {
-					// Best-effort streaming; don't fail on write error.
+			// State: assigned → producing (under lock).
+			e.mu.Lock()
+			if err := e.Store.TransitionState(taskID, TaskStateProducing, "", ""); err != nil {
+				e.mu.Unlock()
+				return false, fmt.Errorf("transition to producing: %w", err)
+			}
+			e.mu.Unlock()
+			e.fireEvent(TaskEvent{Type: EventStateChanged, TaskID: taskID, NewState: string(TaskStateProducing)})
+
+			workdir := task.Workdir
+			if workdir == "" {
+				workdir = "."
+			}
+			// Agent runs in a sandboxed out/ directory.
+			// task.Workdir keeps the original workspace for checker/build reference.
+			agentWorkdir := filepath.Join(e.Whiteboard.TaskDir(taskID), "out")
+			os.MkdirAll(agentWorkdir, 0755)
+
+			// Coding Harness (场景2): create isolated git worktree for coding tasks.
+			var hasWorktree bool
+			if e.worktreeEnabled && isWorktreeEligibleRole(task.Role) {
+				wtPath, branch, err := e.createWorktree(task.ID)
+				if err == nil {
+					agentWorkdir = wtPath
+					task.Workdir = wtPath
+					task.ArtifactPath = branch
+					hasWorktree = true
+					// Append worktree info to prompt so the Worker knows where it is.
+					prompt += fmt.Sprintf("\n\n## Git Worktree: %s\nYou are working in an isolated git branch `%s`. All changes are safe.\nWhen finished, describe what you changed.",
+						wtPath, branch)
 				}
 			}
-		}
 
-		// Resolve per-role timeout from config instead of using the
-		// hardcoded default.  Research/deep-analysis roles need more
-		// time (900-1800s) than the default 300s.
-		taskTimeout := time.Duration(e.Router.ResolveTimeout(task.Role, false)) * time.Second
-		// Register a per-task cancel so Close() / Kill() can immediately
-		// abort running subagents instead of waiting for them to finish.
-		taskCtx, taskCancel := context.WithCancel(ctx)
-		e.mu.Lock()
-		e.activeCancels[taskID] = taskCancel
-		e.mu.Unlock()
-		// onPID callback: track the OS process ID as soon as it starts,
-		// so the stop button can kill it during execution.
-		onPID := func(pid int) {
-			if pid > 0 {
+			toolNames := ProfileToToolNames(task.Profile)
+			toolsStr := strings.Join(toolNames, ",")
+
+			// Live streaming: write each agent output line to whiteboard in real-time.
+			liveOutput := func(status, summary, toolName string) {
+				if summary != "" {
+					if err := e.Whiteboard.AppendTaskOutput(task.ID,
+						fmt.Sprintf("[%s] %s: %s", status, toolName, summary)); err != nil {
+						// Best-effort streaming; don't fail on write error.
+					}
+				}
+			}
+
+			// Resolve per-role timeout from config instead of using the
+			// hardcoded default.  Research/deep-analysis roles need more
+			// time (900-1800s) than the default 300s.
+			taskTimeout := time.Duration(e.Router.ResolveTimeout(task.Role, false)) * time.Second
+			// Register a per-task cancel so Close() / Kill() can immediately
+			// abort running subagents instead of waiting for them to finish.
+			taskCtx, taskCancel := context.WithCancel(ctx)
+			e.mu.Lock()
+			e.activeCancels[taskID] = taskCancel
+			e.mu.Unlock()
+			// onPID callback: track the OS process ID as soon as it starts,
+			// so the stop button can kill it during execution.
+			onPID := func(pid int) {
+				if pid > 0 {
+					e.mu.Lock()
+					e.activeAgents[taskID] = pid
+					e.mu.Unlock()
+				}
+			}
+			onStdin := func(w io.WriteCloser) {
 				e.mu.Lock()
-				e.activeAgents[taskID] = pid
+				e.activeStdinWriters[taskID] = w
 				e.mu.Unlock()
 			}
-		}
-		onStdin := func(w io.WriteCloser) {
+			workerKey := "worker:" + taskID
+			workerStart := time.Now()
+			var result *RunResult
+
+			// Persistent session: on retry, send Verifier feedback to the
+			// existing Worker session instead of restarting from scratch.
+			if ws := e.persistentSessions[workerKey]; ws != nil && e.shellSpawner != nil {
+				fbPrompt := verifierFeedbackForWorker(task.VerifierFeedback)
+				if e.Loggers != nil {
+					e.Loggers.Engine("task %s worker CONTINUE session (retry=%d)", taskID[:8], attempt)
+				}
+				resp := e.shellSpawner.ContinueSession(ws, fbPrompt)
+				result = &RunResult{
+					SessionID:       resp.SessionID,
+					ExitCode:        resp.ExitCode,
+					Stdout:          resp.Output,
+					Stderr:          resp.Diagnostic,
+					DurationSeconds: round(time.Since(workerStart).Seconds(), 2),
+					Success:         resp.Success,
+					PID:             resp.PID,
+				}
+			} else if e.shellSpawner != nil {
+				// First attempt: spawn a persistent Worker session.
+				if e.Loggers != nil {
+					e.Loggers.Engine("task %s worker SPAWN persistent role=%s", taskID[:8], task.Role)
+				}
+				req := SubagentRequest{
+					Task:      prompt,
+					Role:      string(task.Role),
+					Model:     "",
+					Tools:     toolNames,
+					Workdir:   agentWorkdir,
+					Timeout:   taskTimeout,
+					MaxIters:  80,
+					MaxCalls:  200,
+					MaxTokens: effectiveMaxTokens(0, ""),
+					OnPID:     onPID,
+				}
+				ws, resp := e.shellSpawner.SpawnPersistent(context.Background(), req)
+				if ws != nil {
+					e.persistentSessions[workerKey] = ws
+				}
+				result = &RunResult{
+					SessionID:       resp.SessionID,
+					ExitCode:        resp.ExitCode,
+					Stdout:          resp.Output,
+					Stderr:          resp.Diagnostic,
+					DurationSeconds: round(time.Since(workerStart).Seconds(), 2),
+					Success:         resp.Success,
+					PID:             resp.PID,
+				}
+			} else {
+				// Fallback: normal spawn via Runner.
+				if e.Loggers != nil {
+					e.Loggers.Engine("task %s worker START role=%s", taskID[:8], task.Role)
+				}
+				result = e.Runner.RunWithContext(taskCtx, prompt, agentWorkdir, toolsStr, taskTimeout, liveOutput, onPID, onStdin)
+			}
+			Log("timing", "task %s worker done in %.1fs (success=%v)", taskID[:8], time.Since(workerStart).Seconds(), result.Success)
+			if e.Loggers != nil {
+				e.Loggers.Engine("task %s worker DONE in %.1fs (success=%v exit=%d)", taskID[:8], time.Since(workerStart).Seconds(), result.Success, result.ExitCode)
+			}
+			// Clean up nested .whale created by whale exec in the agent sandbox.
+			_ = os.RemoveAll(filepath.Join(agentWorkdir, ".whale"))
 			e.mu.Lock()
-			e.activeStdinWriters[taskID] = w
+			delete(e.activeCancels, taskID)
+			delete(e.activeAgents, taskID)
+			delete(e.activeStdinWriters, taskID)
 			e.mu.Unlock()
-		}
-		workerKey := "worker:" + taskID
-		workerStart := time.Now()
-		var result *RunResult
+			taskCancel()
 
-		// Persistent session: on retry, send Verifier feedback to the
-		// existing Worker session instead of restarting from scratch.
-		if ws := e.persistentSessions[workerKey]; ws != nil && e.shellSpawner != nil {
-			fbPrompt := verifierFeedbackForWorker(task.VerifierFeedback)
-			if e.Loggers != nil { e.Loggers.Engine("task %s worker CONTINUE session (retry=%d)", taskID[:8], attempt) }
-			resp := e.shellSpawner.ContinueSession(ws, fbPrompt)
-			result = &RunResult{
-				SessionID:       resp.SessionID,
-				ExitCode:        resp.ExitCode,
-				Stdout:          resp.Output,
-				Stderr:          resp.Diagnostic,
-				DurationSeconds: round(time.Since(workerStart).Seconds(), 2),
-				Success:         resp.Success,
-				PID:             resp.PID,
-			}
-		} else if e.shellSpawner != nil {
-			// First attempt: spawn a persistent Worker session.
-			if e.Loggers != nil { e.Loggers.Engine("task %s worker SPAWN persistent role=%s", taskID[:8], task.Role) }
-			req := SubagentRequest{
-				Task:     prompt,
-				Role:     string(task.Role),
-				Model:    "",
-				Tools:    toolNames,
-				Workdir:  agentWorkdir,
-				Timeout:  taskTimeout,
-				MaxIters: 80,
-				MaxCalls: 200,
-				MaxTokens: effectiveMaxTokens(0, ""),
-				OnPID:    onPID,
-			}
-			ws, resp := e.shellSpawner.SpawnPersistent(context.Background(), req)
-			if ws != nil {
-				e.persistentSessions[workerKey] = ws
-			}
-			result = &RunResult{
-				SessionID:       resp.SessionID,
-				ExitCode:        resp.ExitCode,
-				Stdout:          resp.Output,
-				Stderr:          resp.Diagnostic,
-				DurationSeconds: round(time.Since(workerStart).Seconds(), 2),
-				Success:         resp.Success,
-				PID:             resp.PID,
-			}
-		} else {
-			// Fallback: normal spawn via Runner.
-			if e.Loggers != nil { e.Loggers.Engine("task %s worker START role=%s", taskID[:8], task.Role) }
-			result = e.Runner.RunWithContext(taskCtx, prompt, agentWorkdir, toolsStr, taskTimeout, liveOutput, onPID, onStdin)
-		}
-		Log("timing", "task %s worker done in %.1fs (success=%v)", taskID[:8], time.Since(workerStart).Seconds(), result.Success)
-		if e.Loggers != nil { e.Loggers.Engine("task %s worker DONE in %.1fs (success=%v exit=%d)", taskID[:8], time.Since(workerStart).Seconds(), result.Success, result.ExitCode) }
-		// Clean up nested .whale created by whale exec in the agent sandbox.
-		_ = os.RemoveAll(filepath.Join(agentWorkdir, ".whale"))
-		e.mu.Lock()
-		delete(e.activeCancels, taskID)
-		delete(e.activeAgents, taskID)
-		delete(e.activeStdinWriters, taskID)
-		e.mu.Unlock()
-		taskCancel()
-
-		if !result.Success {
-			errorContent := fmt.Sprintf("\nERROR (exit %d):\n%s", result.ExitCode, result.Stderr)
-			if err := e.Whiteboard.AppendOutput(task.ID, errorContent); err != nil {
-				return false, fmt.Errorf("write error output: %w", err)
-			}
-			// Write the partial stdout anyway.
-			if result.Stdout != "" {
-				if err := e.Whiteboard.WriteOutput(task.ID, result.Stdout); err != nil {
-					return false, fmt.Errorf("write partial stdout: %w", err)
+			if !result.Success {
+				errorContent := fmt.Sprintf("\nERROR (exit %d):\n%s", result.ExitCode, result.Stderr)
+				if err := e.Whiteboard.AppendOutput(task.ID, errorContent); err != nil {
+					return false, fmt.Errorf("write error output: %w", err)
 				}
-			}
-		} else {
-			if err := e.Whiteboard.WriteOutput(task.ID, result.Stdout); err != nil {
-				return false, fmt.Errorf("write worker output: %w", err)
-			}
-		}
-		if defaultTeamLog != nil { defaultTeamLog.WorkerDone(task.ID, result.DurationSeconds, result.ExitCode, len(result.Stdout), result.Success) }
-
-		// Persist subagent session ID for traceability.
-		if result.SessionID != "" {
-			_ = e.Store.UpdateTask(task.ID, map[string]interface{}{"session_id": result.SessionID})
-		}
-
-		// Self-split: only top-level tasks (no parents) can split.
-		// Children must complete without further splitting.
-		const splitMarker = "[SPLIT_PLAN]"
-		if len(task.ParentIDs) == 0 && result.Success && strings.Contains(result.Stdout, splitMarker) {
-			idx := strings.Index(result.Stdout, splitMarker)
-			splitJSON := result.Stdout[idx+len(splitMarker):]
-			childPlan, err := ParsePlanTasks(splitJSON)
-			if err == nil && len(childPlan) > 0 {
-				if defaultTeamLog != nil {
-					Log("task", "task: %s self-split into %d children", task.ID[:8], len(childPlan))
-				}
-				var createdChildren []*Task
-				for _, pt := range childPlan {
-					child, err := e.CreateTask(pt.Title, pt.Description, task.Role, task.Profile, []string{task.ID}, 0, workdir, pt.VerifierFocus, task.BatchID, task.MasterTaskID)
-					if err != nil {
-						if defaultTeamLog != nil {
-							Log("task", "task: %s child create failed: %v", task.ID[:8], err)
-						}
-						continue
+				// Write the partial stdout anyway.
+				if result.Stdout != "" {
+					if err := e.Whiteboard.WriteOutput(task.ID, result.Stdout); err != nil {
+						return false, fmt.Errorf("write partial stdout: %w", err)
 					}
-					child.Output = pt.Output
-					child.BatchID = task.BatchID
-					child.MasterTaskID = task.MasterTaskID
-					_ = e.Store.UpdateTask(child.ID, map[string]interface{}{"batch_id": task.BatchID, "master_task_id": task.MasterTaskID})
-					createdChildren = append(createdChildren, child)
-					if defaultTeamLog != nil { Log("task", "task: %s child %s created", task.ID[:8], child.ID[:8]) }
 				}
-				e.writeTaskPlanJSON(task, createdChildren)
-				// Mark parent as done (children carry the work forward).
-				_ = e.Store.TransitionState(taskID, TaskStateDone, "", "self-split into children")
-				e.fireEvent(TaskEvent{Type: EventStateChanged})
-				return true, nil
+			} else {
+				if err := e.Whiteboard.WriteOutput(task.ID, result.Stdout); err != nil {
+					return false, fmt.Errorf("write worker output: %w", err)
+				}
 			}
-		}
-
-		// Coding Harness: collect git diff after worker completes.
-		if hasWorktree {
-			diff := e.collectWorktreeDiff(task.ID)
-			diffContent := fmt.Sprintf("\n\n## git diff\n```diff\n%s\n```", diff)
-			if err := e.Whiteboard.AppendOutput(task.ID, diffContent); err != nil {
-				// Best-effort; don't fail on diff write error.
+			if defaultTeamLog != nil {
+				defaultTeamLog.WorkerDone(task.ID, result.DurationSeconds, result.ExitCode, len(result.Stdout), result.Success)
 			}
-			// Save diff as a deliverable artifact.
-			_ = e.Whiteboard.CopyArtifact(task.ID, task.ID[:8]+".diff", diffContent)
-		}
 
-		// Log worker output for dashboard dialogue.
-		if e.Loggers != nil {
-			e.Loggers.LogAgent("worker", taskID, attempt+1, prompt, result.Stdout, result.ExitCode, time.Duration(result.DurationSeconds)*time.Second, nil)
-			e.fireEvent(TaskEvent{Type: EventAgentLog, TaskID: taskID})
-		}
+			// Persist subagent session ID for traceability.
+			if result.SessionID != "" {
+				_ = e.Store.UpdateTask(task.ID, map[string]interface{}{"session_id": result.SessionID})
+			}
 
-		// State: producing → produced (under lock).
-		e.mu.Lock()
-		if err := e.Store.TransitionState(taskID, TaskStateProduced, "", ""); err != nil {
+			// Self-split: only top-level tasks (no parents) can split.
+			// Children must complete without further splitting.
+			const splitMarker = "[SPLIT_PLAN]"
+			if len(task.ParentIDs) == 0 && result.Success && strings.Contains(result.Stdout, splitMarker) {
+				idx := strings.Index(result.Stdout, splitMarker)
+				splitJSON := result.Stdout[idx+len(splitMarker):]
+				childPlan, err := ParsePlanTasks(splitJSON)
+				if err == nil && len(childPlan) > 0 {
+					if defaultTeamLog != nil {
+						Log("task", "task: %s self-split into %d children", task.ID[:8], len(childPlan))
+					}
+					var createdChildren []*Task
+					for _, pt := range childPlan {
+						child, err := e.CreateTask(pt.Title, pt.Description, task.Role, task.Profile, []string{task.ID}, 0, workdir, pt.VerifierFocus, task.BatchID, task.MasterTaskID)
+						if err != nil {
+							if defaultTeamLog != nil {
+								Log("task", "task: %s child create failed: %v", task.ID[:8], err)
+							}
+							continue
+						}
+						child.Output = pt.Output
+						child.BatchID = task.BatchID
+						child.MasterTaskID = task.MasterTaskID
+						_ = e.Store.UpdateTask(child.ID, map[string]interface{}{"batch_id": task.BatchID, "master_task_id": task.MasterTaskID})
+						createdChildren = append(createdChildren, child)
+						if defaultTeamLog != nil {
+							Log("task", "task: %s child %s created", task.ID[:8], child.ID[:8])
+						}
+					}
+					e.writeTaskPlanJSON(task, createdChildren)
+					// Mark parent as done (children carry the work forward).
+					_ = e.Store.TransitionState(taskID, TaskStateDone, "", "self-split into children")
+					e.fireEvent(TaskEvent{Type: EventStateChanged})
+					return true, nil
+				}
+			}
+
+			// Coding Harness: collect git diff after worker completes.
+			if hasWorktree {
+				diff := e.collectWorktreeDiff(task.ID)
+				diffContent := fmt.Sprintf("\n\n## git diff\n```diff\n%s\n```", diff)
+				if err := e.Whiteboard.AppendOutput(task.ID, diffContent); err != nil {
+					// Best-effort; don't fail on diff write error.
+				}
+				// Save diff as a deliverable artifact.
+				_ = e.Whiteboard.CopyArtifact(task.ID, task.ID[:8]+".diff", diffContent)
+			}
+
+			// Log worker output for dashboard dialogue.
+			if e.Loggers != nil {
+				e.Loggers.LogAgent("worker", taskID, attempt+1, prompt, result.Stdout, result.ExitCode, time.Duration(result.DurationSeconds)*time.Second, nil)
+				e.fireEvent(TaskEvent{Type: EventAgentLog, TaskID: taskID})
+			}
+
+			// State: producing → produced (under lock).
+			e.mu.Lock()
+			if err := e.Store.TransitionState(taskID, TaskStateProduced, "", ""); err != nil {
+				e.mu.Unlock()
+				return false, fmt.Errorf("transition to produced: %w", err)
+			}
 			e.mu.Unlock()
-			return false, fmt.Errorf("transition to produced: %w", err)
-		}
-		e.mu.Unlock()
 		} // end if !skipProduce
 
 		// Reset for subsequent retry iterations.
@@ -1325,7 +1343,6 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 		}
 		e.mu.Unlock()
 
-
 		if task.UseDW {
 			// Dynamic Workflow mode: N verifiers in parallel + Synthesizer.
 			passed, _, feedback = e.runDWVerification(task)
@@ -1336,52 +1353,60 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 				verifierModel = e.team.Config.Model.VerifierDefault
 			}
 			verifyStart := time.Now()
-		vKey := "verifier:" + taskID
+			vKey := "verifier:" + taskID
 
-		// Persistent Verifier session: reuse process across retries.
-		if ws := e.persistentSessions[vKey]; ws != nil && e.shellSpawner != nil {
-			if e.Loggers != nil { e.Loggers.Engine("task %s verifier CONTINUE session", taskID[:8]) }
-			v = NewVerifier(e.Whiteboard, e.Runner, e.Router, 0, verifierModel).WithAgentName(verifierAgentName)
-			prompt := v.BuildPrompt(task)
-			resp := e.shellSpawner.ContinueSession(ws, prompt)
-			verifyDur = time.Since(verifyStart)
-			passed, _ = parseVerdict(resp.Output)
-			feedback = resp.Output
-		} else if e.shellSpawner != nil {
-			if e.Loggers != nil { e.Loggers.Engine("task %s verifier SPAWN persistent agent=%s", taskID[:8], verifierAgentName) }
-			v = NewVerifier(e.Whiteboard, e.Runner, e.Router, 0, verifierModel).WithAgentName(verifierAgentName)
-			prompt := v.BuildPrompt(task)
-			req := SubagentRequest{
-				Task:      prompt,
-				Role:      "verifier",
-				AgentName: verifierAgentName,
-				Workdir:   task.Workdir,
-				Timeout:   time.Duration(e.Router.ResolveTimeout(task.Role, true)) * time.Second,
-				MaxIters:  15,
-				MaxCalls:  50,
-				MaxTokens: effectiveMaxTokens(0, verifierModel),
+			// Persistent Verifier session: reuse process across retries.
+			if ws := e.persistentSessions[vKey]; ws != nil && e.shellSpawner != nil {
+				if e.Loggers != nil {
+					e.Loggers.Engine("task %s verifier CONTINUE session", taskID[:8])
+				}
+				v = NewVerifier(e.Whiteboard, e.Runner, e.Router, 0, verifierModel).WithAgentName(verifierAgentName)
+				prompt := v.BuildPrompt(task)
+				resp := e.shellSpawner.ContinueSession(ws, prompt)
+				verifyDur = time.Since(verifyStart)
+				passed, _ = parseVerdict(resp.Output)
+				feedback = resp.Output
+			} else if e.shellSpawner != nil {
+				if e.Loggers != nil {
+					e.Loggers.Engine("task %s verifier SPAWN persistent agent=%s", taskID[:8], verifierAgentName)
+				}
+				v = NewVerifier(e.Whiteboard, e.Runner, e.Router, 0, verifierModel).WithAgentName(verifierAgentName)
+				prompt := v.BuildPrompt(task)
+				req := SubagentRequest{
+					Task:      prompt,
+					Role:      "verifier",
+					AgentName: verifierAgentName,
+					Workdir:   task.Workdir,
+					Timeout:   time.Duration(e.Router.ResolveTimeout(task.Role, true)) * time.Second,
+					MaxIters:  15,
+					MaxCalls:  50,
+					MaxTokens: effectiveMaxTokens(0, verifierModel),
+				}
+				if verifierModel != "" {
+					req.Model = verifierModel
+				}
+				ws, resp := e.shellSpawner.SpawnPersistent(context.Background(), req)
+				if ws != nil {
+					e.persistentSessions[vKey] = ws
+				}
+				verifyDur = time.Since(verifyStart)
+				passed, _ = parseVerdict(resp.Output)
+				feedback = resp.Output
+			} else {
+				// Fallback: normal spawn via Runner.
+				v = NewVerifier(e.Whiteboard, e.Runner, e.Router, 0, verifierModel).WithAgentName(verifierAgentName)
+				if e.Loggers != nil {
+					e.Loggers.Engine("task %s verifier START agent=%s", taskID[:8], verifierAgentName)
+				}
+				passed, _, feedback, err = v.Verify(task)
+				verifyDur = time.Since(verifyStart)
+				if err != nil {
+					return false, fmt.Errorf("verifier error: %w", err)
+				}
 			}
-			if verifierModel != "" {
-				req.Model = verifierModel
+			if e.Loggers != nil {
+				e.Loggers.Engine("task %s verifier DONE in %.1fs (pass=%v)", taskID[:8], verifyDur.Seconds(), passed)
 			}
-			ws, resp := e.shellSpawner.SpawnPersistent(context.Background(), req)
-			if ws != nil {
-				e.persistentSessions[vKey] = ws
-			}
-			verifyDur = time.Since(verifyStart)
-			passed, _ = parseVerdict(resp.Output)
-			feedback = resp.Output
-		} else {
-			// Fallback: normal spawn via Runner.
-			v = NewVerifier(e.Whiteboard, e.Runner, e.Router, 0, verifierModel).WithAgentName(verifierAgentName)
-			if e.Loggers != nil { e.Loggers.Engine("task %s verifier START agent=%s", taskID[:8], verifierAgentName) }
-			passed, _, feedback, err = v.Verify(task)
-			verifyDur = time.Since(verifyStart)
-			if err != nil {
-				return false, fmt.Errorf("verifier error: %w", err)
-			}
-		}
-		if e.Loggers != nil { e.Loggers.Engine("task %s verifier DONE in %.1fs (pass=%v)", taskID[:8], verifyDur.Seconds(), passed) }
 		}
 
 		// Log verifier output for dashboard dialogue.
@@ -1391,7 +1416,11 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 				verdict = "FAIL"
 			}
 			var verifierPrompt string
-			if v != nil { verifierPrompt = v.LastPrompt } else { verifierPrompt = "mechanical" }
+			if v != nil {
+				verifierPrompt = v.LastPrompt
+			} else {
+				verifierPrompt = "mechanical"
+			}
 			e.Loggers.LogAgent("verifier", taskID, attempt+1, verifierPrompt, fmt.Sprintf("[%s] %s", verdict, feedback), 0, verifyDur, nil)
 			e.fireEvent(TaskEvent{Type: EventAgentLog, TaskID: taskID})
 		}
@@ -1422,7 +1451,6 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 			return true, nil
 		}
 
-
 		// Verification failed — prepare retry.
 		e.mu.Lock()
 		task, err = e.Store.GetTask(taskID)
@@ -1443,23 +1471,23 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 			task.Description = task.Description[:idx]
 		}
 		// Guard: empty feedback from a lazy verifier wastes Worker time.
-			// Generate a meaningful default so the Worker knows what to fix.
-			if len(strings.TrimSpace(feedback)) < 30 {
-				feedback = "Previous attempt did not pass verification. " +
-					"Please re-read the original task requirements carefully and " +
-					"ensure ALL requirements are met. Verify your output is " +
-					"complete — no truncated code, all functions implemented, " +
-					"and the deliverable compiles or passes basic checks."
-			}
+		// Generate a meaningful default so the Worker knows what to fix.
+		if len(strings.TrimSpace(feedback)) < 30 {
+			feedback = "Previous attempt did not pass verification. " +
+				"Please re-read the original task requirements carefully and " +
+				"ensure ALL requirements are met. Verify your output is " +
+				"complete — no truncated code, all functions implemented, " +
+				"and the deliverable compiles or passes basic checks."
+		}
 		task.Description += fmt.Sprintf(
 			"\n\n[VERIFIER FEEDBACK - Attempt %d]\n%s",
 			task.RetryCount, feedback,
 		)
 
 		if err := e.Store.UpdateTask(taskID, map[string]interface{}{
-			"retry_count":        task.RetryCount,
-			"description":        task.Description,
-			"verifier_feedback":  feedback,
+			"retry_count":       task.RetryCount,
+			"description":       task.Description,
+			"verifier_feedback": feedback,
 		}); err != nil {
 			e.mu.Unlock()
 			return false, fmt.Errorf("update task for retry: %w", err)
@@ -1470,7 +1498,9 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 		if currCount == 0 {
 			e.mu.Unlock()
 			e.closePersistentSession("worker:" + taskID)
-			if task.Output != "" { os.WriteFile(filepath.Join(e.Whiteboard.TaskDir(taskID), "verify.md"), []byte(feedback), 0644) }
+			if task.Output != "" {
+				os.WriteFile(filepath.Join(e.Whiteboard.TaskDir(taskID), "verify.md"), []byte(feedback), 0644)
+			}
 			e.recordLesson(task.Role, task.Title, truncateLesson(feedback, 80))
 			return true, nil
 		}
@@ -1661,7 +1691,7 @@ func (e *TeamEngine) PlanAndRun(ctx context.Context, goal, workdir, masterTaskID
 				AgentRole(pt.Role),
 				profile,
 				nil, // parent IDs now handled at batch level
-				0, // 0 = use NewTask default (9)
+				0,   // 0 = use NewTask default (9)
 				workdir,
 				pt.VerifierFocus, bid, masterTaskID,
 			)
@@ -1679,14 +1709,14 @@ func (e *TeamEngine) PlanAndRun(ctx context.Context, goal, workdir, masterTaskID
 			})
 			batch.Tasks = append(batch.Tasks, task)
 		}
-			// Propagate UseDW from tasks to batch: if any task uses DW,
-			// the entire batch gets DW pipeline execution (multi-verifier per task).
-			for _, t := range batch.Tasks {
-				if t.UseDW {
-					batch.UseDW = true
-					break
-				}
+		// Propagate UseDW from tasks to batch: if any task uses DW,
+		// the entire batch gets DW pipeline execution (multi-verifier per task).
+		for _, t := range batch.Tasks {
+			if t.UseDW {
+				batch.UseDW = true
+				break
 			}
+		}
 		batches = append(batches, batch)
 	}
 
@@ -1708,7 +1738,7 @@ func (e *TeamEngine) PlanAndRun(ctx context.Context, goal, workdir, masterTaskID
 	leader = NewLeader(e.Runner).WithLoggers(e.Loggers).WithTeam(e.team).WithOnLog(func() {
 		e.fireEvent(TaskEvent{Type: EventLeaderLog})
 	})
-	escalator := NewEscalator(leader.planner).WithLoggers(e.Loggers)
+	escalator := NewEscalator().WithLoggers(e.Loggers)
 	completedBatches := make(map[string]bool)
 	passedBatches := make(map[string]bool) // only CycleAccept; controls dep gating
 	// Track completed batch outputs for cross-stage injection.
@@ -1815,7 +1845,7 @@ func (e *TeamEngine) PlanAndRun(ctx context.Context, goal, workdir, masterTaskID
 				prevFindings = currentFindings
 
 				// Check for tasks needing re-decomposition (retries exhausted).
-				newTasks, recount := escalator.ProcessBatch(batch, masterTaskID, workdir, decomposerTimeout, leaderModel,
+				newTasks, recount := escalator.LogSuspendedTasks(batch, masterTaskID, workdir, decomposerTimeout, leaderModel,
 					func(id string) (*Task, error) { return e.Store.GetTask(id) },
 					func(pt PlanTask, batchID, mtID string, parentIDs []string) (*Task, error) {
 						profile := ToolProfile(pt.Profile)
@@ -1893,8 +1923,8 @@ func (e *TeamEngine) PlanAndRun(ctx context.Context, goal, workdir, masterTaskID
 				switch review.Decision {
 				case CycleAccept:
 					completedBatches[batch.ID] = true
-						passedBatches[batch.ID] = true
-						batch.Status = BatchStatusPassed
+					passedBatches[batch.ID] = true
+					batch.Status = BatchStatusPassed
 					// Cross-stage artifact passing:
 					// Collect outputs from completed batch tasks so the
 					// next batch can reference them.
@@ -1967,13 +1997,13 @@ func (e *TeamEngine) PlanAndRun(ctx context.Context, goal, workdir, masterTaskID
 					}
 					e.saveCheckpoint(masterTaskID, completedBatches, passedBatches, completedBatchOutputs, batches)
 					if e.Loggers != nil {
-							e.Loggers.LogLeader("review", fmt.Sprintf("Batch: %s\nDecision: %s (final)", batch.LabelOrID(), review.Decision), fmt.Sprintf("Final review: %s\nFeedback: %s", review.Decision, review.Feedback), decomposerTimeout, nil)
+						e.Loggers.LogLeader("review", fmt.Sprintf("Batch: %s\nDecision: %s (final)", batch.LabelOrID(), review.Decision), fmt.Sprintf("Final review: %s\nFeedback: %s", review.Decision, review.Feedback), decomposerTimeout, nil)
 						e.fireEvent(TaskEvent{Type: EventLeaderLog})
 					}
 				}
 			}
 		}
-		}
+	}
 
 	// Step 4: Write final deliverable.md.
 	if delContent := e.Whiteboard.BuildDeliverableContent(batches); delContent != "" {
@@ -2167,7 +2197,7 @@ func (e *TeamEngine) runDWCycle(
 		prevFindings = currentFindings
 
 		// Escalator: re-decompose stuck tasks (retries exhausted).
-		newTasks, recount := escalator.ProcessBatch(batch, masterTaskID, workdir, decomposerTimeout, leaderModel,
+		newTasks, recount := escalator.LogSuspendedTasks(batch, masterTaskID, workdir, decomposerTimeout, leaderModel,
 			func(id string) (*Task, error) { return e.Store.GetTask(id) },
 			func(pt PlanTask, batchID, mtID string, parentIDs []string) (*Task, error) {
 				profile := ToolProfile(pt.Profile)
@@ -2243,7 +2273,9 @@ func (e *TeamEngine) runDWCycle(
 // configured concurrency limit.
 func (e *TeamEngine) RunBatch(ctx context.Context, batch *Batch) error {
 	batch.Status = BatchStatusRunning
-	if defaultTeamLog != nil { defaultTeamLog.BatchStart(batch.ID, batch.Label, len(batch.Tasks), batch.CycleCount, batch.MaxCycles) }
+	if defaultTeamLog != nil {
+		defaultTeamLog.BatchStart(batch.ID, batch.Label, len(batch.Tasks), batch.CycleCount, batch.MaxCycles)
+	}
 
 	tasks := batch.Tasks
 	if len(tasks) == 0 {
@@ -2294,11 +2326,10 @@ func (e *TeamEngine) RunBatch(ctx context.Context, batch *Batch) error {
 		sem <- struct{}{}
 	}
 
-		// Drain result channel to unblock goroutines.
-		close(resultCh)
-		for range resultCh {
-		}
-
+	// Drain result channel to unblock goroutines.
+	close(resultCh)
+	for range resultCh {
+	}
 
 	// Estimate batch cost: worker + verifier tokens per task × rounds.
 	for _, t := range batch.Tasks {
@@ -2306,7 +2337,9 @@ func (e *TeamEngine) RunBatch(ctx context.Context, batch *Batch) error {
 	}
 	// Batch status is determined by Leader review in the cycle loop above;
 	// RunBatch only reports whether all tasks ran without errors.
-	if defaultTeamLog != nil { defaultTeamLog.BatchDone(batch.ID, string(batch.Status), 0) }
+	if defaultTeamLog != nil {
+		defaultTeamLog.BatchDone(batch.ID, string(batch.Status), 0)
+	}
 	return nil
 }
 
@@ -2523,7 +2556,7 @@ func (e *TeamEngine) DeleteTask(taskID string) error {
 func (e *TeamEngine) DeleteMasterTask(masterTaskID string) error {
 	subtasks, err := e.Store.ListTasksByMasterTask(masterTaskID)
 	if err != nil {
-	return fmt.Errorf("list subtasks: %w", err)
+		return fmt.Errorf("list subtasks: %w", err)
 	}
 	for _, t := range subtasks {
 		if t.State == TaskStateProducing || t.State == TaskStateChecking || t.State == TaskStateChecked || t.State == TaskStateVerifying {
@@ -2537,11 +2570,11 @@ func (e *TeamEngine) DeleteMasterTask(masterTaskID string) error {
 	// Clean up whiteboard files — task directories, board, deliverable.
 	var ids []string
 	for _, t := range subtasks {
-	ids = append(ids, t.ID)
+		ids = append(ids, t.ID)
 	}
 	e.Whiteboard.CleanupMasterTask(masterTaskID, ids)
 	return nil
-	}
+}
 
 // ApplyOutput copies the task's out/ directory contents to targetDir.
 // This is the user-facing "apply to workspace" action. The original
@@ -2672,17 +2705,27 @@ FINDINGS: key issues consolidated from all verifiers
 type dwVerdict struct{ passed, retry bool }
 
 func verdictLabel(passed, retry bool) string {
-	if passed { return "PASS" }
-	if retry { return "RETRY" }
+	if passed {
+		return "PASS"
+	}
+	if retry {
+		return "RETRY"
+	}
 	return "FAIL"
 }
 
 func extractVerdict(output string, passCount, total int) dwVerdict {
 	upper := strings.ToUpper(output)
-	if strings.Contains(upper, "VERDICT: PASS") { return dwVerdict{passed: true} }
-	if strings.Contains(upper, "VERDICT: RETRY") { return dwVerdict{retry: true} }
+	if strings.Contains(upper, "VERDICT: PASS") {
+		return dwVerdict{passed: true}
+	}
+	if strings.Contains(upper, "VERDICT: RETRY") {
+		return dwVerdict{retry: true}
+	}
 	// Majority vote fallback.
-	if passCount > total/2 { return dwVerdict{passed: true} }
+	if passCount > total/2 {
+		return dwVerdict{passed: true}
+	}
 	return dwVerdict{}
 }
 
@@ -2789,11 +2832,16 @@ func truncateLesson(s string, n int) string {
 	}
 	return s
 }
+
 // closePersistentSession closes and removes a persistent subprocess session.
 func (e *TeamEngine) closePersistentSession(key string) {
-	if e.shellSpawner == nil { return }
+	if e.shellSpawner == nil {
+		return
+	}
 	ws := e.persistentSessions[key]
-	if ws == nil { return }
+	if ws == nil {
+		return
+	}
 	e.shellSpawner.CloseSession(ws)
 	delete(e.persistentSessions, key)
 }
@@ -3162,31 +3210,31 @@ func countTasks(batches []*Batch) int {
 	return n
 }
 
-	// writeMasterOutput writes the master task's output.md by listing all
-	// subtask outputs with file references.
-	func (e *TeamEngine) writeMasterOutput(goal string, batches []*Batch, workdir string) {
-		var b strings.Builder
-		b.WriteString(fmt.Sprintf("# %s\n\n", goal))
-		b.WriteString("---\n\n")
+// writeMasterOutput writes the master task's output.md by listing all
+// subtask outputs with file references.
+func (e *TeamEngine) writeMasterOutput(goal string, batches []*Batch, workdir string) {
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf("# %s\n\n", goal))
+	b.WriteString("---\n\n")
 
-		for _, batch := range batches {
-			b.WriteString(fmt.Sprintf("## %s\n\n", batch.LabelOrID()))
-			for _, t := range batch.Tasks {
-				if t.Output == "" {
-					b.WriteString(fmt.Sprintf("- **%s** (%s): 无产出路径\n", t.Title, t.Role))
-					continue
-				}
-				b.WriteString(fmt.Sprintf("- **%s** (%s) → [%s](%s)\n", t.Title, t.Role, filepath.Base(t.Output), t.Output))
+	for _, batch := range batches {
+		b.WriteString(fmt.Sprintf("## %s\n\n", batch.LabelOrID()))
+		for _, t := range batch.Tasks {
+			if t.Output == "" {
+				b.WriteString(fmt.Sprintf("- **%s** (%s): 无产出路径\n", t.Title, t.Role))
+				continue
 			}
-			b.WriteString("\n")
+			b.WriteString(fmt.Sprintf("- **%s** (%s) → [%s](%s)\n", t.Title, t.Role, filepath.Base(t.Output), t.Output))
 		}
-
-		path := filepath.Join(e.Whiteboard.BaseDir(), "output.md")
-		os.WriteFile(path, []byte(b.String()), 0644)
-		if defaultTeamLog != nil {
-			Log("output", "wrote output.md (%d bytes)", b.Len())
-		}
+		b.WriteString("\n")
 	}
+
+	path := filepath.Join(e.Whiteboard.BaseDir(), "output.md")
+	os.WriteFile(path, []byte(b.String()), 0644)
+	if defaultTeamLog != nil {
+		Log("output", "wrote output.md (%d bytes)", b.Len())
+	}
+}
 
 // readTeamTemplate reads a template matching the task's output basename.
 // E.g. output "docs/requirements.md" → templates/requirements.md
@@ -3234,112 +3282,114 @@ func (e *TeamEngine) appendTeamMemory(role AgentRole, lesson string) {
 	f.WriteString(fmt.Sprintf("\n## %s\n%s\n", time.Now().Format("2006-01-02 15:04"), lesson))
 }
 
-	// assembleParentOutputs finds tasks that were decomposed into children
-	// (management nodes) and whose children are all done.  For each such
-	// parent, it reads all child output files and concatenates them into the
+// assembleParentOutputs finds tasks that were decomposed into children
+// (management nodes) and whose children are all done.  For each such
+// parent, it reads all child output files and concatenates them into the
 
-	// writePlanJSON writes the decomposition plan as plan.json.
-	// plan.json is the authoritative record of how a task was decomposed.
-	func (e *TeamEngine) writePlanJSON(masterTaskID string, planTasks []PlanTask) {
-		type planEntry struct {
-			ID          string   `json:"id"`
+// writePlanJSON writes the decomposition plan as plan.json.
+// plan.json is the authoritative record of how a task was decomposed.
+func (e *TeamEngine) writePlanJSON(masterTaskID string, planTasks []PlanTask) {
+	type planEntry struct {
+		ID          string   `json:"id"`
+		Title       string   `json:"title"`
+		Description string   `json:"description"`
+		Role        string   `json:"role"`
+		Output      string   `json:"output"`
+		BatchID     string   `json:"batch_id"`
+		DependsOn   []string `json:"depends_on,omitempty"`
+	}
+	entries := make([]planEntry, len(planTasks))
+	for i, pt := range planTasks {
+		entries[i] = planEntry{
+			Title:       pt.Title,
+			Description: pt.Description,
+			Role:        pt.Role,
+			Output:      pt.Output,
+			BatchID:     pt.BatchID,
+			DependsOn:   pt.DependsOnBatch,
+		}
+	}
+	plan := map[string]interface{}{
+		"generated": time.Now().UTC().Format(time.RFC3339),
+		"tasks":     entries,
+	}
+	data, _ := json.MarshalIndent(plan, "", "  ")
+	path := filepath.Join(e.Whiteboard.BaseDir(), masterTaskID, "plan.json")
+	os.MkdirAll(filepath.Dir(path), 0755)
+	os.WriteFile(path, data, 0644)
+	if defaultTeamLog != nil {
+		Log("plan", "wrote plan.json (%d tasks) → %s", len(planTasks), path)
+	}
+}
+
+// writeTaskPlanJSON writes a per-task plan.json for a self-split task.
+func (e *TeamEngine) writeTaskPlanJSON(task *Task, children []*Task) {
+	type childEntry struct {
+		ID          string `json:"id"`
+		Title       string `json:"title"`
+		Description string `json:"description"`
+		Output      string `json:"output"`
+	}
+	entries := make([]childEntry, len(children))
+	for i, c := range children {
+		entries[i] = childEntry{
+			ID:          c.ID,
+			Title:       c.Title,
+			Description: c.Description,
+			Output:      c.Output,
+		}
+	}
+	plan := map[string]interface{}{
+		"parent_id": task.ID,
+		"generated": time.Now().UTC().Format(time.RFC3339),
+		"children":  entries,
+	}
+	data, _ := json.MarshalIndent(plan, "", "  ")
+	taskDir := e.Whiteboard.TaskDir(task.ID)
+	os.MkdirAll(taskDir, 0755)
+	os.WriteFile(filepath.Join(taskDir, "plan.json"), data, 0644)
+	if defaultTeamLog != nil {
+		Log("task", "task: %s wrote plan.json (%d children)", task.ID[:8], len(children))
+	}
+}
+
+// readPlanJSON reads a plan.json file and returns the list of PlanTasks.
+// Returns nil if the file doesn't exist or can't be parsed.
+func (e *TeamEngine) readPlanJSON(workdir string) []PlanTask {
+	path := filepath.Join(workdir, ".whale", "plan.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	var plan struct {
+		Tasks []struct {
 			Title       string   `json:"title"`
 			Description string   `json:"description"`
 			Role        string   `json:"role"`
 			Output      string   `json:"output"`
 			BatchID     string   `json:"batch_id"`
-			DependsOn   []string `json:"depends_on,omitempty"`
-		}
-		entries := make([]planEntry, len(planTasks))
-		for i, pt := range planTasks {
-			entries[i] = planEntry{
-				Title:       pt.Title,
-				Description: pt.Description,
-				Role:        pt.Role,
-				Output:      pt.Output,
-				BatchID:     pt.BatchID,
-				DependsOn:   pt.DependsOnBatch,
-			}
-		}
-		plan := map[string]interface{}{
-			"generated": time.Now().UTC().Format(time.RFC3339),
-			"tasks":     entries,
-		}
-		data, _ := json.MarshalIndent(plan, "", "  ")
-		path := filepath.Join(e.Whiteboard.BaseDir(), masterTaskID, "plan.json")
-		os.MkdirAll(filepath.Dir(path), 0755)
-		os.WriteFile(path, data, 0644)
-		if defaultTeamLog != nil {
-			Log("plan", "wrote plan.json (%d tasks) → %s", len(planTasks), path)
+			DependsOn   []string `json:"depends_on"`
+		} `json:"tasks"`
+	}
+	if err := json.Unmarshal(data, &plan); err != nil {
+		return nil
+	}
+	planTasks := make([]PlanTask, len(plan.Tasks))
+	for i, t := range plan.Tasks {
+		planTasks[i] = PlanTask{
+			Title:          t.Title,
+			Description:    t.Description,
+			Role:           t.Role,
+			Output:         t.Output,
+			BatchID:        t.BatchID,
+			DependsOnBatch: t.DependsOn,
 		}
 	}
-	// writeTaskPlanJSON writes a per-task plan.json for a self-split task.
-	func (e *TeamEngine) writeTaskPlanJSON(task *Task, children []*Task) {
-		type childEntry struct {
-			ID          string `json:"id"`
-			Title       string `json:"title"`
-			Description string `json:"description"`
-			Output      string `json:"output"`
-		}
-		entries := make([]childEntry, len(children))
-		for i, c := range children {
-			entries[i] = childEntry{
-				ID:          c.ID,
-				Title:       c.Title,
-				Description: c.Description,
-				Output:      c.Output,
-			}
-		}
-		plan := map[string]interface{}{
-			"parent_id": task.ID,
-			"generated": time.Now().UTC().Format(time.RFC3339),
-			"children":  entries,
-		}
-		data, _ := json.MarshalIndent(plan, "", "  ")
-		taskDir := e.Whiteboard.TaskDir(task.ID)
-		os.MkdirAll(taskDir, 0755)
-		os.WriteFile(filepath.Join(taskDir, "plan.json"), data, 0644)
-		if defaultTeamLog != nil {
-			Log("task", "task: %s wrote plan.json (%d children)", task.ID[:8], len(children))
-		}
-	}
-	// readPlanJSON reads a plan.json file and returns the list of PlanTasks.
-	// Returns nil if the file doesn't exist or can't be parsed.
-	func (e *TeamEngine) readPlanJSON(workdir string) []PlanTask {
-		path := filepath.Join(workdir, ".whale", "plan.json")
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return nil
-		}
-		var plan struct {
-			Tasks []struct {
-				Title       string   `json:"title"`
-				Description string   `json:"description"`
-				Role        string   `json:"role"`
-				Output      string   `json:"output"`
-				BatchID     string   `json:"batch_id"`
-				DependsOn   []string `json:"depends_on"`
-			} `json:"tasks"`
-		}
-		if err := json.Unmarshal(data, &plan); err != nil {
-			return nil
-		}
-		planTasks := make([]PlanTask, len(plan.Tasks))
-		for i, t := range plan.Tasks {
-			planTasks[i] = PlanTask{
-				Title:          t.Title,
-				Description:    t.Description,
-				Role:           t.Role,
-				Output:         t.Output,
-				BatchID:        t.BatchID,
-				DependsOnBatch: t.DependsOn,
-			}
-		}
-		return planTasks
-	}
+	return planTasks
+}
 
-	// parent's output file, then writes the .verify file.
-	func (e *TeamEngine) assembleParentOutputs(batches []*Batch) {
+// parent's output file, then writes the .verify file.
+func (e *TeamEngine) assembleParentOutputs(batches []*Batch) {
 	for _, batch := range batches {
 		for _, t := range batch.Tasks {
 			children, err := e.Store.ListTasksByParent(t.ID)
@@ -3397,4 +3447,4 @@ func (e *TeamEngine) appendTeamMemory(role AgentRole, lesson string) {
 			}
 		}
 	}
-	}
+}

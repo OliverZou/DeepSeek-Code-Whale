@@ -14,7 +14,7 @@ type Escalator struct {
 }
 
 // NewEscalator creates an Escalator.
-func NewEscalator(planner *Planner) *Escalator {
+func NewEscalator() *Escalator {
 	return &Escalator{}
 }
 
@@ -24,10 +24,13 @@ func (esc *Escalator) WithLoggers(loggers *log.Loggers) *Escalator {
 	return esc
 }
 
-// ProcessBatch logs suspended tasks that need user attention.
+// LogSuspendedTasks logs suspended tasks that need user attention.
 // Auto-re-decomposition is disabled: task failure is usually a Worker quality
 // issue, not a decomposition error.  Re-splitting doesn't fix the Worker.
-func (esc *Escalator) ProcessBatch(batch *Batch, masterTaskID, workdir string, timeout time.Duration, model string,
+// NOTE: the createTask/transitionState callbacks and the ([]*Task, int) return
+// are unused (always nil, 0) — kept for call-site compatibility; the callers'
+// re-decompose branches are consequently dead. Safe to simplify in a follow-up.
+func (esc *Escalator) LogSuspendedTasks(batch *Batch, masterTaskID, workdir string, timeout time.Duration, model string,
 	getTask func(string) (*Task, error),
 	createTask func(PlanTask, string, string, []string) (*Task, error),
 	transitionState func(string, TaskState, string) error) ([]*Task, int) {

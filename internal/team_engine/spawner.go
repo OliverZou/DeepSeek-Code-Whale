@@ -38,85 +38,133 @@ func AddLogWriter(path string) {
 
 // --- Typed log wrappers (previously exposed via DefaultTeamLog) ---
 
-func SpawnerType(role, kind, model string, maxTokens int) {
-	if defaultTeamLog != nil { defaultTeamLog.SpawnerType(role, kind, model, maxTokens) }
+func LogSpawnerType(role, kind, model string, maxTokens int) {
+	if defaultTeamLog != nil {
+		defaultTeamLog.SpawnerType(role, kind, model, maxTokens)
+	}
 }
 func LeaderDecompose(goal, model string, attempt, maxTokens, promptTok, compTok int, dur float64, outputLen int, truncated, success bool) {
-	if defaultTeamLog != nil { defaultTeamLog.LeaderDecompose(goal, model, attempt, maxTokens, promptTok, compTok, dur, outputLen, truncated, success) }
+	if defaultTeamLog != nil {
+		defaultTeamLog.LeaderDecompose(goal, model, attempt, maxTokens, promptTok, compTok, dur, outputLen, truncated, success)
+	}
 }
 func LeaderRetry(attempt int, reason string) {
-	if defaultTeamLog != nil { defaultTeamLog.LeaderRetry(attempt, reason) }
+	if defaultTeamLog != nil {
+		defaultTeamLog.LeaderRetry(attempt, reason)
+	}
 }
 func WorkerStart(taskID, role, model string, attempt, maxRetries int) {
-	if defaultTeamLog != nil { defaultTeamLog.WorkerStart(taskID, role, model, attempt, maxRetries) }
+	if defaultTeamLog != nil {
+		defaultTeamLog.WorkerStart(taskID, role, model, attempt, maxRetries)
+	}
 }
 func WorkerDone(taskID string, dur float64, exitCode int, outputLen int, success bool) {
-	if defaultTeamLog != nil { defaultTeamLog.WorkerDone(taskID, dur, exitCode, outputLen, success) }
+	if defaultTeamLog != nil {
+		defaultTeamLog.WorkerDone(taskID, dur, exitCode, outputLen, success)
+	}
 }
 func WorkerRetry(taskID string, attempt int, feedback string) {
-	if defaultTeamLog != nil { defaultTeamLog.WorkerRetry(taskID, attempt, feedback) }
+	if defaultTeamLog != nil {
+		defaultTeamLog.WorkerRetry(taskID, attempt, feedback)
+	}
 }
 func VerifierStart(taskID string) {
-	if defaultTeamLog != nil { defaultTeamLog.VerifierStart(taskID) }
+	if defaultTeamLog != nil {
+		defaultTeamLog.VerifierStart(taskID)
+	}
 }
 func VerifierDone(taskID string, passed bool, dur float64) {
-	if defaultTeamLog != nil { defaultTeamLog.VerifierDone(taskID, passed, dur) }
+	if defaultTeamLog != nil {
+		defaultTeamLog.VerifierDone(taskID, passed, dur)
+	}
 }
 func BatchStart(batchID, label string, taskCount, cycle, maxCycles int) {
-	if defaultTeamLog != nil { defaultTeamLog.BatchStart(batchID, label, taskCount, cycle, maxCycles) }
+	if defaultTeamLog != nil {
+		defaultTeamLog.BatchStart(batchID, label, taskCount, cycle, maxCycles)
+	}
 }
 func BatchDone(batchID string, status string, dur float64) {
-	if defaultTeamLog != nil { defaultTeamLog.BatchDone(batchID, status, dur) }
+	if defaultTeamLog != nil {
+		defaultTeamLog.BatchDone(batchID, status, dur)
+	}
 }
 func BatchCycleReport(batchID string, cycle int, decision string) {
-	if defaultTeamLog != nil { defaultTeamLog.BatchCycleReport(batchID, cycle, decision) }
+	if defaultTeamLog != nil {
+		defaultTeamLog.BatchCycleReport(batchID, cycle, decision)
+	}
 }
 func EngineResume(masterTaskID, goal string, batchCount int, err error) {
-	if defaultTeamLog != nil { defaultTeamLog.EngineResume(masterTaskID, goal, batchCount, err) }
+	if defaultTeamLog != nil {
+		defaultTeamLog.EngineResume(masterTaskID, goal, batchCount, err)
+	}
 }
 func EngineAutoResume(masterTaskID string, err error) {
-	if defaultTeamLog != nil { defaultTeamLog.EngineAutoResume(masterTaskID, err) }
+	if defaultTeamLog != nil {
+		defaultTeamLog.EngineAutoResume(masterTaskID, err)
+	}
 }
 func EngineResumeTask(taskID, newState string) {
-	if defaultTeamLog != nil { defaultTeamLog.EngineResumeTask(taskID, newState) }
+	if defaultTeamLog != nil {
+		defaultTeamLog.EngineResumeTask(taskID, newState)
+	}
 }
 func CLIHeartbeat(wsID string, registered bool) {
-	if defaultTeamLog != nil { defaultTeamLog.CLIHeartbeat(wsID, registered) }
+	if defaultTeamLog != nil {
+		defaultTeamLog.CLIHeartbeat(wsID, registered)
+	}
 }
 func CLIWSConnect(wsID string, err error) {
-	if defaultTeamLog != nil { defaultTeamLog.CLIWSConnect(wsID, err) }
+	if defaultTeamLog != nil {
+		defaultTeamLog.CLIWSConnect(wsID, err)
+	}
 }
 func CLIWSDisconnect(wsID string) {
-	if defaultTeamLog != nil { defaultTeamLog.CLIWSDisconnect(wsID) }
+	if defaultTeamLog != nil {
+		defaultTeamLog.CLIWSDisconnect(wsID)
+	}
 }
 func CLIReceiveResume(masterTaskID string) {
-	if defaultTeamLog != nil { defaultTeamLog.CLIReceiveResume(masterTaskID) }
+	if defaultTeamLog != nil {
+		defaultTeamLog.CLIReceiveResume(masterTaskID)
+	}
 }
 func DashboardRegister(path, wsID string, err error) {
-	if defaultTeamLog != nil { defaultTeamLog.DashboardRegister(path, wsID, err) }
+	if defaultTeamLog != nil {
+		defaultTeamLog.DashboardRegister(path, wsID, err)
+	}
 }
 func DashboardWSConnect(wsID string, ok bool, err error) {
-	if defaultTeamLog != nil { defaultTeamLog.DashboardWSConnect(wsID, ok, err) }
+	if defaultTeamLog != nil {
+		defaultTeamLog.DashboardWSConnect(wsID, ok, err)
+	}
 }
 func DashboardWSDisconnect(wsID string) {
-	if defaultTeamLog != nil { defaultTeamLog.DashboardWSDisconnect(wsID) }
+	if defaultTeamLog != nil {
+		defaultTeamLog.DashboardWSDisconnect(wsID)
+	}
 }
 func DashboardQueueResume(wsID, taskID, method string) {
-	if defaultTeamLog != nil { defaultTeamLog.DashboardQueueResume(wsID, taskID, method) }
+	if defaultTeamLog != nil {
+		defaultTeamLog.DashboardQueueResume(wsID, taskID, method)
+	}
 }
 func DashboardStateTransition(taskID, from, to, reason string) {
-	if defaultTeamLog != nil { defaultTeamLog.DashboardStateTransition(taskID, from, to, reason) }
+	if defaultTeamLog != nil {
+		defaultTeamLog.DashboardStateTransition(taskID, from, to, reason)
+	}
 }
 func DashboardResumeMaster(wsID, taskID string, err error) {
-	if defaultTeamLog != nil { defaultTeamLog.DashboardResumeMaster(wsID, taskID, err) }
+	if defaultTeamLog != nil {
+		defaultTeamLog.DashboardResumeMaster(wsID, taskID, err)
+	}
 }
 
 // defaultSpawnFunc is a package-level fallback spawner, set by the toolset
 // when the app wires in the native subagent adapter.  When non-nil, team
 // engine instances prefer it over ShellSubagentSpawner.
 var (
-	defaultSpawnFunc      SpawnFunc
-	defaultSpawnFuncMu    sync.RWMutex
+	defaultSpawnFunc   SpawnFunc
+	defaultSpawnFuncMu sync.RWMutex
 )
 
 // DefaultSpawnFunc returns the package-level default spawn function, or nil
@@ -249,12 +297,12 @@ func (s *ShellSubagentSpawner) SpawnSubagent(ctx context.Context, req SubagentRe
 
 	cmd := exec.CommandContext(ctx, whaleBin, args...)
 	cmd.Dir = cwd
-		cmd.Env = append(os.Environ(),
-			"WHALE_NO_DASHBOARD=1",
-			fmt.Sprintf("WHALE_MAX_TOKENS=%d", req.MaxTokens),
-		)
+	cmd.Env = append(os.Environ(),
+		"WHALE_NO_DASHBOARD=1",
+		fmt.Sprintf("WHALE_MAX_TOKENS=%d", req.MaxTokens),
+	)
 
-		stdinPipe, err := cmd.StdinPipe()
+	stdinPipe, err := cmd.StdinPipe()
 	if err != nil {
 		return SubagentResponse{SessionID: shellSessionID(0), SpawnerType: "shell", Diagnostic: "stdin pipe error", ExitCode: -1, Success: false}, nil
 	}
@@ -377,12 +425,12 @@ func (s *ShellSubagentSpawner) SpawnPersistent(ctx context.Context, req Subagent
 
 	cmd := exec.CommandContext(context.Background(), whaleBin, args...)
 	cmd.Dir = cwd
-		cmd.Env = append(os.Environ(),
-			"WHALE_NO_DASHBOARD=1",
-			fmt.Sprintf("WHALE_MAX_TOKENS=%d", req.MaxTokens),
-		)
+	cmd.Env = append(os.Environ(),
+		"WHALE_NO_DASHBOARD=1",
+		fmt.Sprintf("WHALE_MAX_TOKENS=%d", req.MaxTokens),
+	)
 
-		stdinPipe, err := cmd.StdinPipe()
+	stdinPipe, err := cmd.StdinPipe()
 	if err != nil {
 		r := SubagentResponse{SessionID: shellSessionID(0), SpawnerType: "shell", ExitCode: -1, Success: false}
 		return nil, &r

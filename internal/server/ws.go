@@ -472,7 +472,6 @@ type userInputResp struct {
 	Cancelled bool
 }
 
-
 // =========================================================================
 // NewDaemon
 // =========================================================================
@@ -543,14 +542,14 @@ func NewDaemon(eng *team_engine.TeamEngine, cfg DaemonConfig) (*Daemon, error) {
 	}
 
 	d := &Daemon{
-		cfg:              cfg,
-		engine:           eng,
-		toolset:          toolset,
-		toolReg:          toolReg,
-		store:            sessStore,
-		sessionsDir:      sessionsDir,
-		whaleCfg:         whaleCfg,
-		agentLibrary:     tasks.NewAgentDefinitionLibrary(cfg.WorkDir),
+		cfg:          cfg,
+		engine:       eng,
+		toolset:      toolset,
+		toolReg:      toolReg,
+		store:        sessStore,
+		sessionsDir:  sessionsDir,
+		whaleCfg:     whaleCfg,
+		agentLibrary: tasks.NewAgentDefinitionLibrary(cfg.WorkDir),
 
 		pendingApproval:  make(map[string]chan policy.ApprovalDecision),
 		pendingUserInput: make(map[string]chan userInputResp),
@@ -562,7 +561,7 @@ func NewDaemon(eng *team_engine.TeamEngine, cfg DaemonConfig) (*Daemon, error) {
 	}
 
 	// Team engine events �?broadcast.
-		eng.OnEvent(func(evt team_engine.TaskEvent) {
+	eng.OnEvent(func(evt team_engine.TaskEvent) {
 		switch evt.Type {
 		case team_engine.EventStateChanged, team_engine.EventTaskDone,
 			team_engine.EventWorkerOutput, team_engine.EventVerifierResult:
@@ -608,41 +607,42 @@ func (d *Daemon) Close() {
 // Request dispatch
 //
 // Interface usage status (as of 2025-07):
-//   Pod (whale-pod) uses stdio mode — each session is a separate `whale daemon start --stdio`
-//   process. It calls these interfaces via stdin/stdout JSONL, NOT via WebSocket.
 //
-//   ✅ Used by Pod (stdio)  |  ❌ Not used by Pod  |  ⚠️ Used only by old WS dashboard
+//	Pod (whale-pod) uses stdio mode — each session is a separate `whale daemon start --stdio`
+//	process. It calls these interfaces via stdin/stdout JSONL, NOT via WebSocket.
 //
-//   ✅ chat                    — start/continue a chat session
-//   ✅ chat.cancel             — abort in-flight chat
-//   ✅ session.listByAgent     — list sessions for an agent
-//   ✅ session.delete          — delete a session
-//   ✅ session.deleteAll       — delete all sessions for an agent
-//   ✅ session.clearEmpty      — remove empty sessions
-//   ✅ session.getMessages     — retrieve chat history
-//   ✅ session.getToolResult   — lazy-load tool output
-//   ✅ task.create             — create a team task
-//   ✅ task.list               — list tasks (via master daemon)
-//   ✅ task.cancel             — cancel a task
-//   ✅ task.delete             — delete a task
-//   ✅ task.subtasks           — get subtasks for a master task
-//   ✅ task.dialogue           — get agent dialogue
-//   ✅ task.plan               — get leader plan
-//   ✅ task.feedback           — send feedback to a subtask
-//   ✅ task.confirm            — approve/deny a task
-//   ✅ task.confirmations      — list pending confirmations
-//   ✅ task.updateGoal         — rename a task
-//   ✅ agent.list              — list all agents (experts + teams)
-//   ✅ expert.list             — list experts only
-//   ✅ team.list               — list teams only
-//   ✅ mcp.setEnabled          — enable/disable MCP server
-//   ✅ mcp.setEnv              — set MCP server env vars
-//   ✅ approval.decision       — respond to approval request
-//   ✅ user_input.response     — respond to user input request
-//   ✅ team.chat.send          — send team chat message
-//   ✅ team.chat.messages      — get team chat history
-//   ❌ session.list            — not called by Pod (uses listByAgent instead)
-//   ⚠️ file.read              — not used by Pod; was for old WS dashboard file preview
+//	✅ Used by Pod (stdio)  |  ❌ Not used by Pod  |  ⚠️ Used only by old WS dashboard
+//
+//	✅ chat                    — start/continue a chat session
+//	✅ chat.cancel             — abort in-flight chat
+//	✅ session.listByAgent     — list sessions for an agent
+//	✅ session.delete          — delete a session
+//	✅ session.deleteAll       — delete all sessions for an agent
+//	✅ session.clearEmpty      — remove empty sessions
+//	✅ session.getMessages     — retrieve chat history
+//	✅ session.getToolResult   — lazy-load tool output
+//	✅ task.create             — create a team task
+//	✅ task.list               — list tasks (via master daemon)
+//	✅ task.cancel             — cancel a task
+//	✅ task.delete             — delete a task
+//	✅ task.subtasks           — get subtasks for a master task
+//	✅ task.dialogue           — get agent dialogue
+//	✅ task.plan               — get leader plan
+//	✅ task.feedback           — send feedback to a subtask
+//	✅ task.confirm            — approve/deny a task
+//	✅ task.confirmations      — list pending confirmations
+//	✅ task.updateGoal         — rename a task
+//	✅ agent.list              — list all agents (experts + teams)
+//	✅ expert.list             — list experts only
+//	✅ team.list               — list teams only
+//	✅ mcp.setEnabled          — enable/disable MCP server
+//	✅ mcp.setEnv              — set MCP server env vars
+//	✅ approval.decision       — respond to approval request
+//	✅ user_input.response     — respond to user input request
+//	✅ team.chat.send          — send team chat message
+//	✅ team.chat.messages      — get team chat history
+//	❌ session.list            — not called by Pod (uses listByAgent instead)
+//	⚠️ file.read              — not used by Pod; was for old WS dashboard file preview
 func (d *Daemon) handleMessage(w MessageWriter, req wsRequest) {
 	switch req.Type {
 	case "chat":
@@ -847,7 +847,6 @@ func (d *Daemon) handleChat(w MessageWriter, req wsRequest) {
 		}
 	}
 
-
 	agentOpts := []agent.AgentOption{
 		agent.WithSessionMode(session.ModeAgent),
 		agent.WithSessionsDir(d.sessionsDir),
@@ -913,7 +912,9 @@ func (d *Daemon) handleChat(w MessageWriter, req wsRequest) {
 	var contentBuf, thinkingBuf string
 	var collectedTools []core.ToolCall
 	flushThinking := func() {
-		if thinkingBuf == "" { return }
+		if thinkingBuf == "" {
+			return
+		}
 		// Reasoning persisted by agent (stream_ingest.go) �?no separate store.Create here.
 		thinkingBuf = ""
 	}
@@ -922,7 +923,7 @@ func (d *Daemon) handleChat(w MessageWriter, req wsRequest) {
 
 		switch ev.Type {
 		case agent.AgentEventTypeAssistantDelta:
-		flushThinking()
+			flushThinking()
 			contentBuf += ev.Content
 			chunk.Event = "assistant"
 			chunk.Content = ev.Content
@@ -933,7 +934,7 @@ func (d *Daemon) handleChat(w MessageWriter, req wsRequest) {
 			chunk.Content = ev.ReasoningDelta
 
 		case agent.AgentEventTypeToolCall:
-		flushThinking()
+			flushThinking()
 			if ev.ToolCall != nil {
 				chunk.Event = "tool_call"
 				chunk.ToolCallID = ev.ToolCall.ID
@@ -1447,18 +1448,18 @@ func buildSubtaskTree(tasks []*team_engine.Task) []map[string]interface{} {
 			return nil
 		}
 		m := map[string]interface{}{
-			"id":            t.ID,
-			"title":         t.Title,
-			"description":   t.Description,
-			"output":        t.Output,
-			"role":          string(t.Role),
-			"state":         string(t.State),
-			"progress":      team_engine.GetProgress(t.State),
-			"created_at":    t.CreatedAt,
-			"parent_ids":    t.ParentIDs,
-			"batch_id":      t.BatchID,
-			"retry_count":   t.RetryCount,
-			"max_retries":   t.MaxRetries,
+			"id":          t.ID,
+			"title":       t.Title,
+			"description": t.Description,
+			"output":      t.Output,
+			"role":        string(t.Role),
+			"state":       string(t.State),
+			"progress":    team_engine.GetProgress(t.State),
+			"created_at":  t.CreatedAt,
+			"parent_ids":  t.ParentIDs,
+			"batch_id":    t.BatchID,
+			"retry_count": t.RetryCount,
+			"max_retries": t.MaxRetries,
 		}
 		if kids := children[id]; len(kids) > 0 {
 			cs := make([]map[string]interface{}, 0, len(kids))
@@ -1596,10 +1597,11 @@ func (d *Daemon) handleTaskConfirmations(w MessageWriter, req wsRequest) {
 		if d.engine.Whiteboard.HasConfirmation(t.ID) {
 			content, _ := d.engine.Whiteboard.ReadConfirmation(t.ID)
 			pending = append(pending, map[string]interface{}{
-				"task_id":  t.ID,
-				"title":    t.Title,
-				"content":  content,
-				"state":    string(t.State),
+				"task_id": t.ID,
+				"title":   t.Title,
+				"content": content,
+				"state":   string(t.State),
+				"role":    string(t.Role),
 			})
 		}
 	}
@@ -1644,15 +1646,15 @@ func (d *Daemon) handleMCPList(w MessageWriter, req wsRequest) {
 	result := make([]map[string]interface{}, 0, len(states))
 	for _, s := range states {
 		result = append(result, map[string]interface{}{
-			"name":      s.Name,
-			"status":    s.Status,
-			"disabled":  s.Disabled,
-			"connected": s.Connected,
-			"error":     s.Error,
-			"tools":     s.Tools,
+			"name":       s.Name,
+			"status":     s.Status,
+			"disabled":   s.Disabled,
+			"connected":  s.Connected,
+			"error":      s.Error,
+			"tools":      s.Tools,
 			"tool_names": s.ToolNames,
-			"command":   s.Command,
-			"url":       s.URL,
+			"command":    s.Command,
+			"url":        s.URL,
 		})
 	}
 	w.SendResponse(wsResponse{Type: "mcp.list", ID: req.ID, Payload: map[string]interface{}{"servers": result}})
@@ -1708,7 +1710,6 @@ func (d *Daemon) handleMCPSetEnv(w MessageWriter, req wsRequest) {
 		"server": p.Server, "key": p.Key,
 	}})
 }
-
 
 // =========================================================================
 // File read
@@ -1771,8 +1772,8 @@ func (d *Daemon) handleTeamChatSend(w MessageWriter, req wsRequest) {
 		"master_task_id": p.MasterTaskID,
 		"from":           p.From,
 		"to":             p.To,
-		"content":         p.Content,
-		"timestamp":       time.Now().UTC().Format(time.RFC3339),
+		"content":        p.Content,
+		"timestamp":      time.Now().UTC().Format(time.RFC3339),
 	}
 	d.pushIfStdio(wsPush{Type: "team.chat.message", Payload: msg})
 
@@ -1877,8 +1878,8 @@ func (d *Daemon) handleSessionListByAgent(w MessageWriter, req wsRequest) {
 		if s.Meta.Kind == "subagent" {
 			continue
 		}
-// Always filter by agent �?empty string means "whale" sessions.
-if s.Meta.Agent != p.Agent {
+		// Always filter by agent �?empty string means "whale" sessions.
+		if s.Meta.Agent != p.Agent {
 			continue
 		}
 		count++
@@ -1892,8 +1893,8 @@ if s.Meta.Agent != p.Agent {
 		result = append(result, map[string]interface{}{
 			"id": s.ID, "goal": goal, "agent": s.Meta.Agent,
 			"workspace_path": s.Meta.Workspace,
-			"status": s.Meta.Status,
-			"created_at": s.Meta.StartedAt,
+			"status":         s.Meta.Status,
+			"created_at":     s.Meta.StartedAt,
 		})
 		if len(result) >= p.Limit {
 			break
@@ -1920,7 +1921,9 @@ func (d *Daemon) removeSessionFiles(id string) {
 }
 
 func (d *Daemon) handleSessionDelete(w MessageWriter, req wsRequest) {
-	var p struct{ ID string `json:"id"` }
+	var p struct {
+		ID string `json:"id"`
+	}
 	json.Unmarshal(req.Payload, &p)
 	d.removeSessionFiles(p.ID)
 	w.SendResponse(wsResponse{Type: "session.delete", ID: req.ID, Payload: map[string]string{"id": p.ID}})
@@ -1928,7 +1931,9 @@ func (d *Daemon) handleSessionDelete(w MessageWriter, req wsRequest) {
 
 // handleSessionDeleteAll removes all sessions, optionally filtered by agent.
 func (d *Daemon) handleSessionDeleteAll(w MessageWriter, req wsRequest) {
-	var p struct{ Agent string `json:"agent"` }
+	var p struct {
+		Agent string `json:"agent"`
+	}
 	json.Unmarshal(req.Payload, &p)
 	sessions, _ := session.ListSessions(d.sessionsDir, 0)
 	for _, s := range sessions {
@@ -1946,7 +1951,9 @@ func (d *Daemon) handleSessionDeleteAll(w MessageWriter, req wsRequest) {
 
 // handleSessionClearEmpty removes sessions with empty/trivial meta files.
 func (d *Daemon) handleSessionClearEmpty(w MessageWriter, req wsRequest) {
-	var p struct{ Agent string `json:"agent"` }
+	var p struct {
+		Agent string `json:"agent"`
+	}
 	json.Unmarshal(req.Payload, &p)
 	entries, _ := os.ReadDir(d.sessionsDir)
 	for _, e := range entries {
@@ -1993,7 +2000,9 @@ func (d *Daemon) teamsDir() string   { return filepath.Join(d.cfg.DataDir, "team
 // handleSessionGetMessages returns session messages with consecutive
 // assistant messages merged into single turns (matching live-stream behaviour).
 func (d *Daemon) handleSessionGetMessages(w MessageWriter, req wsRequest) {
-	var p struct{ ID string `json:"id"` }
+	var p struct {
+		ID string `json:"id"`
+	}
 	json.Unmarshal(req.Payload, &p)
 	msgs, err := d.store.List(context.Background(), p.ID)
 	if err != nil {
@@ -2025,11 +2034,11 @@ func (d *Daemon) handleSessionGetMessages(w MessageWriter, req wsRequest) {
 	result := make([]map[string]interface{}, 0, len(msgs))
 
 	// Accumulator for consecutive assistant messages
-	var accText    string
-	var accTools   []map[string]interface{}
-	var accReason  string
-	var accDurMs   int64
-	var accTime    time.Time
+	var accText string
+	var accTools []map[string]interface{}
+	var accReason string
+	var accDurMs int64
+	var accTime time.Time
 	flushAcc := func() {
 		if accText != "" || len(accTools) > 0 {
 			result = append(result, map[string]interface{}{
@@ -2119,8 +2128,8 @@ func (d *Daemon) handleSessionGetMessages(w MessageWriter, req wsRequest) {
 			if len(m.ToolCalls) > 0 && accText != "" {
 				// Flush text-only entry before processing tools
 				result = append(result, map[string]interface{}{
-					"time":    accTime.Format(time.RFC3339),
-					"from":    "agent",
+					"time":     accTime.Format(time.RFC3339),
+					"from":     "agent",
 					"content":  accText,
 					"thinking": accReason,
 				})
@@ -2178,8 +2187,9 @@ func (d *Daemon) pushIfStdio(msg wsPush) {
 }
 
 // resolveAPIKey reads the DeepSeek API key from:
-//   1. DEEPSEEK_API_KEY environment variable (preferred)
-//   2. {dataDir}/credentials.json �?deepseek_api_key field
+//  1. DEEPSEEK_API_KEY environment variable (preferred)
+//  2. {dataDir}/credentials.json �?deepseek_api_key field
+//
 // Returns empty string if neither is set.
 func resolveAPIKey(dataDir string) string {
 	if key := os.Getenv("DEEPSEEK_API_KEY"); key != "" {
@@ -2262,7 +2272,7 @@ func listAgentMarkdown(dir string) []map[string]interface{} {
 			result = append(result, map[string]interface{}{
 				"name": name, "role": role, "description": desc,
 				"category": e.Name(),
-				"skills": skills, "tools": tools, "whenToUse": whenToUse,
+				"skills":   skills, "tools": tools, "whenToUse": whenToUse,
 			})
 		}
 	}
@@ -2289,14 +2299,22 @@ func listAgentMarkdown(dir string) []map[string]interface{} {
 // This is the value sent as ToolInput in chat.stream tool_call events.
 func toolLabel(name string) string {
 	switch name {
-	case "read_file": return "Read"
-	case "write", "edit", "multi_edit": return "Write"
-	case "shell_run": return "Run"
-	case "grep", "web_search": return "Search"
-	case "web_fetch", "fetch": return "Fetch"
-	case "spawn_subagent": return "Agent"
-	case "parallel_reason": return "Think"
-	default: return "Tool"
+	case "read_file":
+		return "Read"
+	case "write", "edit", "multi_edit":
+		return "Write"
+	case "shell_run":
+		return "Run"
+	case "grep", "web_search":
+		return "Search"
+	case "web_fetch", "fetch":
+		return "Fetch"
+	case "spawn_subagent":
+		return "Agent"
+	case "parallel_reason":
+		return "Think"
+	default:
+		return "Tool"
 	}
 }
 
@@ -2306,49 +2324,69 @@ func summarizeToolInput(name string, input string) string {
 	}
 	switch name {
 	case "shell_run":
-		var body struct{ Command string `json:"command"` }
+		var body struct {
+			Command string `json:"command"`
+		}
 		if json.Unmarshal([]byte(input), &body) == nil && body.Command != "" {
 			return strings.TrimSpace(body.Command)
 		}
 	case "read_file":
-		var body struct{ FilePath string `json:"file_path"` }
+		var body struct {
+			FilePath string `json:"file_path"`
+		}
 		if json.Unmarshal([]byte(input), &body) == nil && body.FilePath != "" {
 			return body.FilePath
 		}
 	case "write", "edit":
-		var body struct{ FilePath string `json:"file_path"` }
+		var body struct {
+			FilePath string `json:"file_path"`
+		}
 		if json.Unmarshal([]byte(input), &body) == nil && body.FilePath != "" {
 			return body.FilePath
 		}
 	case "grep":
-		var body struct{ Pattern string `json:"pattern"` }
+		var body struct {
+			Pattern string `json:"pattern"`
+		}
 		if json.Unmarshal([]byte(input), &body) == nil && body.Pattern != "" {
 			return body.Pattern
 		}
 	case "web_search":
-		var body struct{ Query string `json:"query"` }
+		var body struct {
+			Query string `json:"query"`
+		}
 		if json.Unmarshal([]byte(input), &body) == nil && body.Query != "" {
 			return body.Query
 		}
 	case "web_fetch", "fetch":
-		var body struct{ URL string `json:"url"` }
+		var body struct {
+			URL string `json:"url"`
+		}
 		if json.Unmarshal([]byte(input), &body) == nil && body.URL != "" {
 			return body.URL
 		}
 	case "spawn_subagent":
-		var body struct{ Role string `json:"role"`; Task string `json:"task"` }
+		var body struct {
+			Role string `json:"role"`
+			Task string `json:"task"`
+		}
 		if json.Unmarshal([]byte(input), &body) == nil {
 			if body.Role != "" && body.Task != "" {
 				return body.Role + ": " + body.Task
 			}
 		}
 	case "parallel_reason":
-		var body struct{ Prompts []string `json:"prompts"` }
+		var body struct {
+			Prompts []string `json:"prompts"`
+		}
 		if json.Unmarshal([]byte(input), &body) == nil && len(body.Prompts) > 0 {
 			return fmt.Sprintf("%d prompts", len(body.Prompts))
 		}
 	case "multi_edit":
-		var body struct{ FilePath string `json:"file_path"`; Edits []struct{} `json:"edits"` }
+		var body struct {
+			FilePath string     `json:"file_path"`
+			Edits    []struct{} `json:"edits"`
+		}
 		if json.Unmarshal([]byte(input), &body) == nil {
 			return fmt.Sprintf("%s (%d edits)", body.FilePath, len(body.Edits))
 		}
@@ -2406,11 +2444,11 @@ func listExpertYAML(dir string) []map[string]interface{} {
 				name = exp.NameEn
 			}
 			result = append(result, map[string]interface{}{
-			"name": name, "role": exp.NameEn,
-			"agent":      exp.Agent,
-			"description": exp.Description,
-			"category":    ef.Domain,
-			"skills":      skills,
+				"name": name, "role": exp.NameEn,
+				"agent":       exp.Agent,
+				"description": exp.Description,
+				"category":    ef.Domain,
+				"skills":      skills,
 			})
 		}
 	}
@@ -2566,8 +2604,8 @@ func resolveTeamLeaderRole(dir string, teamName string) string {
 			continue
 		}
 		var raw struct {
-			Name  string `yaml:"name"`
-			Label string `yaml:"label"`
+			Name   string `yaml:"name"`
+			Label  string `yaml:"label"`
 			Leader struct {
 				Role string `yaml:"role"`
 			} `yaml:"leader"`
@@ -2585,4 +2623,3 @@ func resolveTeamLeaderRole(dir string, teamName string) string {
 	}
 	return ""
 }
-

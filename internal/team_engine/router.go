@@ -56,8 +56,8 @@ func (r *Router) ResolveProfile(role AgentRole, description string, isVerifier b
 // config rules.
 //
 // When isVerifier=true, it returns config's verifier_timeout_sec (default 300).
-// When isDecomposer=true, it returns config's decomposer_timeout_sec (default 180).
-// Otherwise it uses the per-role timeout from role_map (default 600).
+// Otherwise it uses the per-role timeout from role_map, falling back to 1800
+// for unknown/team-specific roles (research/deep-analysis need ample time).
 func (r *Router) ResolveTimeout(role AgentRole, isVerifier bool) int {
 	if isVerifier {
 		if r.cfg.Routing.VerifierTimeoutSec > 0 {
