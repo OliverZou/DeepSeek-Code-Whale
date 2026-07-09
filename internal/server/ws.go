@@ -409,9 +409,17 @@ type userInputOpt struct {
 }
 
 type userInputResponsePayload struct {
-	SessionID  string `json:"session_id"`
-	ToolCallID string `json:"tool_call_id"`
-	Answer     string `json:"answer"`
+	SessionID  string            `json:"session_id"`
+	ToolCallID string            `json:"tool_call_id"`
+	Answer     string            `json:"answer,omitempty"`  // legacy: single answer
+	Answers    []userInputAnswer `json:"answers,omitempty"` // new: full answer set
+}
+
+type userInputAnswer struct {
+	ID      string `json:"id"`
+	Label   string `json:"label"`
+	Value   string `json:"value"`
+	IsOther bool   `json:"is_other,omitempty"`
 }
 
 // =========================================================================
@@ -1231,12 +1239,26 @@ func (d *Daemon) handleUserInputResponse(w MessageWriter, req wsRequest) {
 		return
 	}
 
-	select {
-	case ch <- userInputResp{
-		Response: core.UserInputResponse{
+	var resp userInputResp
+	switch {
+	case len(p.Answers) > 0:
+		answers := make([]core.UserInputAnswer, len(p.Answers))
+		for i, a := range p.Answers {
+			answers[i] = core.UserInputAnswer{ID: a.ID, Label: a.Label, Value: a.Value, IsOther: a.IsOther}
+		}
+		resp = userInputResp{Response: core.UserInputResponse{Answers: answers}}
+	case p.Answer != "":
+		// legacy single-answer pods
+		resp = userInputResp{Response: core.UserInputResponse{
 			Answers: []core.UserInputAnswer{{ID: "answer", Label: p.Answer, Value: p.Answer}},
-		},
-	}:
+		}}
+	default:
+		// no answers → treat as cancellation (routes to AgentEventTypeUserInputCancelled)
+		resp = userInputResp{Cancelled: true}
+	}
+
+	select {
+	case ch <- resp:
 	default:
 	}
 }
