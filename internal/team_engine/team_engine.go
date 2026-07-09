@@ -2847,13 +2847,19 @@ func (e *TeamEngine) closePersistentSession(key string) {
 }
 
 // resolveVerifierAgentName resolves which agent definition to use for
-// verifying a task.  Two-level lookup; returns "" when no Verifier is needed.
+// verifying a task.  Four-level lookup; always returns a non-empty agent
+// name (falling back to the builtin "verifier").
 //
 //	Level 1: task.VerifierRole (Leader explicitly assigned)
 //	Level 2: Worker role → Verifier role mapping
+//	         (code roles developer/tester/reviewer → "review";
+//	          content roles → "verifier")
+//	Level 3: Team auto-match — scan team roles for a QA/test/review agent
+//	Level 4: Builtin "verifier"
 //
-// Returns "" for deterministic roles (formatter, evaluator, synthesizer)
-// where the Checker's mechanical checks are sufficient.
+// Code-type roles map to the "review" agent, which runs the mechanical
+// build/lint/test checks itself via tools — there is no separate
+// deterministic Checker phase.
 func (e *TeamEngine) resolveVerifierAgentName(task *Task) string {
 	// Level 1: Leader explicitly set VerifierRole.
 	// An explicitly empty string means "no Verifier needed".
