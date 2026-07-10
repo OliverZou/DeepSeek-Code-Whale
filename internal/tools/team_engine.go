@@ -11,7 +11,7 @@ import (
 
 	"github.com/usewhale/whale/internal/bridge"
 	"github.com/usewhale/whale/internal/core"
-	"github.com/usewhale/whale/team_engine"
+	"team-engine"
 )
 
 func (b *Toolset) teamEngineTools() []core.Tool {

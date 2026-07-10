@@ -14,7 +14,7 @@ import (
 	"github.com/usewhale/whale/internal/core"
 	"github.com/usewhale/whale/internal/llm"
 	"github.com/usewhale/whale/internal/llm/deepseek"
-	"github.com/usewhale/whale/team_engine"
+	"team-engine"
 )
 
 func newTeamCmd() *cobra.Command {

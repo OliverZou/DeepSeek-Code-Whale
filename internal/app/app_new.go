@@ -11,8 +11,8 @@ import (
 	"github.com/usewhale/whale/internal/bridge"
 	"github.com/usewhale/whale/internal/plugins"
 	"github.com/usewhale/whale/internal/policy"
-	"github.com/usewhale/whale/team_engine"
-	teampglog "github.com/usewhale/whale/team_engine/log"
+	"team-engine"
+	teampglog "team-engine/log"
 )
 
 func New(ctx context.Context, cfg Config, start StartOptions) (*App, error) {

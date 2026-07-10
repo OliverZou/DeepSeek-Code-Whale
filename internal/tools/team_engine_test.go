@@ -8,7 +8,7 @@ import (
 	"testing"
 
 	"github.com/usewhale/whale/internal/core"
-	"github.com/usewhale/whale/team_engine"
+	"team-engine"
 )
 
 // teamEngineTestHelper creates a Toolset with a temp workspace
