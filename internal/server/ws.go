@@ -721,6 +721,66 @@ func (d *Daemon) handleMessage(w MessageWriter, req wsRequest) {
 // and streams all events as structured chat.stream pushes.
 // The response is sent asynchronously via push; the final "chat" response
 // carries the session_id for subsequent turns.
+// sessionToolRegistry returns a tool registry scoped to the session's agent
+// type, enforcing the role-agent SOP at the tool layer:
+//   - whale  = full registry (the only one that may team_create)
+//   - team   = full minus team_create (a team leader plans via team_plan,
+//     it does not spawn ad-hoc single tasks)
+//   - expert = no team_* execution tools at all, except the read-only
+//     team_roster (so an expert can still advise "this needs team X")
+//
+// Falls back to the full registry on any build error.
+func (d *Daemon) sessionToolRegistry(isTeam, isExpert bool) *core.ToolRegistry {
+	if !isTeam && !isExpert {
+		return d.toolReg
+	}
+	all := d.toolset.Tools()
+	filtered := make([]core.Tool, 0, len(all))
+	// team_create + the dynamic team-building tools are whale-only (only the
+	// dispatcher assembles teams). Reaching here means team or expert.
+	whaleOnly := map[string]bool{"team_create": true, "agent_define": true, "team_define": true}
+	for _, t := range all {
+		n := t.Name()
+		if whaleOnly[n] {
+			continue
+		}
+		if isExpert && strings.HasPrefix(n, "team_") && n != "team_roster" {
+			continue
+		}
+		filtered = append(filtered, t)
+	}
+	reg, err := core.NewToolRegistryChecked(filtered)
+	if err != nil {
+		return d.toolReg
+	}
+	return reg
+}
+
+// sessionSOPBlock returns the role-agent SOP injected into the session's system
+// prompt, per agent type (team leader / expert / whale dispatcher). This is the
+// soft-guidance half of the SOP; sessionToolRegistry enforces the hard half.
+func sessionSOPBlock(isTeam, isExpert bool) string {
+	switch {
+	case isTeam:
+		return `## 团队协作 SOP（你是专家团 leader）
+- 任务匹配本团队能力时：调用 team_plan（team 参数填本团队名）让团队分解并执行，禁止用 team_create 逐个建任务。
+- 任务不匹配本团队时：不要开始执行；用 request_user_input 或文字向用户说明，并建议更合适的团队/专家。
+- 你是编排者，通过 team_plan 委派，不亲自逐个执行子任务。`
+	case isExpert:
+		return `## 专家 SOP（你是单领域专家）
+- 任务适合你的领域、且单 agent 可完成时：直接用工具动手完成。
+- 任务超出你的领域或需要多角色协作时：你没有团队执行工具；用 team_roster 查有哪些团队/专家，然后向用户建议更合适的团队/专家、由用户切换，不要尝试自己拉团队。`
+	default: // whale
+		return `## 调度 SOP（你是全能调度中枢）
+- 面对复杂 / 多角色 / 多文件的项目型任务，优先委派给团队，不要自己用 team_create 逐个建任务：
+  1. 先用 team_roster 查有哪些现成团队；
+  2. 找到匹配的团队 → team_plan（team 参数填该团队名）委派给团队 leader 分解执行；
+  3. 没有匹配的现成团队时，动态组建：需要的角色若已有 agent 就直接用，缺的用 agent_define 新建，再用 team_define 组建团队，然后 team_plan（team=新团队名）委派；
+  4. 委派后你退出执行，由团队接管。
+- 只有简单的单步任务才自己直接做。`
+	}
+}
+
 func (d *Daemon) handleChat(w MessageWriter, req wsRequest) {
 	var p chatRequest
 	if err := json.Unmarshal(req.Payload, &p); err != nil {
@@ -790,7 +850,8 @@ func (d *Daemon) handleChat(w MessageWriter, req wsRequest) {
 	var agentExtraSkills []*skills.Skill
 	agentName := p.Agent
 	isTeam := strings.HasPrefix(agentName, "team:")
-	if strings.HasPrefix(agentName, "expert:") {
+	isExpert := strings.HasPrefix(agentName, "expert:")
+	if isExpert {
 		agentName = strings.TrimPrefix(agentName, "expert:")
 	} else if isTeam {
 		agentName = strings.TrimPrefix(agentName, "team:")
@@ -876,6 +937,8 @@ func (d *Daemon) handleChat(w MessageWriter, req wsRequest) {
 			agentOpts = append(agentOpts, agent.WithMaxTurns(agentDef.MaxTurns))
 		}
 	}
+	// Role-agent SOP (soft guidance; sessionToolRegistry is the hard enforcement).
+	agentOpts = append(agentOpts, agent.WithExtraSystemBlocks(sessionSOPBlock(isTeam, isExpert)))
 	// Merge plugin skills + agent-specific skills into a single WithExtraSkills call.
 	allExtraSkills := append([]*skills.Skill{}, d.pluginManager.Skills()...)
 	allExtraSkills = append(allExtraSkills, agentExtraSkills...)
@@ -883,7 +946,7 @@ func (d *Daemon) handleChat(w MessageWriter, req wsRequest) {
 		agentOpts = append(agentOpts, agent.WithExtraSkills(allExtraSkills))
 	}
 
-	ag := agent.NewAgentWithRegistry(prov, d.store, d.toolReg, agentOpts...)
+	ag := agent.NewAgentWithRegistry(prov, d.store, d.sessionToolRegistry(isTeam, isExpert), agentOpts...)
 
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -1992,7 +2055,22 @@ func (d *Daemon) handleAgentList(w MessageWriter, req wsRequest) {
 
 // handleTeamList returns teams from team.yaml files in the data dir.
 func (d *Daemon) handleTeamList(w MessageWriter, req wsRequest) {
-	result := listTeamsFromDisk(d.teamsDir())
+	// Scan the same roots team_plan uses (workspace + home + bundled) so the
+	// GUI/sidebar sees exactly the teams that can actually be executed.
+	seen := map[string]bool{}
+	var result []map[string]interface{}
+	for _, dir := range team_engine.DefaultTeamRoots(d.cfg.WorkDir) {
+		for _, t := range listTeamsFromDisk(dir) {
+			name, _ := t["name"].(string)
+			if name != "" {
+				if seen[name] {
+					continue
+				}
+				seen[name] = true
+			}
+			result = append(result, t)
+		}
+	}
 	w.SendResponse(wsResponse{Type: "team.list", ID: req.ID, Payload: map[string]interface{}{"teams": result}})
 }
 

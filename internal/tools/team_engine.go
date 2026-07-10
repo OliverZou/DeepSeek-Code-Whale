@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/usewhale/whale/internal/bridge"
@@ -20,12 +21,15 @@ func (b *Toolset) teamEngineTools() []core.Tool {
 		b.teamRunTool(),
 		b.teamStatusTool(),
 		b.teamListTool(),
+		b.teamRosterTool(),
 		b.teamFeedbackTool(),
 		b.teamHistoryTool(),
 		b.teamExportTool(),
 		b.teamResultTool(),
 		b.teamOutputTool(),
 		b.teamDeleteTool(),
+		b.agentDefineTool(),
+		b.teamDefineTool(),
 	}
 }
 
@@ -601,6 +605,98 @@ func (b *Toolset) teamListTool() toolFn {
 				s += fmt.Sprintf("%s %s [%s] %d%% %s\n", tick(t.State == team_engine.TaskStateDone), t.ID, t.State, team_engine.GetProgress(t.State), t.Title)
 			}
 			return toolResult(s), nil
+		},
+	}
+}
+
+// --- team_roster ---
+
+// teamRosterTool lets whale/expert discover which teams and experts EXIST
+// (distinct from team_list, which lists running tasks). Use before team_plan
+// to pick a matching team to delegate to.
+func (b *Toolset) teamRosterTool() toolFn {
+	return toolFn{
+		name:        "team_roster",
+		description: "List available expert TEAMS and single EXPERTS (from workspace .whale/teams and ~/.whale/{teams,experts}). Use this BEFORE team_plan to find a matching team to delegate to. Returns team names (pass as team_plan's `team` param), labels, capabilities, roles; and expert names/domains. NOTE: distinct from team_list, which lists running tasks.",
+		readOnly:    true,
+		parameters:  map[string]any{"type": "object", "properties": map[string]any{}},
+		fn: func(ctx context.Context, call core.ToolCall) (core.ToolResult, error) {
+			var sb strings.Builder
+
+			// Teams — walk roots so we keep the folder/file name (team_plan needs it).
+			sb.WriteString("## 可用团队（team_plan 传 team=<name>）\n")
+			roots := team_engine.DefaultTeamRoots(b.root)
+			seen := map[string]bool{}
+			teamCount := 0
+			for i := len(roots) - 1; i >= 0; i-- {
+				entries, err := os.ReadDir(roots[i])
+				if err != nil {
+					continue
+				}
+				for _, e := range entries {
+					var name, cfgPath string
+					if e.IsDir() {
+						name = e.Name()
+						cfgPath = filepath.Join(roots[i], name, "team.yaml")
+					} else if strings.HasSuffix(e.Name(), ".yaml") {
+						name = strings.TrimSuffix(e.Name(), ".yaml")
+						cfgPath = filepath.Join(roots[i], e.Name())
+					} else {
+						continue
+					}
+					if seen[name] {
+						continue
+					}
+					tc, err := team_engine.LoadTeamConfig(cfgPath)
+					if err != nil || tc == nil {
+						continue
+					}
+					seen[name] = true
+					teamCount++
+					label := tc.Label
+					if label == "" {
+						label = name
+					}
+					sb.WriteString(fmt.Sprintf("- **%s** — %s", name, label))
+					if len(tc.Capabilities) > 0 {
+						sb.WriteString(" | 能力: " + strings.Join(tc.Capabilities, "、"))
+					}
+					if len(tc.Roles) > 0 {
+						sb.WriteString(" | 角色: " + strings.Join(tc.Roles, "、"))
+					}
+					sb.WriteString("\n")
+				}
+			}
+			if teamCount == 0 {
+				sb.WriteString("（无现成团队）\n")
+			}
+
+			// Experts.
+			sb.WriteString("\n## 可用专家\n")
+			expCount := 0
+			if home, err := os.UserHomeDir(); err == nil {
+				if reg, err := team_engine.LoadAllExperts(filepath.Join(home, ".whale", "experts")); err == nil {
+					for _, exp := range reg.AllExperts() {
+						expCount++
+						sb.WriteString(fmt.Sprintf("- **%s**", exp.Name))
+						if exp.Agent != "" {
+							sb.WriteString(fmt.Sprintf(" (%s)", exp.Agent))
+						}
+						if exp.Description != "" {
+							sb.WriteString(" — " + exp.Description)
+						}
+						if len(exp.Domains) > 0 {
+							sb.WriteString(" | 领域: " + strings.Join(exp.Domains, "、"))
+						}
+						sb.WriteString("\n")
+					}
+				}
+			}
+			if expCount == 0 {
+				sb.WriteString("（无专家）\n")
+			}
+
+			return toolResult(sb.String()), nil
 		},
 	}
 }
