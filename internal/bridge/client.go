@@ -11,7 +11,7 @@ import (
 
 	"github.com/gorilla/websocket"
 
-	"github.com/usewhale/whale/internal/team_engine"
+	"github.com/usewhale/whale/team_engine"
 )
 
 const (

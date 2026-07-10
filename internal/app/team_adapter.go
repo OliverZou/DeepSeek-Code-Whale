@@ -6,7 +6,7 @@ import (
 	"strings"
 
 	"github.com/usewhale/whale/internal/tasks"
-	"github.com/usewhale/whale/internal/team_engine"
+	"github.com/usewhale/whale/team_engine"
 )
 
 // teamEngineSpawnAdapter wraps a tasks.Runner into a team_engine.SpawnFunc,

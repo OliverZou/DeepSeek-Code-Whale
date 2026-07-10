@@ -192,8 +192,8 @@ import (
 	"github.com/usewhale/whale/internal/skills"
 	"github.com/usewhale/whale/internal/store"
 	"github.com/usewhale/whale/internal/tasks"
-	"github.com/usewhale/whale/internal/team_engine"
-	teamlog "github.com/usewhale/whale/internal/team_engine/log"
+	"github.com/usewhale/whale/team_engine"
+	teamlog "github.com/usewhale/whale/team_engine/log"
 	"github.com/usewhale/whale/internal/tools"
 )
 

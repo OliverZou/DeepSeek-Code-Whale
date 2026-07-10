@@ -16,7 +16,7 @@ import (
 	"github.com/usewhale/whale/internal/bridge"
 	"github.com/usewhale/whale/internal/policy"
 	"github.com/usewhale/whale/internal/skills"
-	"github.com/usewhale/whale/internal/team_engine"
+	"github.com/usewhale/whale/team_engine"
 	"github.com/usewhale/whale/internal/webfetch"
 )
 

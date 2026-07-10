@@ -8,7 +8,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/usewhale/whale/internal/store"
-	"github.com/usewhale/whale/internal/team_engine"
+	"github.com/usewhale/whale/team_engine"
 	"github.com/usewhale/whale/internal/server"
 )
 
