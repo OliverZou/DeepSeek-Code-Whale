@@ -91,15 +91,15 @@ func (b *Toolset) agentDefineTool() toolFn {
 // --- team_define ---
 
 // teamDefineTool writes a team definition to ~/.whale/teams/{name}/team.yaml,
-// which team_plan(team=name) can then execute. Whale-only.
+// which team_execute(team=name) can then execute. Whale-only.
 func (b *Toolset) teamDefineTool() toolFn {
 	return toolFn{
 		name:        "team_define",
-		description: "Create or overwrite a team definition at ~/.whale/teams/{name}/team.yaml, then execute it via team_plan(goal, team=name). Use when team_roster shows no matching team. Provide a leader and roles; each role references an existing agent (use_agent, e.g. one made with agent_define) or defines an inline prompt.",
+		description: "Create or overwrite a team definition at ~/.whale/teams/{name}/team.yaml, then execute it via team_execute(goal, team=name). Use when team_roster shows no matching team. Provide a leader and roles; each role references an existing agent (use_agent, e.g. one made with agent_define) or defines an inline prompt.",
 		parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"name":               map[string]any{"type": "string", "description": "Team id / folder name (pass this to team_plan's team param)"},
+				"name":               map[string]any{"type": "string", "description": "Team id / folder name (pass this to team_execute's team param)"},
 				"label":              map[string]any{"type": "string", "description": "Display name"},
 				"leader_role":        map[string]any{"type": "string", "description": "Leader role title, e.g. 项目经理"},
 				"leader_description": map[string]any{"type": "string"},
@@ -193,7 +193,7 @@ func (b *Toolset) teamDefineTool() toolFn {
 			if err := os.WriteFile(path, data, 0o644); err != nil {
 				return toolError("write: %v", err), nil
 			}
-			return toolResult(fmt.Sprintf("Created team %q at %s with roles: %s. Now delegate with team_plan(goal, team=%q).", a.Name, path, strings.Join(roleNames, ", "), a.Name)), nil
+			return toolResult(fmt.Sprintf("Created team %q at %s with roles: %s. Now delegate with team_execute(goal, team=%q).", a.Name, path, strings.Join(roleNames, ", "), a.Name)), nil
 		},
 	}
 }

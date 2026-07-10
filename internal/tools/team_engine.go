@@ -16,7 +16,8 @@ import (
 
 func (b *Toolset) teamEngineTools() []core.Tool {
 	return []core.Tool{
-		b.teamPlanTool(),
+		b.teamExecuteTool(),
+		b.teamComposeTool(),
 		b.teamCreateTool(),
 		b.teamRunTool(),
 		b.teamStatusTool(),
@@ -54,11 +55,11 @@ func toolError(format string, args ...interface{}) core.ToolResult {
 	return core.ToolResult{ModelText: fmt.Sprintf(format, args...), Outcome: core.OutcomeFailure}
 }
 
-// --- team_plan ---
+// --- team_execute ---
 
 // AutoExecuteMasterTask is called by the dashboard client when it receives
 // a resume command via heartbeat.  It loads the master task and executes
-// it directly without waiting for a user-initiated team_plan call.
+// it directly without waiting for a user-initiated team_execute call.
 func (b *Toolset) AutoExecuteMasterTask(masterTaskID string) {
 	go func() {
 		eng, err := b.newTeamEngine()
@@ -188,11 +189,11 @@ func logToFile(path, format string, args ...interface{}) {
 	fmt.Fprintf(f, "[%s] %s\n", ts, msg)
 }
 
-// --- team_plan ---
+// --- team_execute ---
 
-func (b *Toolset) teamPlanTool() toolFn {
+func (b *Toolset) teamExecuteTool() toolFn {
 	return toolFn{
-		name:        "team_plan",
+		name:        "team_execute",
 		description: "Decompose a complex goal into batches of subtasks and execute them in parallel with Leader-Worker-Verifier orchestration.",
 		parameters: map[string]any{
 			"type": "object",
@@ -347,7 +348,7 @@ func (b *Toolset) runTeamPlan(ctx context.Context, call core.ToolCall, progress 
 	// The master task is already visible in the bridge.
 	if args.Async {
 		return core.ToolResult{
-			ModelText: fmt.Sprintf("📋 Master task created: `%s`\nRun `team_plan goal=\"...\"` (without async) to execute.", masterTask.ID),
+			ModelText: fmt.Sprintf("📋 Master task created: `%s`\nRun `team_execute goal=\"...\"` (without async) to execute.", masterTask.ID),
 			Metadata:  map[string]any{"master_task_id": masterTask.ID, "mode": "async"},
 		}, nil
 	}
@@ -453,6 +454,31 @@ func (b *Toolset) runTeamPlan(ctx context.Context, call core.ToolCall, progress 
 		"tasks":       allTasks,
 	}
 	return core.ToolResult{ModelText: fullResult, Metadata: metadata}, nil
+}
+
+// --- team_compose ---
+
+// teamComposeTool decomposes a goal into subtasks and batches, writing the plan
+// (plan.md / plan.json) but does NOT execute anything. Use this when you want
+// to review the decomposition before kicking off team_execute or manually
+// running individual tasks. Equivalent to the deprecated team_execute async=true.
+func (b *Toolset) teamComposeTool() toolFn {
+	return toolFn{
+		name:        "team_compose",
+		description: "Decompose a goal into subtasks and batches, write plan.md/plan.json, but do NOT execute. Use when you want to review the decomposition before running, or when you need the plan for debugging/documentation.",
+		parameters: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"goal":    map[string]any{"type": "string", "description": "The goal to decompose"},
+				"workdir": map[string]any{"type": "string", "description": "Working directory for subtasks (default: workspace root)"},
+				"team":    map[string]any{"type": "string", "description": "Team name from .whale/teams/{team}.yaml (optional)"},
+			},
+			"required": []string{"goal"},
+		},
+		fn: func(ctx context.Context, call core.ToolCall) (core.ToolResult, error) {
+			return b.runTeamPlan(ctx, call, nil)
+		},
+	}
 }
 
 // --- team_create ---
@@ -598,7 +624,7 @@ func (b *Toolset) teamListTool() toolFn {
 				return toolError("list: %v", err), nil
 			}
 			if len(tasks) == 0 {
-				return toolResult("No tasks. Use team_plan or team_create."), nil
+				return toolResult("No tasks. Use team_execute or team_create."), nil
 			}
 			var s string
 			for _, t := range tasks {
@@ -612,19 +638,19 @@ func (b *Toolset) teamListTool() toolFn {
 // --- team_roster ---
 
 // teamRosterTool lets whale/expert discover which teams and experts EXIST
-// (distinct from team_list, which lists running tasks). Use before team_plan
+// (distinct from team_list, which lists running tasks). Use before team_execute
 // to pick a matching team to delegate to.
 func (b *Toolset) teamRosterTool() toolFn {
 	return toolFn{
 		name:        "team_roster",
-		description: "List available expert TEAMS and single EXPERTS (from workspace .whale/teams and ~/.whale/{teams,experts}). Use this BEFORE team_plan to find a matching team to delegate to. Returns team names (pass as team_plan's `team` param), labels, capabilities, roles; and expert names/domains. NOTE: distinct from team_list, which lists running tasks.",
+		description: "List available expert TEAMS and single EXPERTS (from workspace .whale/teams and ~/.whale/{teams,experts}). Use this BEFORE team_execute to find a matching team to delegate to. Returns team names (pass as team_execute's `team` param), labels, capabilities, roles; and expert names/domains. NOTE: distinct from team_list, which lists running tasks.",
 		readOnly:    true,
 		parameters:  map[string]any{"type": "object", "properties": map[string]any{}},
 		fn: func(ctx context.Context, call core.ToolCall) (core.ToolResult, error) {
 			var sb strings.Builder
 
-			// Teams — walk roots so we keep the folder/file name (team_plan needs it).
-			sb.WriteString("## 可用团队（team_plan 传 team=<name>）\n")
+			// Teams — walk roots so we keep the folder/file name (team_execute needs it).
+			sb.WriteString("## 可用团队（team_execute 传 team=<name>）\n")
 			roots := team_engine.DefaultTeamRoots(b.root)
 			seen := map[string]bool{}
 			teamCount := 0
@@ -913,7 +939,7 @@ func (b *Toolset) teamResultTool() toolFn {
 		parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"master_task_id": map[string]any{"type": "string", "description": "Master task ID from team_plan result"},
+				"master_task_id": map[string]any{"type": "string", "description": "Master task ID from team_execute result"},
 			},
 			"required": []string{"master_task_id"},
 		},

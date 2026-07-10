@@ -1,6 +1,6 @@
 # Team configuration example
 # Place in .whale/teams/{team-name}.yaml
-# Use with: team_plan goal="..." team="team-name"
+# Use with: team_execute goal="..." team="team-name"
 
 label: "软件开发团队"
 

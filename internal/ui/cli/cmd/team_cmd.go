@@ -137,9 +137,9 @@ Subcommands:
 	}
 
 	// --- spec subcommand ---
-	specCmd := &cobra.Command{
-		Use:   "spec --goal GOAL [--team TEAM]",
-		Short: "Run Goal Elaboration only and print the spec",
+	initCmd := &cobra.Command{
+		Use:   "init --goal GOAL [--team TEAM]",
+		Short: "Elaborate a goal into a detailed spec; no decomposition, no execution",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			goal, _ := cmd.Flags().GetString("goal")
 			if goal == "" {
@@ -181,13 +181,13 @@ Subcommands:
 			return nil
 		},
 	}
-	specCmd.Flags().String("goal", "", "The goal to elaborate")
-	specCmd.Flags().String("team", "", "Team name for domain context")
+	initCmd.Flags().String("goal", "", "The goal to elaborate")
+	initCmd.Flags().String("team", "", "Team name for domain context")
 
 	// --- plan subcommand ---
-	planCmd := &cobra.Command{
-		Use:   "plan --goal GOAL [--stop-at spec|decompose]",
-		Short: "Decompose a goal and run all subtasks",
+	executeCmd := &cobra.Command{
+		Use:   "execute --goal GOAL [--team TEAM]",
+		Short: "Decompose a goal and execute all subtasks in parallel",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			goal, _ := cmd.Flags().GetString("goal")
 			if goal == "" {
@@ -256,7 +256,7 @@ Subcommands:
 				planJSON, _ := json.MarshalIndent(planTasks, "", "  ")
 				os.WriteFile(jsonPath, planJSON, 0644)
 				fmt.Printf("📋 Decomposed %d tasks in %.1fs\n   spec → %s\n   plan → %s\n%s\n",
-					len(planTasks), time.Since(start).Seconds(), specPath, planPath, jsonPath, rawJSON)
+					len(planTasks), time.Since(start).Seconds(), specPath, planPath, rawJSON)
 				return nil
 			}
 
@@ -306,9 +306,9 @@ Subcommands:
 			return nil
 		},
 	}
-	planCmd.Flags().String("goal", "", "The goal to decompose into subtasks")
-	planCmd.Flags().String("team", "", "Team name to use for decomposition")
-	planCmd.Flags().String("stop-at", "", "Stop after: 'spec' (elaboration) or 'decompose' (plan, no execution)")
+	executeCmd.Flags().String("goal", "", "The goal to decompose into subtasks")
+	executeCmd.Flags().String("team", "", "Team name to use for decomposition")
+	executeCmd.Flags().String("model", "", "Model override for the Leader decomposition step")
 
 	// --- status subcommand ---
 	statusCmd := &cobra.Command{
@@ -462,8 +462,8 @@ Subcommands:
 
 	teamCmd.AddCommand(createCmd)
 	teamCmd.AddCommand(runCmd)
-	teamCmd.AddCommand(specCmd)
-	teamCmd.AddCommand(planCmd)
+	teamCmd.AddCommand(initCmd)
+	teamCmd.AddCommand(executeCmd)
 	teamCmd.AddCommand(statusCmd)
 	teamCmd.AddCommand(listCmd)
 	teamCmd.AddCommand(cancelCmd)

@@ -724,7 +724,7 @@ func (d *Daemon) handleMessage(w MessageWriter, req wsRequest) {
 // sessionToolRegistry returns a tool registry scoped to the session's agent
 // type, enforcing the role-agent SOP at the tool layer:
 //   - whale  = full registry (the only one that may team_create)
-//   - team   = full minus team_create (a team leader plans via team_plan,
+//   - team   = full minus team_create (a team leader plans via team_execute,
 //     it does not spawn ad-hoc single tasks)
 //   - expert = no team_* execution tools at all, except the read-only
 //     team_roster (so an expert can still advise "this needs team X")
@@ -763,9 +763,9 @@ func sessionSOPBlock(isTeam, isExpert bool) string {
 	switch {
 	case isTeam:
 		return `## 团队协作 SOP（你是专家团 leader）
-- 任务匹配本团队能力时：调用 team_plan（team 参数填本团队名）让团队分解并执行，禁止用 team_create 逐个建任务。
+- 任务匹配本团队能力时：调用 team_execute（team 参数填本团队名）让团队分解并执行，禁止用 team_create 逐个建任务。
 - 任务不匹配本团队时：不要开始执行；用 request_user_input 或文字向用户说明，并建议更合适的团队/专家。
-- 你是编排者，通过 team_plan 委派，不亲自逐个执行子任务。`
+- 你是编排者，通过 team_execute 委派，不亲自逐个执行子任务。`
 	case isExpert:
 		return `## 专家 SOP（你是单领域专家）
 - 任务适合你的领域、且单 agent 可完成时：直接用工具动手完成。
@@ -774,8 +774,8 @@ func sessionSOPBlock(isTeam, isExpert bool) string {
 		return `## 调度 SOP（你是全能调度中枢）
 - 面对复杂 / 多角色 / 多文件的项目型任务，优先委派给团队，不要自己用 team_create 逐个建任务：
   1. 先用 team_roster 查有哪些现成团队；
-  2. 找到匹配的团队 → team_plan（team 参数填该团队名）委派给团队 leader 分解执行；
-  3. 没有匹配的现成团队时，动态组建：需要的角色若已有 agent 就直接用，缺的用 agent_define 新建，再用 team_define 组建团队，然后 team_plan（team=新团队名）委派；
+  2. 找到匹配的团队 → team_execute（team 参数填该团队名）委派给团队 leader 分解执行；
+  3. 没有匹配的现成团队时，动态组建：需要的角色若已有 agent 就直接用，缺的用 agent_define 新建，再用 team_define 组建团队，然后 team_execute（team=新团队名）委派；
   4. 委派后你退出执行，由团队接管。
 - 只有简单的单步任务才自己直接做。`
 	}
@@ -2055,7 +2055,7 @@ func (d *Daemon) handleAgentList(w MessageWriter, req wsRequest) {
 
 // handleTeamList returns teams from team.yaml files in the data dir.
 func (d *Daemon) handleTeamList(w MessageWriter, req wsRequest) {
-	// Scan the same roots team_plan uses (workspace + home + bundled) so the
+	// Scan the same roots team_execute uses (workspace + home + bundled) so the
 	// GUI/sidebar sees exactly the teams that can actually be executed.
 	seen := map[string]bool{}
 	var result []map[string]interface{}
