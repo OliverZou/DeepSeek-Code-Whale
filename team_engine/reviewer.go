@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/usewhale/whale/team_engine/log"
+	"team-engine/log"
 )
 
 // Reviewer examines batch execution results and returns accept/reject/escalate decisions.

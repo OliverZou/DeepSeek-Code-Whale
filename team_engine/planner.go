@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/usewhale/whale/team_engine/log"
+	"team-engine/log"
 )
 
 // Planner decomposes goals into structured plans of subtasks.

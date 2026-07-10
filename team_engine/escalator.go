@@ -3,7 +3,7 @@ package team_engine
 import (
 	"time"
 
-	"github.com/usewhale/whale/team_engine/log"
+	"team-engine/log"
 )
 
 // Escalator handles tasks that have exhausted their retry budget.

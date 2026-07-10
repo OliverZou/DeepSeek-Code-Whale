@@ -483,12 +483,14 @@ func NewDaemon(eng *team_engine.TeamEngine, cfg DaemonConfig) (*Daemon, error) {
 		return nil, fmt.Errorf("create data dir: %w", err)
 	}
 
-	// Team engine logging.
-	teamlogDir := filepath.Join(cfg.WorkDir, "team_tasks", "logs")
-	os.MkdirAll(teamlogDir, 0755)
-	if tl := teamlog.NewTeamLog(cfg.WorkDir); tl != nil {
-		tl.AddLog(filepath.Join(teamlogDir, "daemon.log"))
-		team_engine.SetLogger(tl)
+	// Team engine logging (skipped when no engine — pod uses its own adapter).
+	if eng != nil {
+		teamlogDir := filepath.Join(cfg.WorkDir, "team_tasks", "logs")
+		os.MkdirAll(teamlogDir, 0755)
+		if tl := teamlog.NewTeamLog(cfg.WorkDir); tl != nil {
+			tl.AddLog(filepath.Join(teamlogDir, "daemon.log"))
+			team_engine.SetLogger(tl)
+		}
 	}
 
 	// Sessions.

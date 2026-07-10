@@ -1,14 +1,12 @@
-package cmd
+﻿package cmd
 
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 
 	"github.com/spf13/cobra"
 
 	"github.com/usewhale/whale/internal/store"
-	"team-engine"
 	"github.com/usewhale/whale/internal/server"
 )
 
@@ -47,20 +45,11 @@ func runDaemonStart(workdir string, sessionID string) error {
 		return fmt.Errorf("create workdir: %w", err)
 	}
 
-	whiteboardDir := filepath.Join(workdir, "team_tasks")
-	os.MkdirAll(whiteboardDir, 0755)
-	spawner := team_engine.NewShellSubagentSpawner()
-	eng, err := team_engine.New("", whiteboardDir, "", spawner)
-	if err != nil {
-		return fmt.Errorf("init team engine: %w", err)
-	}
-
-	srv, err := server.NewDaemon(eng, server.DaemonConfig{
+	srv, err := server.NewDaemon(nil, server.DaemonConfig{
 		DataDir: dataDir,
 		WorkDir: workdir,
 	})
 	if err != nil {
-		eng.Close()
 		return fmt.Errorf("init daemon: %w", err)
 	}
 

@@ -1,4 +1,4 @@
-package service
+﻿package service
 
 import (
 	"fmt"
@@ -45,6 +45,12 @@ func (s *Service) Dispatch(in Intent) {
 		} else {
 			s.emitSessionChoices()
 		}
+			case IntentCancelTurn:
+		s.cancelMu.Lock()
+		if s.cancel != nil {
+			s.cancel()
+		}
+		s.cancelMu.Unlock()
 	case IntentShutdown:
 		s.cancelMu.Lock()
 		if s.cancel != nil {

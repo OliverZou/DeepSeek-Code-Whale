@@ -8,6 +8,7 @@ const (
 	IntentAllowTool                 IntentKind = "allow_tool"
 	IntentAllowToolForSession       IntentKind = "allow_tool_for_session"
 	IntentDenyTool                  IntentKind = "deny_tool"
+	IntentCancelTurn                IntentKind = "cancel_turn"
 	IntentCancelToolApproval        IntentKind = "cancel_tool_approval"
 	IntentSubmitUserInput           IntentKind = "submit_user_input"
 	IntentCancelUserInput           IntentKind = "cancel_user_input"

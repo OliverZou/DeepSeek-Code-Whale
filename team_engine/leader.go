@@ -3,7 +3,7 @@ package team_engine
 import (
 	"time"
 
-	"github.com/usewhale/whale/team_engine/log"
+	"team-engine/log"
 )
 
 // Leader provides backward-compatible access to planning, review, and escalation.

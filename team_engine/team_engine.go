@@ -14,7 +14,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/usewhale/whale/team_engine/log"
+	"team-engine/log"
 )
 
 const defaultTimeout = 300 * time.Second

@@ -27,6 +27,7 @@ const (
 	IntentSelectSession             IntentKind = "select_session"
 	IntentRequestSessions           IntentKind = "request_sessions"
 	IntentRequestExit               IntentKind = "request_exit"
+	IntentCancelTurn                IntentKind = "cancel_turn"
 	IntentShutdown                  IntentKind = "shutdown"
 	IntentSetModelAndEffort         IntentKind = "set_model_and_effort"
 	IntentSetApprovalMode           IntentKind = "set_approval_mode"

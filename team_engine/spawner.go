@@ -12,7 +12,7 @@ import (
 	"sync"
 	"time"
 
-	teampglog "github.com/usewhale/whale/team_engine/log"
+	teampglog "team-engine/log"
 )
 
 // defaultTeamLog is the internal logger.  Set via SetLogger.

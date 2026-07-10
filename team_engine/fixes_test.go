@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/usewhale/whale/team_engine/log"
+	"team-engine/log"
 )
 
 // ============================================================================

@@ -67,6 +67,8 @@ func serviceIntentKind(kind protocol.IntentKind) IntentKind {
 		return IntentRequestSessions
 	case protocol.IntentRequestExit:
 		return IntentRequestExit
+		case protocol.IntentCancelTurn:
+		return IntentCancelTurn
 	case protocol.IntentShutdown:
 		return IntentShutdown
 	case protocol.IntentSetModelAndEffort:
