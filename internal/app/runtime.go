@@ -138,7 +138,9 @@ func (a *App) RunTurnWithOptions(ctx context.Context, input string, opts agent.R
 func (a *App) RunTurnWithContentOptions(ctx context.Context, parts []core.MessagePart, opts agent.RunOptions) (<-chan agent.AgentEvent, error) {
 	input := core.MessagePartsPlainText(parts)
 	if !opts.HiddenInput && strings.TrimSpace(input) != "" {
-		_, _ = session.PatchSessionMeta(a.sessionsDir, a.sessionID, session.SessionMetaPatch{Title: input})
+		// [fix] 首次发送消息时，将暂存的 pendingMeta 与 title 一并写入 .meta.json，
+		// 避免启动时就创建空壳 meta 文件。flushPendingMeta 内部已包含 title 写入。
+		a.flushPendingMeta(input)
 	}
 	if err := a.reloadWorkflowConfigForTurn(); err != nil {
 		a.pendingGoalTurn = false
@@ -172,7 +174,9 @@ func (a *App) RunTurnWithInjectedInputOptions(ctx context.Context, visibleInput,
 func (a *App) RunTurnWithInjectedContentOptions(ctx context.Context, visibleParts []core.MessagePart, hiddenInput string, opts agent.RunOptions) (<-chan agent.AgentEvent, error) {
 	visibleInput := core.MessagePartsPlainText(visibleParts)
 	if strings.TrimSpace(visibleInput) != "" {
-		_, _ = session.PatchSessionMeta(a.sessionsDir, a.sessionID, session.SessionMetaPatch{Title: visibleInput})
+		// [fix] 首次发送消息时，将暂存的 pendingMeta 与 title 一并写入
+		a.flushPendingMeta(visibleInput)
+
 	}
 	if err := a.reloadWorkflowConfigForTurn(); err != nil {
 		return nil, err
@@ -198,7 +202,9 @@ func (a *App) InjectTurnInput(ctx context.Context, input string, opts agent.RunO
 func (a *App) InjectTurnInputWithHidden(ctx context.Context, visibleInput, hiddenInput string, opts agent.RunOptions) (bool, error) {
 	opts = a.applyRunOptionsDefaults(opts)
 	if !opts.HiddenInput && strings.TrimSpace(visibleInput) != "" {
-		_, _ = session.PatchSessionMeta(a.sessionsDir, a.sessionID, session.SessionMetaPatch{Title: visibleInput})
+		// [fix] 首次发送消息时，将暂存的 pendingMeta 与 title 一并写入
+		a.flushPendingMeta(visibleInput)
+
 	}
 	ag, err := a.ensureAgent()
 	if err != nil {
@@ -308,4 +314,18 @@ func (a *App) finalizeGoalTurn(lastAssistantText string, completed bool) error {
 	}
 	st = refreshCompletedGoalUsageWithTotal(st, a.currentSessionGoalTokens())
 	return session.SaveGoalState(a.sessionsDir, a.sessionID, st)
+}
+
+// [fix] flushPendingMeta 将暂存的 pendingMeta 写入 .meta.json，然后清空。
+// 仅在新会话首次发送消息时调用，确保 .meta.json 在有实质内容（title）时才创建，
+// 而非在 app-server 启动时就留下空壳文件。
+func (a *App) flushPendingMeta(title string) {
+	if a.pendingMeta == nil {
+		return
+	}
+	meta := *a.pendingMeta
+	a.pendingMeta = nil
+	patch := session.SessionMetaPatchFromMeta(meta)
+	patch.Title = title
+	_, _ = session.PatchSessionMeta(a.sessionsDir, a.sessionID, patch)
 }

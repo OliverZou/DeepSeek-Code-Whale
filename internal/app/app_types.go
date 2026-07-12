@@ -166,6 +166,9 @@ type App struct {
 	userInput  agent.UserInputFunc
 
 	pendingGoalTurn bool
+
+	// [fix] 暂存新会话的 meta 信息，延迟到首条消息时与 title 一并写入 .meta.json
+	pendingMeta     *session.SessionMeta
 }
 
 type workflowConfigOverlay struct {

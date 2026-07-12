@@ -20,6 +20,8 @@ type appSessionInit struct {
 	sessionID   string
 	branch      string
 	mode        session.Mode
+	// [fix] 暂存新会话的 meta 信息，延迟到首条消息时再写盘
+	pendingMeta *session.SessionMeta
 }
 
 type appToolInit struct {
@@ -103,8 +105,20 @@ func completeAppSessionState(init appSessionInit, start StartOptions, workspaceR
 		return appSessionInit{}, err
 	}
 	branch := session.DetectGitBranch(workspaceRoot)
-	if err := patchNewSessionMeta(init.sessionsDir, init.sessionID, workspaceRoot, branch, start); err != nil {
-		return appSessionInit{}, err
+	// [fix] 延迟创建 .meta.json：不再在启动时立即写盘，改为暂存到 init.pendingMeta，
+	// 等用户发送首条消息时（RunTurnWithContentOptions）一并写入。
+	// 这样避免了 master daemon 或未发送任何消息的会话留下空壳 meta 文件。
+	if start.NewSession || start.ResumeMenu {
+		meta := session.SessionMeta{Workspace: workspaceRoot, Branch: branch}
+		if strings.TrimSpace(start.Worktree.Name) != "" {
+			meta.WorktreeName = start.Worktree.Name
+			meta.WorktreePath = start.Worktree.Path
+			meta.WorktreeBranch = start.Worktree.Branch
+			meta.OriginalWorkspace = start.Worktree.OriginalWorkspace
+			meta.OriginalBranch = start.Worktree.OriginalBranch
+			meta.OriginalHeadCommit = start.Worktree.OriginalHeadCommit
+		}
+		init.pendingMeta = &meta
 	}
 	init.mode = mode
 	init.branch = branch
@@ -129,21 +143,4 @@ func initialAppMode(sessionsDir, sessionID string, start StartOptions) (session.
 	return modeState.Mode, nil
 }
 
-func patchNewSessionMeta(sessionsDir, sessionID, workspaceRoot, branch string, start StartOptions) error {
-	if !start.NewSession && !start.ResumeMenu {
-		return nil
-	}
-	meta := session.SessionMeta{Workspace: workspaceRoot, Branch: branch}
-	if strings.TrimSpace(start.Worktree.Name) != "" {
-		meta.WorktreeName = start.Worktree.Name
-		meta.WorktreePath = start.Worktree.Path
-		meta.WorktreeBranch = start.Worktree.Branch
-		meta.OriginalWorkspace = start.Worktree.OriginalWorkspace
-		meta.OriginalBranch = start.Worktree.OriginalBranch
-		meta.OriginalHeadCommit = start.Worktree.OriginalHeadCommit
-	}
-	if _, err := session.PatchSessionMeta(sessionsDir, sessionID, session.SessionMetaPatchFromMeta(meta)); err != nil {
-		return fmt.Errorf("patch session meta failed: %w", err)
-	}
-	return nil
-}
+

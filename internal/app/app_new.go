@@ -115,6 +115,7 @@ func New(ctx context.Context, cfg Config, start StartOptions) (*App, error) {
 		apiKey:                runtimeInit.apiKey,
 		approvalFn:            defaultApprovalFunc(start.ApprovalFunc),
 		userInput:             defaultUserInputFunc(start.UserInputFunc),
+		pendingMeta:           sessionInit.pendingMeta,
 	}
 	appRef = app
 
