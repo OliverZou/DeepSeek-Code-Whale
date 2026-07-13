@@ -320,7 +320,9 @@ func newRootCmd(opts *cliOptions) *cobra.Command {
 }
 
 func newAppServerCmd(opts *cliOptions) *cobra.Command {
-	return &cobra.Command{
+	var appendSystemPrompt string
+	var sessionID string
+	cmd := &cobra.Command{
 		Use:    "app-server",
 		Short:  "Run the local Whale app-server protocol over stdio.",
 		Args:   cobra.NoArgs,
@@ -332,7 +334,10 @@ func newAppServerCmd(opts *cliOptions) *cobra.Command {
 			if err := prepareCLIConfig(cmd, opts); err != nil {
 				return err
 			}
-			return appserver.Run(cmd.Context(), opts.cfg, app.StartOptions{NewSession: true}, cmd.InOrStdin(), cmd.OutOrStdout())
+			return appserver.Run(cmd.Context(), opts.cfg, app.StartOptions{SessionID: sessionID, NewSession: sessionID == "", AppendSystemPrompt: appendSystemPrompt}, cmd.InOrStdin(), cmd.OutOrStdout())
 		},
 	}
+	cmd.Flags().StringVar(&appendSystemPrompt, "append-system-prompt", "", "Extra immutable system block appended to the default system prompt (e.g. agent persona)")
+	cmd.Flags().StringVar(&sessionID, "session-id", "", "Resume an existing session by id (uses same session_id, history restored)")
+	return cmd
 }

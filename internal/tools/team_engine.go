@@ -892,13 +892,9 @@ func (b *Toolset) teamOutputTool() toolFn {
 			}
 			md += "\n"
 
-			// Output
+			// Output（完整输出,不截断 —— pod UI 展开需要看全文）
 			if output, err := eng.Whiteboard.ReadOutput(args.TaskID); err == nil && output != "" {
-				if len(output) > 2000 {
-					md += fmt.Sprintf("### 工作产出（前2000字符）\n\n%s\n\n*(共%d字符，剩余内容已截断)*\n", output[:2000], len(output))
-				} else {
-					md += "### 工作产出\n\n" + output + "\n"
-				}
+				md += "### 工作产出\n\n" + output + "\n"
 			}
 
 			// Inbox messages (feedback from Leader or others)
@@ -928,6 +924,7 @@ func (b *Toolset) teamOutputTool() toolFn {
 		},
 	}
 }
+
 
 // --- team_result ---
 

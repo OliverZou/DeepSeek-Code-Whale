@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/usewhale/whale/internal/core"
@@ -115,6 +116,7 @@ func New(ctx context.Context, cfg Config, start StartOptions) (*App, error) {
 		apiKey:                runtimeInit.apiKey,
 		approvalFn:            defaultApprovalFunc(start.ApprovalFunc),
 		userInput:             defaultUserInputFunc(start.UserInputFunc),
+		appendSystemPrompt:    strings.TrimSpace(start.AppendSystemPrompt),
 		pendingMeta:           sessionInit.pendingMeta,
 	}
 	appRef = app

@@ -3,6 +3,7 @@ package agent
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/usewhale/whale/internal/core"
 	"github.com/usewhale/whale/internal/memory"
@@ -135,6 +136,7 @@ type runtimeWorktreeContext struct {
 func renderRuntimeBlock(workspaceRoot string, worktree runtimeWorktreeContext, rt shell.RuntimeDescription) string {
 	var b strings.Builder
 	b.WriteString("Current Whale runtime:\n")
+	b.WriteString("- Current date: " + time.Now().Format("2006-01-02 Monday") + " (authoritative; do not use model-memory dates)\n")
 	if strings.TrimSpace(workspaceRoot) != "" {
 		b.WriteString("- Current Whale workspace root: ")
 		b.WriteString(workspaceRoot)

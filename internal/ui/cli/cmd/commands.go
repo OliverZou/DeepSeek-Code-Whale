@@ -23,6 +23,7 @@ func newExecCmd(opts *cliOptions) *cobra.Command {
 	var timeoutSec int
 	var attachPaths []string
 	var persist bool
+	var appendSystemPrompt string
 	c := &cobra.Command{
 		Use:   "exec [prompt]",
 		Short: "Run a single prompt non-interactively",
@@ -34,13 +35,14 @@ func newExecCmd(opts *cliOptions) *cobra.Command {
 			if err := prepareCLIConfig(cmd, opts); err != nil {
 				return err
 			}
-			return runExec(cmd.OutOrStdout(), cmd.ErrOrStderr(), cmd.InOrStdin(), opts, args, jsonOutput, timeoutSec, attachPaths, persist)
+			return runExec(cmd.OutOrStdout(), cmd.ErrOrStderr(), cmd.InOrStdin(), opts, args, jsonOutput, timeoutSec, attachPaths, persist, appendSystemPrompt)
 		},
 	}
 	c.Flags().BoolVar(&jsonOutput, "json", false, "Emit machine-readable JSON output")
 	c.Flags().IntVar(&timeoutSec, "timeout-sec", 0, "Optional timeout in seconds for this exec run")
 	c.Flags().StringArrayVar(&attachPaths, "attach", nil, "Attach a local file to the prompt")
 	c.Flags().BoolVar(&persist, "persist", false, "Keep running after first prompt; read new prompts from stdin until EOF")
+	c.Flags().StringVar(&appendSystemPrompt, "append-system-prompt", "", "Extra immutable system block appended to the default system prompt (e.g. agent persona)")
 	return c
 }
 
@@ -219,11 +221,11 @@ func doctorBadge(level app.DoctorLevel) string {
 // process sends one prompt at a time (delimited by __WHALE_EOP__) and reads
 // responses (delimited by __WHALE_EOT__).  The loop exits when stdin reaches
 // EOF — the parent closes its end of the pipe to signal completion.
-func runExecPersist(out io.Writer, errOut io.Writer, in io.Reader, opts *cliOptions, jsonOutput bool, attachPaths []string) error {
+func runExecPersist(out io.Writer, errOut io.Writer, in io.Reader, opts *cliOptions, jsonOutput bool, attachPaths []string, appendSystemPrompt string) error {
 	const eop = "\n__WHALE_EOP__\n"
 	const eot = "\n__WHALE_EOT__\n"
 
-	start := app.StartOptions{NewSession: true, Worktree: opts.worktreeSession}
+	start := app.StartOptions{NewSession: true, Worktree: opts.worktreeSession, AppendSystemPrompt: appendSystemPrompt}
 	scanner := bufio.NewScanner(in)
 	// Large buffer — decompose prompts can exceed the default 64 KB.
 	scanner.Buffer(make([]byte, 0, 256*1024), 4*1024*1024)
@@ -279,16 +281,16 @@ func runExecPersist(out io.Writer, errOut io.Writer, in io.Reader, opts *cliOpti
 	}
 }
 
-func runExec(out io.Writer, errOut io.Writer, in io.Reader, opts *cliOptions, args []string, jsonOutput bool, timeoutSec int, attachPaths []string, persist bool) error {
+func runExec(out io.Writer, errOut io.Writer, in io.Reader, opts *cliOptions, args []string, jsonOutput bool, timeoutSec int, attachPaths []string, persist bool, appendSystemPrompt string) error {
 	if persist {
-		return runExecPersist(out, errOut, in, opts, jsonOutput, attachPaths)
+		return runExecPersist(out, errOut, in, opts, jsonOutput, attachPaths, appendSystemPrompt)
 	}
 
 	prompt, err := readExecPrompt(in, args)
 	if err != nil {
 		return err
 	}
-	start := app.StartOptions{NewSession: true, Worktree: opts.worktreeSession}
+	start := app.StartOptions{NewSession: true, Worktree: opts.worktreeSession, AppendSystemPrompt: appendSystemPrompt}
 
 	ctx := context.Background()
 	if timeoutSec > 0 {
