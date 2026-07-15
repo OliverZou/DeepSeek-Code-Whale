@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -746,7 +747,7 @@ func (a *Agent) resolveVerifyCommands() []string {
 
 func autoDetectVerifyCommands(workspaceRoot string) []string {
 	if fileExists(filepath.Join(workspaceRoot, "go.mod")) {
-		return []string{"go build ./..."}
+		return []string{"go build ./...", "go vet ./..."}
 	}
 	pkgJSON := filepath.Join(workspaceRoot, "package.json")
 	if fileExists(pkgJSON) {
@@ -779,7 +780,14 @@ func hasNPMScript(pkgJSON, script string) bool {
 	if err != nil {
 		return false
 	}
-	return strings.Contains(string(data), `"`+script+`"`)
+	var pkg struct {
+		Scripts map[string]string `json:"scripts"`
+	}
+	if err := json.Unmarshal(data, &pkg); err != nil {
+		return false
+	}
+	_, ok := pkg.Scripts[script]
+	return ok
 }
 
 // Classifier returns the auto-review classifier for runtime toggle.

@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
+	"runtime"
 	"strings"
 
 	"github.com/usewhale/whale/internal/core"
@@ -802,10 +804,7 @@ func (a *Agent) checkReadBeforeEditGate(ctx context.Context, sc streamDispatchCo
 	if filePath == "" {
 		return false
 	}
-	absPath := filepath.Clean(filePath)
-	if !filepath.IsAbs(absPath) {
-		absPath = filepath.Join(a.workspaceRoot, absPath)
-	}
+	absPath := normalizeWorkspacePath(filePath, a.workspaceRoot)
 
 	// Exempt: write to a new file (file does not exist yet)
 	if call.Name == "write" {
@@ -835,11 +834,23 @@ func (a *Agent) recordFileRead(call core.ToolCall) {
 	if filePath == "" {
 		return
 	}
-	absPath := filepath.Clean(filePath)
-	if !filepath.IsAbs(absPath) && a.workspaceRoot != "" {
-		absPath = filepath.Join(a.workspaceRoot, absPath)
-	}
+	absPath := normalizeWorkspacePath(filePath, a.workspaceRoot)
 	a.filesReadThisTurn[absPath] = true
+}
+
+// normalizeWorkspacePath resolves a file path to an absolute path with
+// consistent casing on Windows (to avoid P1 gate false negatives).
+func normalizeWorkspacePath(filePath, workspaceRoot string) string {
+	absPath := filepath.Clean(filePath)
+	if !filepath.IsAbs(absPath) && workspaceRoot != "" {
+		absPath = filepath.Join(workspaceRoot, absPath)
+	}
+	// On Windows, normalize to lowercase to avoid case-sensitivity mismatches
+	// between read_file and edit tool call paths.
+	if runtime.GOOS == "windows" {
+		absPath = strings.ToLower(absPath)
+	}
+	return absPath
 }
 
 // diffCountsFromResult extracts additions/deletions counts from a mutation
@@ -852,10 +863,15 @@ func diffCountsFromResult(res core.ToolResult) (int, int) {
 	if kind != "file_diff" {
 		return 0, 0
 	}
-	files, _ := res.Metadata["files"].([]any)
+	// fileDiffMetadata builds "files" as []map[string]any, which cannot be
+	// type-asserted to []any in Go. Use reflect to iterate.
+	filesVal := reflect.ValueOf(res.Metadata["files"])
+	if filesVal.Kind() != reflect.Slice {
+		return 0, 0
+	}
 	var totalAdd, totalDel int
-	for _, f := range files {
-		fm, ok := f.(map[string]any)
+	for i := 0; i < filesVal.Len(); i++ {
+		fm, ok := filesVal.Index(i).Interface().(map[string]any)
 		if !ok {
 			continue
 		}
