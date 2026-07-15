@@ -393,7 +393,6 @@ func (c *Client) sendStreamRequest(ctx context.Context, requestBaseURL string, b
 }
 
 func (c *Client) sendStreamRequestWithKey(ctx context.Context, requestBaseURL, apiKey string, body []byte) (*http.Response, error) {
-	start := time.Now()
 	requestBaseURL = strings.TrimRight(strings.TrimSpace(requestBaseURL), "/")
 	if requestBaseURL == "" {
 		requestBaseURL = c.baseURL
@@ -406,27 +405,19 @@ func (c *Client) sendStreamRequestWithKey(ctx context.Context, requestBaseURL, a
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "text/event-stream")
 
-	// Diagnostic: log prompt size and timing to stderr (captured by spawner).
-	promptSize := len(body)
-	fmt.Fprintf(os.Stderr, "[llm] POST %s model=%s promptBytes=%d\n", requestBaseURL, c.model, promptSize)
-
 	resp, err := c.httpClient.Do(req)
-	elapsed := time.Since(start)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "[llm] FAIL after %.1fs: %v\n", elapsed.Seconds(), err)
 		return nil, fmt.Errorf("request failed: %w", err)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
 		_ = resp.Body.Close()
-		fmt.Fprintf(os.Stderr, "[llm] HTTP %d after %.1fs: %s\n", resp.StatusCode, elapsed.Seconds(), string(b))
 		return nil, &llmretry.HTTPError{
 			StatusCode: resp.StatusCode,
 			Header:     resp.Header.Clone(),
 			Body:       string(b),
 		}
 	}
-	fmt.Fprintf(os.Stderr, "[llm] streaming after %.1fs (status=%d)\n", elapsed.Seconds(), resp.StatusCode)
 	return resp, nil
 }
 
@@ -563,13 +554,8 @@ func parseSSE(r io.ReadCloser, model string, replayTokens int, replayDiag deepSe
 	if idleTimeout <= 0 {
 		idleTimeout = defaultStreamIdleTimeout
 	}
-	start := time.Now()
 	done := make(chan struct{})
-	defer func() {
-		elapsed := time.Since(start)
-		fmt.Fprintf(os.Stderr, "[llm] stream done in %.1fs\n", elapsed.Seconds())
-		close(done)
-	}()
+	defer close(done)
 	defer r.Close()
 	lines := readSSELines(r, done)
 	var dataLines []string
