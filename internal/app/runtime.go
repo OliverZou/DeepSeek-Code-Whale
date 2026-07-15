@@ -140,6 +140,7 @@ func (a *App) ensureAgent() (*agent.Agent, error) {
 			}),
 			agent.WithUserInputFunc(a.userInput),
 			agent.WithVerifyConfig(a.cfg.VerifyCommands, a.cfg.VerifyTimeout, a.cfg.VerifyReviewThreshold),
+			agent.WithGateConfig(a.cfg.GateReadBeforeEdit, a.cfg.GateAnalyzeBeforeEdit),
 		)
 	}
 	return a.a, nil

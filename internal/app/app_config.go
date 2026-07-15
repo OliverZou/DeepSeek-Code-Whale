@@ -34,6 +34,8 @@ func DefaultConfig() Config {
 		ShellForegroundWaitMaxMS:     tools.MaxForegroundShellWait(),
 		WorkflowsEnabled:             false,
 		WorkflowKeywordTrigger:       true,
+		GateReadBeforeEdit:           true,
+		GateAnalyzeBeforeEdit:        true,
 		configDefaulted:              true,
 	}
 }
