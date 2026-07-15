@@ -179,17 +179,21 @@ func (a *Agent) dispatchToolCalls(ctx context.Context, sc streamDispatchContext,
 		}
 
 		// P4: analysis gate — mutation tools require analyze_problem first.
-		// Disabled when workspaceRoot is empty, user skips, or gate is
-		// explicitly turned off via [gate] config.
+		// Disabled when workspaceRoot is empty, user skips, gate is
+		// explicitly turned off via [gate] config, or cumulative changed
+		// lines this turn are below analysis_threshold.
 		if isMutationTool(call.Name) && !a.analysisProvidedThisTurn && !a.skipAnalysisThisTurn && a.gateAnalyzeBeforeEdit && a.workspaceRoot != "" {
-			results = append(results, core.ToolResult{
-				ToolCallID: call.ID,
-				Name:       call.Name,
-				ModelText:  "You must call analyze_problem first to record your root cause analysis before making changes.",
-				Outcome:    core.OutcomeFailure,
-				Code:       "analysis_required_before_edit",
-			})
-			continue
+			belowThreshold := a.analysisThreshold > 0 && a.mutationsChangeCountThisTurn < a.analysisThreshold
+			if !belowThreshold {
+				results = append(results, core.ToolResult{
+					ToolCallID: call.ID,
+					Name:       call.Name,
+					ModelText:  "You must call analyze_problem first to record your root cause analysis before making changes.",
+					Outcome:    core.OutcomeFailure,
+					Code:       "analysis_required_before_edit",
+				})
+				continue
+			}
 		}
 
 
@@ -289,8 +293,16 @@ func (a *Agent) dispatchToolCalls(ctx context.Context, sc streamDispatchContext,
 		if verifyResult := a.runAutoVerify(ctx); verifyResult != "" {
 			lastMutationIdx := -1
 			for i := range results {
-				if isMutationTool(results[i].Name) {
+				if isMutationTool(results[i].Name) && results[i].Outcome == core.OutcomeSuccess {
 					lastMutationIdx = i
+				}
+			}
+			if lastMutationIdx < 0 {
+				for i := range results {
+					if isMutationTool(results[i].Name) {
+						lastMutationIdx = i
+						break
+					}
 				}
 			}
 			if lastMutationIdx >= 0 {

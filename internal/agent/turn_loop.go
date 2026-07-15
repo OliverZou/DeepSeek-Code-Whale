@@ -142,6 +142,7 @@ func (a *Agent) runStreamWithNewMessages(ctx context.Context, sessionID string, 
 		// P4: reset analysis gate state
 		a.analysisProvidedThisTurn = false
 		a.skipAnalysisThisTurn = false
+		a.mutationsChangeCountThisTurn = 0
 		// P4: detect user intent to skip analysis
 		for _, msg := range newMessages {
 			if msg.Role == core.RoleUser && containsSkipAnalysisKeyword(msg.Text) != "" {

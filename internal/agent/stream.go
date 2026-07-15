@@ -254,6 +254,12 @@ func (a *Agent) appendDispatchedToolResult(ctx context.Context, sessionID string
 	if isMutationTool(call.Name) && primarySucceeded {
 		a.dirtySinceVerify = true
 	}
+	// P4: accumulate changed lines for analysis_threshold
+	if isMutationTool(call.Name) && primarySucceeded {
+		if adds, dels := diffCountsFromResult(finalRes); adds+dels > 0 {
+			a.mutationsChangeCountThisTurn += adds + dels
+		}
+	}
 	// P2: lightweight diff review prompt for large changes
 	if isMutationTool(call.Name) && primarySucceeded {
 		threshold := a.verifyReviewThreshold

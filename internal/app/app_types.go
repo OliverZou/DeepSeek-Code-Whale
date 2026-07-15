@@ -70,6 +70,7 @@ type Config struct {
 	VerifyReviewThreshold          int
 	GateReadBeforeEdit             bool
 	GateAnalyzeBeforeEdit          bool
+	GateAnalysisThreshold          int
 	configDefaulted                bool
 }
 

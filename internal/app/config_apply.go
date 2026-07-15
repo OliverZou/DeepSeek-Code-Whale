@@ -500,4 +500,7 @@ func applyGateConfig(cfg *Config, file FileGateConfig) {
 	if file.AnalyzeBeforeEdit != nil {
 		cfg.GateAnalyzeBeforeEdit = *file.AnalyzeBeforeEdit
 	}
+	if file.AnalysisThreshold > 0 {
+		cfg.GateAnalysisThreshold = file.AnalysisThreshold
+	}
 }

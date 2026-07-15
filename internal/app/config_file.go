@@ -216,8 +216,9 @@ type FileVerifyConfig struct {
 }
 
 type FileGateConfig struct {
-	ReadBeforeEdit   *bool `toml:"read_before_edit,omitempty"`
+	ReadBeforeEdit    *bool `toml:"read_before_edit,omitempty"`
 	AnalyzeBeforeEdit *bool `toml:"analyze_before_edit,omitempty"`
+	AnalysisThreshold int   `toml:"analysis_threshold,omitempty"`
 }
 
 type LoadedConfig struct {

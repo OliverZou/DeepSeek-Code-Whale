@@ -77,6 +77,7 @@ type RunnerConfig struct {
 	VerifyReviewThreshold      int
 	GateReadBeforeEdit         bool
 	GateAnalyzeBeforeEdit      bool
+	GateAnalysisThreshold      int
 }
 
 type Runner struct {
@@ -108,6 +109,7 @@ type Runner struct {
 	verifyReviewThreshold      int
 	gateReadBeforeEdit         bool
 	gateAnalyzeBeforeEdit      bool
+	analysisThreshold          int
 	approvalFunc               policy.ApprovalFunc
 	subagentBudgetMu           sync.Mutex
 	subagentBudget             SubagentBudget
@@ -162,6 +164,7 @@ func NewRunner(cfg RunnerConfig) *Runner {
 		verifyReviewThreshold:      cfg.VerifyReviewThreshold,
 		gateReadBeforeEdit:         cfg.GateReadBeforeEdit,
 		gateAnalyzeBeforeEdit:      cfg.GateAnalyzeBeforeEdit,
+		analysisThreshold:          cfg.GateAnalysisThreshold,
 		backgroundCancels:          map[string]context.CancelFunc{},
 	}
 }

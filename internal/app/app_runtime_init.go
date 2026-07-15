@@ -135,6 +135,7 @@ func initAppRuntime(cfg Config, sessionInit appSessionInit, toolInit appToolInit
 		VerifyReviewThreshold:      cfg.VerifyReviewThreshold,
 		GateReadBeforeEdit:         cfg.GateReadBeforeEdit,
 		GateAnalyzeBeforeEdit:      cfg.GateAnalyzeBeforeEdit,
+		GateAnalysisThreshold:      cfg.GateAnalysisThreshold,
 		ApprovalFunc:               approvalFunc,
 	})
 	taskTools := tasks.NewTools(taskRunner)

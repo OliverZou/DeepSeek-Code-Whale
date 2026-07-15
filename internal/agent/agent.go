@@ -304,8 +304,10 @@ type Agent struct {
 	dirtySinceVerify      bool            // P2: debounce flag for auto-verify
 	analysisProvidedThisTurn bool         // P4: analyze_problem called this turn
 	skipAnalysisThisTurn    bool          // P4: user explicitly skipped analysis
+	mutationsChangeCountThisTurn int      // P4: cumulative changed lines this turn (for analysis_threshold)
 	gateReadBeforeEdit      bool          // P1: configurable gate switch
 	gateAnalyzeBeforeEdit   bool          // P4: configurable gate switch
+	analysisThreshold       int           // P4: skip analysis gate when changed lines below this
 }
 
 type activeTurnState struct {
@@ -688,10 +690,13 @@ func WithVerifyConfig(commands []string, timeout time.Duration, reviewThreshold 
 
 // WithGateConfig sets the gate configuration for P1/P4 discipline gates.
 // Both default to true; set to false to disable.
-func WithGateConfig(readBeforeEdit, analyzeBeforeEdit bool) AgentOption {
+// analysisThreshold: skip analysis gate when cumulative changed lines this turn
+// are below this value. 0 means always require analysis.
+func WithGateConfig(readBeforeEdit, analyzeBeforeEdit bool, analysisThreshold int) AgentOption {
 	return func(a *Agent) {
 		a.gateReadBeforeEdit = readBeforeEdit
 		a.gateAnalyzeBeforeEdit = analyzeBeforeEdit
+		a.analysisThreshold = analysisThreshold
 	}
 }
 
