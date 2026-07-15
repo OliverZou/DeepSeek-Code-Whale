@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"github.com/usewhale/whale/internal/core"
-	"github.com/usewhale/whale/internal/bridge"
+
 	"github.com/usewhale/whale/internal/policy"
 	"github.com/usewhale/whale/internal/skills"
 	"team-engine"
@@ -47,46 +47,8 @@ type Toolset struct {
 	// The callback should adapt tasks.Runner.SpawnSubagentWithProgress.
 	teamEngineSpawnFunc team_engine.SpawnFunc
 
-	// DashboardClient provides access to dashboard-queued resume commands
-	// and real-time event forwarding to the bridge.
-	dashboardClient interface {
-		PendingResume() string
-		SendTaskEvent(bridge.TaskEvent)
-		SyncState(mts []bridge.MasterTaskJSON, sts map[string][]bridge.SubtaskJSON, wsLabel string)
-	}
-
-	// auto-exec cancellation
 	autoExecCancel   context.CancelFunc
 	autoExecCancelMu sync.Mutex
-}
-
-// SyncDashboardState pushes the current team engine state to the dashboard.
-// Creates a temporary engine, reads DB state, and sends sync_full.
-func (b *Toolset) SyncDashboardState(client interface {
-	SyncState(mts []bridge.MasterTaskJSON, sts map[string][]bridge.SubtaskJSON, wsLabel string)
-}, workspacePath string) {
-	defer func() {
-		if r := recover(); r != nil {
-			team_engine.Log("sync", "SyncDashboardState panic: %v", r)
-		}
-	}()
-	eng, err := b.newTeamEngine()
-	if err != nil {
-		team_engine.Log("sync", "SyncDashboardState: newTeamEngine err=%v", err)
-		return
-	}
-	defer eng.Close()
-	team_engine.Log("sync", "SyncDashboardState: calling pushSyncState")
-	pushSyncState(eng, client, workspacePath)
-}
-
-// SetDashboardClient sets the dashboard client for auto-resume support.
-func (b *Toolset) SetDashboardClient(c interface {
-	PendingResume() string
-	SendTaskEvent(bridge.TaskEvent)
-	SyncState(mts []bridge.MasterTaskJSON, sts map[string][]bridge.SubtaskJSON, wsLabel string)
-}) {
-	b.dashboardClient = c
 }
 
 type externalReadRootsKey struct{}

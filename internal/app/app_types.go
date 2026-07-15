@@ -7,7 +7,7 @@ import (
 
 	"github.com/usewhale/whale/internal/agent"
 	"github.com/usewhale/whale/internal/core"
-	"github.com/usewhale/whale/internal/bridge"
+
 	whalemcp "github.com/usewhale/whale/internal/mcp"
 	"github.com/usewhale/whale/internal/plugins"
 	"github.com/usewhale/whale/internal/policy"
@@ -73,13 +73,14 @@ type MultimodalProviderConfig struct {
 }
 
 type StartOptions struct {
-	SessionID     string
-	ModeOverride  string
-	ResumeMenu    bool
-	NewSession    bool
-	Worktree      WorktreeSession
-	ApprovalFunc  policy.ApprovalFunc
-	UserInputFunc agent.UserInputFunc
+	SessionID          string
+	ModeOverride       string
+	ResumeMenu         bool
+	NewSession         bool
+	Worktree           WorktreeSession
+	ApprovalFunc       policy.ApprovalFunc
+	UserInputFunc      agent.UserInputFunc
+	AppendSystemPrompt string
 }
 
 type WorktreeSession struct {
@@ -149,7 +150,7 @@ type App struct {
 	workflowRunner        *workflow.ScriptRunner
 	workflowConfigOverlay workflowConfigOverlay
 	worktree              WorktreeSession
-	dashboardClient       *bridge.Client
+
 	mcpInitMu             sync.Mutex
 	mcpInitStarted        bool
 	// toolMu guards mutable tool/plugin state (pluginManager, pluginTools,
@@ -164,6 +165,8 @@ type App struct {
 	approvalMu sync.Mutex
 	approvalFn policy.ApprovalFunc
 	userInput  agent.UserInputFunc
+
+	appendSystemPrompt string
 
 	pendingGoalTurn bool
 

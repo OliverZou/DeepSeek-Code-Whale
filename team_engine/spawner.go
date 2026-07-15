@@ -298,7 +298,6 @@ func (s *ShellSubagentSpawner) SpawnSubagent(ctx context.Context, req SubagentRe
 	cmd := exec.CommandContext(ctx, whaleBin, args...)
 	cmd.Dir = cwd
 	cmd.Env = append(os.Environ(),
-		"WHALE_NO_DASHBOARD=1",
 		fmt.Sprintf("WHALE_MAX_TOKENS=%d", req.MaxTokens),
 	)
 
@@ -426,7 +425,6 @@ func (s *ShellSubagentSpawner) SpawnPersistent(ctx context.Context, req Subagent
 	cmd := exec.CommandContext(context.Background(), whaleBin, args...)
 	cmd.Dir = cwd
 	cmd.Env = append(os.Environ(),
-		"WHALE_NO_DASHBOARD=1",
 		fmt.Sprintf("WHALE_MAX_TOKENS=%d", req.MaxTokens),
 	)
 

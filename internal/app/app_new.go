@@ -7,7 +7,7 @@ import (
 	"strings"
 
 	"github.com/usewhale/whale/internal/core"
-	"github.com/usewhale/whale/internal/bridge"
+
 	"github.com/usewhale/whale/internal/plugins"
 	"github.com/usewhale/whale/internal/policy"
 	"team-engine"
@@ -106,34 +106,6 @@ func New(ctx context.Context, cfg Config, start StartOptions) (*App, error) {
 
 	team_engine.SetLogger(teampglog.NewTeamLog(workspaceRoot))
 
-	if os.Getenv("WHALE_NO_DASHBOARD") == "" {
-		app.dashboardClient = bridge.NewClient(workspaceRoot)
-		app.toolset.SetDashboardClient(app.dashboardClient)
-		app.dashboardClient.OnResume = func(masterTaskID string) {
-			app.toolset.AutoExecuteMasterTask(masterTaskID)
-		}
-		app.dashboardClient.OnCancel = func(masterTaskID string) {
-			app.toolset.CancelAutoExecute()
-		}
-		app.dashboardClient.OnRunTask = func(taskID string) {
-			app.toolset.RunSingleTask(taskID)
-		}
-		syncCh := make(chan struct{}, 1)
-		app.dashboardClient.SyncCh = syncCh
-		app.dashboardClient.StartHeartbeat()
-		go func() {
-			defer func() {
-				if r := recover(); r != nil {
-					team_engine.Log("sync", "sync goroutine panic: %v", r)
-				}
-			}()
-			team_engine.Log("sync", "sync goroutine started, waiting for connect...")
-			for range syncCh {
-				team_engine.Log("sync", "sync goroutine received connect signal")
-				app.toolset.SyncDashboardState(app.dashboardClient, workspaceRoot)
-			}
-		}()
-	}
 
 	team_engine.CleanupInterruptedTasks(filepath.Join(workspaceRoot, ".whale", "team_tasks"))
 

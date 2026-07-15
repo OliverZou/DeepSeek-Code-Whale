@@ -147,9 +147,7 @@ func (a *App) Close() error {
 	if a == nil {
 		return nil
 	}
-	if a.dashboardClient != nil {
-		go a.dashboardClient.Deregister()
-	}
+
 	if a.mcpManager == nil {
 		return nil
 	}

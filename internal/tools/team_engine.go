@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/usewhale/whale/internal/bridge"
+
 	"github.com/usewhale/whale/internal/core"
 	"team-engine"
 )
@@ -57,7 +57,7 @@ func toolError(format string, args ...interface{}) core.ToolResult {
 
 // --- team_execute ---
 
-// AutoExecuteMasterTask is called by the dashboard client when it receives
+// AutoExecuteMasterTask resumes a previously suspended master task.
 // a resume command via heartbeat.  It loads the master task and executes
 // it directly without waiting for a user-initiated team_execute call.
 func (b *Toolset) AutoExecuteMasterTask(masterTaskID string) {
@@ -93,22 +93,6 @@ func (b *Toolset) AutoExecuteMasterTask(masterTaskID string) {
 			b.autoExecCancelMu.Unlock()
 		}()
 
-		// Forward events and sync state to dashboard during auto-resume.
-		if b.dashboardClient != nil {
-			var lastSync time.Time
-			eng.OnEvent(func(event team_engine.TaskEvent) {
-				defer func() {
-					if r := recover(); r != nil && true {
-						team_engine.Log("sync", "event callback panic: %v", r)
-					}
-				}()
-				if (event.Type == team_engine.EventStateChanged || event.Type == team_engine.EventAgentLog) && time.Since(lastSync) > 2*time.Second {
-					lastSync = time.Now()
-					pushSyncState(eng, b.dashboardClient, b.root)
-				}
-				b.dashboardClient.SendTaskEvent(bridge.TaskEvent{Type: bridge.TaskEventType(event.Type), TaskID: event.TaskID, Title: event.Title, Progress: event.Progress, NewState: event.NewState})
-			})
-		}
 
 		batches, err := eng.ResumeMasterTask(ctx, masterTaskID, mt.Goal, workdir)
 		if eng.Loggers != nil {
@@ -119,7 +103,7 @@ func (b *Toolset) AutoExecuteMasterTask(masterTaskID string) {
 }
 
 // RunSingleTask runs a single subtask independently (per-subtask Run button).
-// Called from the dashboard via bridge WebSocket command.
+// RunSingleTask executes a single task by ID.
 func (b *Toolset) RunSingleTask(taskID string) {
 	go func() {
 		eng, err := b.newTeamEngine()
@@ -141,24 +125,6 @@ func (b *Toolset) RunSingleTask(taskID string) {
 			b.autoExecCancelMu.Unlock()
 		}()
 
-		// Forward events to dashboard.
-		if b.dashboardClient != nil {
-			var lastSync time.Time
-			eng.OnEvent(func(event team_engine.TaskEvent) {
-				defer func() { recover() }()
-				if (event.Type == team_engine.EventStateChanged || event.Type == team_engine.EventAgentLog) && time.Since(lastSync) > 2*time.Second {
-					lastSync = time.Now()
-					pushSyncState(eng, b.dashboardClient, b.root)
-				}
-				b.dashboardClient.SendTaskEvent(bridge.TaskEvent{
-					Type:     bridge.TaskEventType(event.Type),
-					TaskID:   event.TaskID,
-					Title:    event.Title,
-					Progress: event.Progress,
-					NewState: event.NewState,
-				})
-			})
-		}
 
 		ok, err := eng.RunTask(ctx, taskID)
 		if eng.Loggers != nil {
@@ -234,23 +200,6 @@ func (b *Toolset) runTeamPlan(ctx context.Context, call core.ToolCall, progress 
 	}
 	defer eng.Close()
 
-	// Check for a pending dashboard resume command (auto-triggered by dashboard).
-	if args.Goal == "" && b.dashboardClient != nil {
-		if mtID := b.dashboardClient.PendingResume(); mtID != "" {
-			mt, err := eng.GetMasterTask(mtID)
-			if err != nil {
-				return toolError("dashboard resume: master task %s: %v", mtID, err), nil
-			}
-			if mt == nil {
-				return toolError("dashboard resume: master task %s not found", mtID), nil
-			}
-			args.Goal = mt.Goal
-			workdir = mt.WorkspacePath
-			if workdir == "" {
-				workdir = b.root
-			}
-		}
-	}
 
 	// Load team configuration if specified.
 	if args.Team != "" {
@@ -262,26 +211,6 @@ func (b *Toolset) runTeamPlan(ctx context.Context, call core.ToolCall, progress 
 		eng.SetTeam(tc)
 	}
 
-	// Forward engine events to dashboard for real-time UI updates.
-	if b.dashboardClient != nil {
-		var lastSync time.Time
-		eng.OnEvent(func(event team_engine.TaskEvent) {
-			defer func() {
-				if r := recover(); r != nil && true {
-					team_engine.Log("sync", "event callback panic: %v", r)
-				}
-			}()
-			// Throttled full sync (max 1 per 2s) after state changes.
-			if (event.Type == team_engine.EventStateChanged || event.Type == team_engine.EventAgentLog) && time.Since(lastSync) > 2*time.Second {
-				lastSync = time.Now()
-				if true {
-					team_engine.Log("sync", "triggering sync push")
-				}
-				pushSyncState(eng, b.dashboardClient, b.root)
-			}
-			b.dashboardClient.SendTaskEvent(bridge.TaskEvent{Type: bridge.TaskEventType(event.Type), TaskID: event.TaskID, Title: event.Title, Progress: event.Progress, NewState: event.NewState})
-		})
-	}
 
 	// Register progress callback if we have one.
 	// Throttled to at most 1 update per 500ms to avoid TUI flickering.
@@ -319,7 +248,7 @@ func (b *Toolset) runTeamPlan(ctx context.Context, call core.ToolCall, progress 
 		})
 	}
 
-	// --- Phase 1: Create master task immediately so dashboard sees it ---
+	// --- Phase 1: Create master task immediately ---
 	var masterTask *team_engine.MasterTask
 	var mtErr error
 	existing, _ := eng.Store.ListMasterTasks()
@@ -345,7 +274,7 @@ func (b *Toolset) runTeamPlan(ctx context.Context, call core.ToolCall, progress 
 	}
 
 	// Async mode: return immediately so the agent can review later.
-	// The master task is already visible in the bridge.
+	// The master task already exists.
 	if args.Async {
 		return core.ToolResult{
 			ModelText: fmt.Sprintf("📋 Master task created: `%s`\nRun `team_execute goal=\"...\"` (without async) to execute.", masterTask.ID),
@@ -1125,130 +1054,3 @@ func tick(ok bool) string {
 	return "-"
 }
 
-// pushSyncState builds full master-task + subtask state from the engine
-// and pushes it to the dashboard via WebSocket for cache update.
-func pushSyncState(eng *team_engine.TeamEngine, client interface {
-	SyncState(mts []bridge.MasterTaskJSON, sts map[string][]bridge.SubtaskJSON, wsLabel string)
-}, workspacePath string) {
-	defer func() {
-		if r := recover(); r != nil {
-			if true {
-				team_engine.Log("sync", "pushSyncState panic: %v", r)
-			}
-		}
-	}()
-	mts, err := eng.Store.ListMasterTasks()
-	if true {
-		team_engine.Log("sync", "pushSyncState: mts=%d err=%v", len(mts), err)
-	}
-	if err != nil || len(mts) == 0 {
-		return
-	}
-	var masterTasks []bridge.MasterTaskJSON
-	subtaskMap := make(map[string][]bridge.SubtaskJSON)
-	for _, mt := range mts {
-		tasks, _ := eng.Store.ListTasksByMasterTask(mt.ID)
-		mj := buildMasterTaskJSON(mt, tasks, true)
-		mj.WorkspacePath = workspacePath
-		masterTasks = append(masterTasks, mj)
-		subtaskMap[mt.ID] = buildSubtaskJSON(tasks)
-	}
-	client.SyncState(masterTasks, subtaskMap, filepath.Base(workspacePath))
-}
-
-// buildMasterTaskJSON converts team_engine types to the dashboard JSON format.
-func buildMasterTaskJSON(mt *team_engine.MasterTask, tasks []*team_engine.Task, online bool) bridge.MasterTaskJSON {
-	taskCount := len(tasks)
-	doneCount := 0
-	activeCount := 0
-	suspendedCount := 0
-	for _, t := range tasks {
-		switch t.State {
-		case team_engine.TaskStateDone, team_engine.TaskStateFailed:
-			doneCount++
-		case team_engine.TaskStateSuspended:
-			suspendedCount++
-		}
-		if online && (t.State == team_engine.TaskStateProducing || t.State == team_engine.TaskStateVerifying) {
-			activeCount++
-		}
-	}
-	if activeCount == 0 && mt.Status == "running" && online {
-		activeCount = 1
-	}
-	return bridge.MasterTaskJSON{
-		ID:             mt.ID,
-		Goal:           mt.Goal,
-		WorkspacePath:  mt.WorkspacePath,
-		Status:         mt.Status,
-		CreatedAt:      mt.CreatedAt,
-		TaskCount:      taskCount,
-		DoneCount:      doneCount,
-		ActiveCount:    activeCount,
-		SuspendedCount: suspendedCount,
-	}
-}
-
-// buildSubtaskJSON converts a team_engine Task tree to the dashboard JSON format.
-func buildSubtaskJSON(tasks []*team_engine.Task) []bridge.SubtaskJSON {
-	nodeMap := make(map[string]*bridge.SubtaskJSON, len(tasks))
-	taskList := make([]*bridge.SubtaskJSON, 0, len(tasks))
-	for _, t := range tasks {
-		sj := &bridge.SubtaskJSON{
-			ID:          t.ID,
-			Title:       t.Title,
-			Description: t.Description,
-			Output:      t.Output,
-			Role:        string(t.Role),
-			State:       string(t.State),
-			Progress:    team_engine.GetProgress(t.State),
-			CreatedAt:   t.CreatedAt,
-			ParentIDs:   t.ParentIDs,
-			RetryCount:  t.RetryCount,
-			MaxRetries:  t.MaxRetries,
-			BatchID:     t.BatchID,
-		}
-		nodeMap[t.ID] = sj
-		taskList = append(taskList, sj)
-	}
-	for _, child := range taskList {
-		for _, pid := range child.ParentIDs {
-			if parent, ok := nodeMap[pid]; ok {
-				parent.Children = append(parent.Children, *child)
-			}
-		}
-	}
-	for _, sj := range taskList {
-		if len(sj.Children) > 0 {
-			sum := 0
-			for _, c := range sj.Children {
-				sum += c.Progress
-			}
-			sj.Progress = sum / len(sj.Children)
-		}
-	}
-	roots := make([]bridge.SubtaskJSON, 0)
-	for _, sj := range taskList {
-		hasParent := false
-		for _, pid := range sj.ParentIDs {
-			if _, ok := nodeMap[pid]; ok {
-				hasParent = true
-				break
-			}
-		}
-		if !hasParent {
-			roots = append(roots, *sj)
-		}
-	}
-	if len(tasks) > 0 {
-		leader := bridge.SubtaskJSON{
-			ID:       "__leader__",
-			Title:    "📋 任务规划",
-			Role:     "teamleader",
-			State:    "done",
-			Progress: 100,
-		}
-		return append([]bridge.SubtaskJSON{leader}, roots...)
-	}
-	return roots
-}
