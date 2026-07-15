@@ -242,6 +242,10 @@ func (a *Agent) appendDispatchedToolResult(ctx context.Context, sessionID string
 	if prepared.PreHookContext != "" {
 		addHookContextToToolResult(&finalRes, prepared.PreHookContext)
 	}
+	// P1: record read_file calls for the read-before-edit gate
+	if call.Name == "read_file" && primarySucceeded {
+		a.recordFileRead(call)
+	}
 	// Parallel spawn_subagent batches run post hooks only after the whole batch
 	// returns, in original tool-call order, so stored tool results and events
 	// stay deterministic even when the underlying subagents finish out of order.

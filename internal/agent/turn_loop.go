@@ -137,6 +137,8 @@ func (a *Agent) runStreamWithNewMessages(ctx context.Context, sessionID string, 
 		if a.classifier != nil {
 			a.classifier.ClearTurn(sessionID)
 		}
+		// P1: reset read-before-edit tracking at the start of every user turn
+		a.filesReadThisTurn = make(map[string]bool)
 		emit := func(ev AgentEvent) bool {
 			return sendAgentEvent(ctx, out, ev)
 		}

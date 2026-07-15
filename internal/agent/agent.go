@@ -291,6 +291,8 @@ type Agent struct {
 	maxTurns               int
 	maxParallelSubagents   int
 	active                 sync.Map
+
+	filesReadThisTurn      map[string]bool // P1: read-before-edit gate tracking
 }
 
 type activeTurnState struct {
@@ -403,6 +405,7 @@ func NewAgentWithRegistry(provider llm.Provider, store store.MessageStore, tools
 		lifecycleCancel:        lifecycleCancel,
 		maxToolIters:           0, // 0 = unlimited: the interactive main agent is bounded by user cancellation, compaction, and the storm loop-guard (see maxConsecutiveStormRounds) — not by a round count. Subagents override via WithMaxToolIters.
 		maxParallelSubagents:   defaultMaxParallelSubagents(),
+		filesReadThisTurn:      make(map[string]bool),
 	}
 	for _, opt := range opts {
 		if opt != nil {

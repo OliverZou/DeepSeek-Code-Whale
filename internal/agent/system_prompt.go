@@ -32,6 +32,7 @@ func (a *Agent) buildImmutableSystemBlocksWithTools(_ *core.ToolRegistry, opts .
 	systemBlocks = append(systemBlocks, renderDelegationPolicyBlock())
 	systemBlocks = append(systemBlocks, "For questions about the current date or time, use an available read-only shell/time command to verify the answer instead of guessing from model memory.")
 	systemBlocks = append(systemBlocks, renderToolPolicyBlock())
+	systemBlocks = append(systemBlocks, renderMinimalChangeBlock())
 	systemBlocks = append(systemBlocks, "For branch decisions or key assumptions requiring user choice, call request_user_input instead of presenting long A/B/C prose menus.")
 	return systemBlocks
 }
@@ -186,6 +187,19 @@ Delegation policy.
 - Weigh context overlap before spawning: a child agent starts cold and cannot see anything you have already read, searched, or concluded in this conversation. If you already hold most of the relevant context (files read, code traced, prior analysis), continue working directly instead of paying for a child to re-derive it. Only spawn when the overlap is genuinely low: an independent area you have not touched, parallel fan-out, or a fresh sub-question.
 - Never delegate understanding. Do not spawn a subagent to redo analysis, verification, or investigation you have already performed yourself this turn or session just because a user pushed back or asked you to double-check — re-verify directly using what you already know plus targeted follow-up reads.
 - Do not issue multiple spawn_subagent calls in a row for the same unresolved question. If a child's findings are insufficient, synthesize and continue yourself rather than spawning another child to answer the same question.
+`)
+}
+
+func renderMinimalChangeBlock() string {
+	return strings.TrimSpace(`
+Minimal change principle.
+
+- Every line you modify must be directly traceable to the user's request.
+- Do not refactor, reformat, or "improve" adjacent code unless the user asks.
+- Do not add flexibility, configurability, or error handling for scenarios the user did not mention.
+- If you can solve the problem in 50 lines, do not write 200.
+- Prefer edit/multi_edit over write for existing files. Use write only for new files or intentional full rewrites.
+- After editing, verify the change is correct before moving on.
 `)
 }
 

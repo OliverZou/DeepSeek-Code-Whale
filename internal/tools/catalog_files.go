@@ -90,7 +90,7 @@ func (b *Toolset) fileMutationTools() []core.Tool {
 		},
 		toolFn{
 			name:        "write",
-			description: "Write full file content under workspace root (create or overwrite). Use for new files or intentional full rewrites. New files are created as regular non-executable files; use shell_run with chmod if a script must be executable. For most partial modifications, prefer multi_edit.",
+			description: "Write full file content under workspace root (create or overwrite). WARNING: This tool overwrites the entire file. For existing files, prefer multi_edit for surgical changes. Use write only for new files or when you intentionally need a full rewrite. New files are created as regular non-executable files; use shell_run with chmod if a script must be executable.",
 			parameters: map[string]any{
 				"type":                 "object",
 				"additionalProperties": false,

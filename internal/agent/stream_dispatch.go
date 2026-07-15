@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/usewhale/whale/internal/core"
@@ -162,6 +164,15 @@ func (a *Agent) dispatchToolCalls(ctx context.Context, sc streamDispatchContext,
 		}
 		if modeBlocked {
 			continue
+		}
+
+		// P1: read-before-edit gate — mutation tools require the target file
+		// to have been read in this turn. New files (write to non-existent
+		// paths) are exempt.
+		if isMutationTool(call.Name) {
+			if blocked := a.checkReadBeforeEditGate(ctx, sc, call, &results); blocked {
+				continue
+			}
 		}
 
 		handled, err := a.dispatchPreApprovalSpecialTool(ctx, sc, call, &results)
@@ -730,4 +741,75 @@ func toolResultRequestsTurnAbort(res core.ToolResult) bool {
 	default:
 		return false
 	}
+}
+
+// P1: read-before-edit gate helpers
+
+var mutationToolNames = map[string]bool{
+	"edit":       true,
+	"write":      true,
+	"multi_edit": true,
+}
+
+func isMutationTool(name string) bool {
+	return mutationToolNames[name]
+}
+
+func extractFilePathFromCall(call core.ToolCall) string {
+	var args struct {
+		FilePath string `json:"file_path"`
+	}
+	if err := json.Unmarshal([]byte(call.Input), &args); err != nil {
+		return ""
+	}
+	return args.FilePath
+}
+
+func (a *Agent) checkReadBeforeEditGate(ctx context.Context, sc streamDispatchContext, call core.ToolCall, results *[]core.ToolResult) bool {
+	// Skip gate when workspaceRoot is empty (test environments)
+	if a.workspaceRoot == "" {
+		return false
+	}
+	filePath := extractFilePathFromCall(call)
+	if filePath == "" {
+		return false
+	}
+	absPath := filepath.Clean(filePath)
+	if !filepath.IsAbs(absPath) {
+		absPath = filepath.Join(a.workspaceRoot, absPath)
+	}
+
+	// Exempt: write to a new file (file does not exist yet)
+	if call.Name == "write" {
+		if _, err := os.Stat(absPath); os.IsNotExist(err) {
+			return false
+		}
+	}
+
+	if a.filesReadThisTurn[absPath] {
+		return false
+	}
+
+	*results = append(*results, core.ToolResult{
+		ToolCallID: call.ID,
+		Name:       call.Name,
+		ModelText:  fmt.Sprintf("File %q has not been read in this turn. Use read_file first to inspect the current content before editing.", filePath),
+		Outcome:    core.OutcomeFailure,
+		Code:       "read_before_edit_required",
+	})
+	return true
+}
+
+// recordFileRead tracks that a file was read in this turn for the
+// read-before-edit gate (P1). Called after read_file succeeds.
+func (a *Agent) recordFileRead(call core.ToolCall) {
+	filePath := extractFilePathFromCall(call)
+	if filePath == "" {
+		return
+	}
+	absPath := filepath.Clean(filePath)
+	if !filepath.IsAbs(absPath) && a.workspaceRoot != "" {
+		absPath = filepath.Join(a.workspaceRoot, absPath)
+	}
+	a.filesReadThisTurn[absPath] = true
 }
