@@ -196,12 +196,18 @@ func (m *fileSearchMeta) applyContextStop(err error) {
 }
 
 func searchFilePathMatches(root string, path string, lowerPattern string) bool {
-	rel := filepath.ToSlash(path)
-	if r, err := filepath.Rel(root, path); err == nil && r != "." && !strings.HasPrefix(r, "..") && !filepath.IsAbs(r) {
-		rel = filepath.ToSlash(r)
+	base := strings.ToLower(filepath.Base(path))
+	// If pattern has no glob chars, use substring match (original behavior)
+	if !strings.ContainsAny(lowerPattern, "*?[") {
+		rel := filepath.ToSlash(path)
+		if r, err := filepath.Rel(root, path); err == nil && r != "." && !strings.HasPrefix(r, "..") && !filepath.IsAbs(r) {
+			rel = filepath.ToSlash(r)
+		}
+		return strings.Contains(strings.ToLower(rel), lowerPattern) || strings.Contains(base, lowerPattern)
 	}
-	return strings.Contains(strings.ToLower(rel), lowerPattern) ||
-		strings.Contains(strings.ToLower(filepath.Base(path)), lowerPattern)
+	// Simple glob: support * as wildcard
+	matched, err := filepath.Match(lowerPattern, base)
+	return err == nil && matched
 }
 
 func buildSearchFilesResult(matches []string, meta fileSearchMeta, limit int) map[string]any {
