@@ -40,6 +40,7 @@ type FileConfig struct {
 	Workflows    FileWorkflowsConfig           `toml:"workflows,omitempty"`
 	AutoReview   FileAutoReviewConfig          `toml:"auto_review,omitempty"`
 	Verify       FileVerifyConfig              `toml:"verify,omitempty"`
+	Gate         FileGateConfig                `toml:"gate,omitempty"`
 	Hooks        map[string][]agent.HookConfig `toml:"hooks,omitempty"`
 }
 
@@ -211,8 +212,12 @@ type FileAutoReviewConfig struct {
 type FileVerifyConfig struct {
 	Commands         []string `toml:"commands,omitempty"`
 	Timeout          string   `toml:"timeout,omitempty"`
-	RollbackOnFailure *bool   `toml:"rollback_on_failure,omitempty"`
 	ReviewThreshold  int      `toml:"review_threshold,omitempty"`
+}
+
+type FileGateConfig struct {
+	ReadBeforeEdit   *bool `toml:"read_before_edit,omitempty"`
+	AnalyzeBeforeEdit *bool `toml:"analyze_before_edit,omitempty"`
 }
 
 type LoadedConfig struct {

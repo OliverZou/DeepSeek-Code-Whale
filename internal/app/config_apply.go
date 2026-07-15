@@ -166,6 +166,7 @@ func ApplyFileConfig(cfg *Config, file FileConfig) error {
 	if err := applyVerifyConfig(cfg, file.Verify); err != nil {
 		return err
 	}
+	applyGateConfig(cfg, file.Gate)
 	return nil
 }
 
@@ -485,11 +486,18 @@ func applyVerifyConfig(cfg *Config, file FileVerifyConfig) error {
 		}
 		cfg.VerifyTimeout = d
 	}
-	if file.RollbackOnFailure != nil {
-		cfg.VerifyRollbackOnFailure = *file.RollbackOnFailure
-	}
+
 	if file.ReviewThreshold > 0 {
 		cfg.VerifyReviewThreshold = file.ReviewThreshold
 	}
 	return nil
+}
+
+func applyGateConfig(cfg *Config, file FileGateConfig) {
+	if file.ReadBeforeEdit != nil {
+		cfg.GateReadBeforeEdit = *file.ReadBeforeEdit
+	}
+	if file.AnalyzeBeforeEdit != nil {
+		cfg.GateAnalyzeBeforeEdit = *file.AnalyzeBeforeEdit
+	}
 }

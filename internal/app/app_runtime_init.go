@@ -130,6 +130,11 @@ func initAppRuntime(cfg Config, sessionInit appSessionInit, toolInit appToolInit
 		DefaultMaxToolIters:        tasks.DefaultMaxToolIters,
 		SummaryMaxChars:            tasks.DefaultSummaryMaxChar,
 		UsageLogPath:               filepath.Join(cfg.DataDir, "usage"),
+		VerifyCommands:             cfg.VerifyCommands,
+		VerifyTimeout:              cfg.VerifyTimeout,
+		VerifyReviewThreshold:      cfg.VerifyReviewThreshold,
+		GateReadBeforeEdit:         cfg.GateReadBeforeEdit,
+		GateAnalyzeBeforeEdit:      cfg.GateAnalyzeBeforeEdit,
 		ApprovalFunc:               approvalFunc,
 	})
 	taskTools := tasks.NewTools(taskRunner)

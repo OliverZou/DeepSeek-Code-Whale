@@ -170,16 +170,18 @@ func (a *Agent) dispatchToolCalls(ctx context.Context, sc streamDispatchContext,
 
 		// P1: read-before-edit gate — mutation tools require the target file
 		// to have been read in this turn. New files (write to non-existent
-		// paths) are exempt.
-		if isMutationTool(call.Name) {
+		// paths) are exempt. Disabled when workspaceRoot is empty or gate
+		// is explicitly turned off via [gate] config.
+		if isMutationTool(call.Name) && a.gateReadBeforeEdit {
 			if blocked := a.checkReadBeforeEditGate(ctx, sc, call, &results); blocked {
 				continue
 			}
 		}
 
-		// P4: analysis gate — mutation tools require analyze_problem first
-		// Skip when workspaceRoot is empty (test environments)
-		if isMutationTool(call.Name) && !a.analysisProvidedThisTurn && !a.skipAnalysisThisTurn && a.workspaceRoot != "" {
+		// P4: analysis gate — mutation tools require analyze_problem first.
+		// Disabled when workspaceRoot is empty, user skips, or gate is
+		// explicitly turned off via [gate] config.
+		if isMutationTool(call.Name) && !a.analysisProvidedThisTurn && !a.skipAnalysisThisTurn && a.gateAnalyzeBeforeEdit && a.workspaceRoot != "" {
 			results = append(results, core.ToolResult{
 				ToolCallID: call.ID,
 				Name:       call.Name,
@@ -280,16 +282,20 @@ func (a *Agent) dispatchToolCalls(ctx context.Context, sc streamDispatchContext,
 		return nil, false, err
 	}
 
-	// P2: run auto-verify after all mutations in this dispatch batch
+	// P2: run auto-verify after all mutations in this dispatch batch.
+	// Append verify output to the last mutation tool's ModelText rather than
+	// creating a synthetic ToolResult, to avoid fake ToolCallID issues.
 	if a.dirtySinceVerify {
 		if verifyResult := a.runAutoVerify(ctx); verifyResult != "" {
-			results = append(results, core.ToolResult{
-				ToolCallID: "__auto_verify__",
-				Name:       "auto_verify",
-				ModelText:  verifyResult,
-				Outcome:    core.OutcomeSuccess,
-				Code:       "ok",
-			})
+			lastMutationIdx := -1
+			for i := range results {
+				if isMutationTool(results[i].Name) {
+					lastMutationIdx = i
+				}
+			}
+			if lastMutationIdx >= 0 {
+				results[lastMutationIdx].ModelText += "\n\n--- Auto-verify ---\n" + verifyResult
+			}
 		}
 		a.dirtySinceVerify = false
 	}
@@ -796,7 +802,7 @@ func extractFilePathFromCall(call core.ToolCall) string {
 }
 
 func (a *Agent) checkReadBeforeEditGate(ctx context.Context, sc streamDispatchContext, call core.ToolCall, results *[]core.ToolResult) bool {
-	// Skip gate when workspaceRoot is empty (test environments)
+
 	if a.workspaceRoot == "" {
 		return false
 	}

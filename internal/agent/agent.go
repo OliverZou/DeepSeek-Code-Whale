@@ -304,6 +304,8 @@ type Agent struct {
 	dirtySinceVerify      bool            // P2: debounce flag for auto-verify
 	analysisProvidedThisTurn bool         // P4: analyze_problem called this turn
 	skipAnalysisThisTurn    bool          // P4: user explicitly skipped analysis
+	gateReadBeforeEdit      bool          // P1: configurable gate switch
+	gateAnalyzeBeforeEdit   bool          // P4: configurable gate switch
 }
 
 type activeTurnState struct {
@@ -684,6 +686,15 @@ func WithVerifyConfig(commands []string, timeout time.Duration, reviewThreshold 
 	}
 }
 
+// WithGateConfig sets the gate configuration for P1/P4 discipline gates.
+// Both default to true; set to false to disable.
+func WithGateConfig(readBeforeEdit, analyzeBeforeEdit bool) AgentOption {
+	return func(a *Agent) {
+		a.gateReadBeforeEdit = readBeforeEdit
+		a.gateAnalyzeBeforeEdit = analyzeBeforeEdit
+	}
+}
+
 const defaultVerifyTimeout = 30 * time.Second
 const defaultVerifyReviewThreshold = 20
 const maxVerifyOutputBytes = 4096
@@ -759,13 +770,16 @@ func autoDetectVerifyCommands(workspaceRoot string) []string {
 		return []string{"cargo check"}
 	}
 	if fileExists(filepath.Join(workspaceRoot, "pyproject.toml")) {
-		return []string{"ruff check ."}
+		return []string{"ruff check .", "pytest"}
 	}
 	if fileExists(filepath.Join(workspaceRoot, "pom.xml")) {
 		return []string{"mvn compile -q"}
 	}
 	if fileExists(filepath.Join(workspaceRoot, "build.gradle")) || fileExists(filepath.Join(workspaceRoot, "build.gradle.kts")) {
 		return []string{"gradle build -q"}
+	}
+	if fileExists(filepath.Join(workspaceRoot, "Makefile")) {
+		return []string{"make check"}
 	}
 	return nil
 }

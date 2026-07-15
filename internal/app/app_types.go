@@ -67,8 +67,9 @@ type Config struct {
 	AutoReviewEnvironment          []string
 	VerifyCommands                 []string
 	VerifyTimeout                  time.Duration
-	VerifyRollbackOnFailure        bool
 	VerifyReviewThreshold          int
+	GateReadBeforeEdit             bool
+	GateAnalyzeBeforeEdit          bool
 	configDefaulted                bool
 }
 
