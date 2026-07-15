@@ -14,6 +14,7 @@ func (b *Toolset) Tools() []core.Tool {
 	tools = append(tools, b.shellTools()...)
 	tools = append(tools, b.planRuntimeTools()...)
 	tools = append(tools, b.todoRuntimeTools()...)
+	tools = append(tools, b.analyzeProblemTools()...)
 	tools = append(tools, b.mcpSearchTools()...)
 	return tools
 }

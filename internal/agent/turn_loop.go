@@ -139,6 +139,16 @@ func (a *Agent) runStreamWithNewMessages(ctx context.Context, sessionID string, 
 		}
 		// P1: reset read-before-edit tracking at the start of every user turn
 		a.filesReadThisTurn = make(map[string]bool)
+		// P4: reset analysis gate state
+		a.analysisProvidedThisTurn = false
+		a.skipAnalysisThisTurn = false
+		// P4: detect user intent to skip analysis
+		for _, msg := range newMessages {
+			if msg.Role == core.RoleUser && containsSkipAnalysisKeyword(msg.Text) != "" {
+				a.skipAnalysisThisTurn = true
+				break
+			}
+		}
 		emit := func(ev AgentEvent) bool {
 			return sendAgentEvent(ctx, out, ev)
 		}

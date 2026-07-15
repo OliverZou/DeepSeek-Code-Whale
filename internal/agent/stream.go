@@ -246,6 +246,27 @@ func (a *Agent) appendDispatchedToolResult(ctx context.Context, sessionID string
 	if call.Name == "read_file" && primarySucceeded {
 		a.recordFileRead(call)
 	}
+	// P4: track analyze_problem success for the analysis gate
+	if call.Name == "analyze_problem" && primarySucceeded {
+		a.analysisProvidedThisTurn = true
+	}
+	// P2: mark dirty on successful mutation for auto-verify debounce
+	if isMutationTool(call.Name) && primarySucceeded {
+		a.dirtySinceVerify = true
+	}
+	// P2: lightweight diff review prompt for large changes
+	if isMutationTool(call.Name) && primarySucceeded {
+		threshold := a.verifyReviewThreshold
+		if threshold == 0 {
+			threshold = defaultVerifyReviewThreshold
+		}
+		if additions, deletions := diffCountsFromResult(finalRes); additions+deletions > threshold {
+			finalRes.ModelText += fmt.Sprintf(
+				"\n\n--- Change summary ---\n%d additions, %d deletions. Verify: (1) every change traces to the user's request, (2) no unrelated refactoring, (3) no missing error handling for new paths.",
+				additions, deletions,
+			)
+		}
+	}
 	// Parallel spawn_subagent batches run post hooks only after the whole batch
 	// returns, in original tool-call order, so stored tool results and events
 	// stay deterministic even when the underlying subagents finish out of order.

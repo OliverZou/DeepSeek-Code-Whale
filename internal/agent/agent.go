@@ -3,10 +3,14 @@ package agent
 import (
 	"context"
 	"errors"
+	"fmt"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/usewhale/whale/internal/core"
 	"github.com/usewhale/whale/internal/defaults"
@@ -293,6 +297,12 @@ type Agent struct {
 	active                 sync.Map
 
 	filesReadThisTurn      map[string]bool // P1: read-before-edit gate tracking
+	verifyCommands        []string        // P2: post-edit auto-verify commands
+	verifyTimeout         time.Duration   // P2: auto-verify timeout
+	verifyReviewThreshold int             // P2: diff review prompt threshold
+	dirtySinceVerify      bool            // P2: debounce flag for auto-verify
+	analysisProvidedThisTurn bool         // P4: analyze_problem called this turn
+	skipAnalysisThisTurn    bool          // P4: user explicitly skipped analysis
 }
 
 type activeTurnState struct {
@@ -662,6 +672,114 @@ func WithClassifierConfig(cfg ClassifierConfig) AgentOption {
 	return func(a *Agent) {
 		a.classifier = NewClassifier(cfg)
 	}
+}
+
+// WithVerifyConfig sets the post-edit auto-verify configuration (P2).
+func WithVerifyConfig(commands []string, timeout time.Duration, reviewThreshold int) AgentOption {
+	return func(a *Agent) {
+		a.verifyCommands = commands
+		a.verifyTimeout = timeout
+		a.verifyReviewThreshold = reviewThreshold
+	}
+}
+
+const defaultVerifyTimeout = 30 * time.Second
+const defaultVerifyReviewThreshold = 20
+const maxVerifyOutputBytes = 4096
+
+// runAutoVerify executes configured verification commands after file mutations.
+// It uses os/exec directly (no approval flow) with timeout and output truncation.
+func (a *Agent) runAutoVerify(ctx context.Context) string {
+	commands := a.resolveVerifyCommands()
+	if len(commands) == 0 {
+		return ""
+	}
+	timeout := a.verifyTimeout
+	if timeout == 0 {
+		timeout = defaultVerifyTimeout
+	}
+
+	var results []string
+	for _, cmd := range commands {
+		ctx, cancel := context.WithTimeout(ctx, timeout)
+		out, err := a.execVerifyCommand(ctx, cmd)
+		cancel()
+		if err != nil {
+			results = append(results, fmt.Sprintf("$ %s\n[error: %s]", cmd, err.Error()))
+		} else {
+			results = append(results, fmt.Sprintf("$ %s\n%s", cmd, truncateVerifyOutput(out, maxVerifyOutputBytes)))
+		}
+	}
+	return strings.Join(results, "\n\n")
+}
+
+func (a *Agent) execVerifyCommand(ctx context.Context, command string) (string, error) {
+	var cmd *exec.Cmd
+	if runtime.GOOS == "windows" {
+		cmd = exec.CommandContext(ctx, "cmd", "/d", "/c", command)
+	} else {
+		cmd = exec.CommandContext(ctx, "sh", "-c", command)
+	}
+	cmd.Dir = a.workspaceRoot
+	out, err := cmd.CombinedOutput()
+	return string(out), err
+}
+
+func truncateVerifyOutput(s string, maxBytes int) string {
+	if len(s) <= maxBytes {
+		return strings.TrimRight(s, " \t\r\n")
+	}
+	return strings.TrimRight(s[:maxBytes], " \t\r\n") + "\n... (output truncated)"
+}
+
+// resolveVerifyCommands returns configured verify commands, or auto-detected
+// commands if none are configured. Auto-detection is lazy and cached.
+func (a *Agent) resolveVerifyCommands() []string {
+	if len(a.verifyCommands) > 0 {
+		return a.verifyCommands
+	}
+	if a.workspaceRoot == "" {
+		return nil
+	}
+	return autoDetectVerifyCommands(a.workspaceRoot)
+}
+
+func autoDetectVerifyCommands(workspaceRoot string) []string {
+	if fileExists(filepath.Join(workspaceRoot, "go.mod")) {
+		return []string{"go build ./..."}
+	}
+	pkgJSON := filepath.Join(workspaceRoot, "package.json")
+	if fileExists(pkgJSON) {
+		if hasNPMScript(pkgJSON, "test") {
+			return []string{"npm test"}
+		}
+	}
+	if fileExists(filepath.Join(workspaceRoot, "Cargo.toml")) {
+		return []string{"cargo check"}
+	}
+	if fileExists(filepath.Join(workspaceRoot, "pyproject.toml")) {
+		return []string{"ruff check ."}
+	}
+	if fileExists(filepath.Join(workspaceRoot, "pom.xml")) {
+		return []string{"mvn compile -q"}
+	}
+	if fileExists(filepath.Join(workspaceRoot, "build.gradle")) || fileExists(filepath.Join(workspaceRoot, "build.gradle.kts")) {
+		return []string{"gradle build -q"}
+	}
+	return nil
+}
+
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}
+
+func hasNPMScript(pkgJSON, script string) bool {
+	data, err := os.ReadFile(pkgJSON)
+	if err != nil {
+		return false
+	}
+	return strings.Contains(string(data), `"`+script+`"`)
 }
 
 // Classifier returns the auto-review classifier for runtime toggle.

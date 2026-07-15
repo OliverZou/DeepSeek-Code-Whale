@@ -65,6 +65,10 @@ type Config struct {
 	AutoReviewAllowRules           []string
 	AutoReviewDenyRules            []string
 	AutoReviewEnvironment          []string
+	VerifyCommands                 []string
+	VerifyTimeout                  time.Duration
+	VerifyRollbackOnFailure        bool
+	VerifyReviewThreshold          int
 	configDefaulted                bool
 }
 

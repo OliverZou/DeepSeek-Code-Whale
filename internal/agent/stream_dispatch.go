@@ -175,6 +175,20 @@ func (a *Agent) dispatchToolCalls(ctx context.Context, sc streamDispatchContext,
 			}
 		}
 
+		// P4: analysis gate — mutation tools require analyze_problem first
+		// Skip when workspaceRoot is empty (test environments)
+		if isMutationTool(call.Name) && !a.analysisProvidedThisTurn && !a.skipAnalysisThisTurn && a.workspaceRoot != "" {
+			results = append(results, core.ToolResult{
+				ToolCallID: call.ID,
+				Name:       call.Name,
+				ModelText:  "You must call analyze_problem first to record your root cause analysis before making changes.",
+				Outcome:    core.OutcomeFailure,
+				Code:       "analysis_required_before_edit",
+			})
+			continue
+		}
+
+
 		handled, err := a.dispatchPreApprovalSpecialTool(ctx, sc, call, &results)
 		if err != nil {
 			return nil, false, err
@@ -262,6 +276,20 @@ func (a *Agent) dispatchToolCalls(ctx context.Context, sc streamDispatchContext,
 	}
 	if err := flushPendingParallelBatches(); err != nil {
 		return nil, false, err
+	}
+
+	// P2: run auto-verify after all mutations in this dispatch batch
+	if a.dirtySinceVerify {
+		if verifyResult := a.runAutoVerify(ctx); verifyResult != "" {
+			results = append(results, core.ToolResult{
+				ToolCallID: "__auto_verify__",
+				Name:       "auto_verify",
+				ModelText:  verifyResult,
+				Outcome:    core.OutcomeSuccess,
+				Code:       "ok",
+			})
+		}
+		a.dirtySinceVerify = false
 	}
 
 	toolMsg, err := a.createDispatchToolMessage(ctx, sc, results)
@@ -812,4 +840,45 @@ func (a *Agent) recordFileRead(call core.ToolCall) {
 		absPath = filepath.Join(a.workspaceRoot, absPath)
 	}
 	a.filesReadThisTurn[absPath] = true
+}
+
+// diffCountsFromResult extracts additions/deletions counts from a mutation
+// tool result's file_diff metadata (P2).
+func diffCountsFromResult(res core.ToolResult) (int, int) {
+	if res.Metadata == nil {
+		return 0, 0
+	}
+	kind, _ := res.Metadata["kind"].(string)
+	if kind != "file_diff" {
+		return 0, 0
+	}
+	files, _ := res.Metadata["files"].([]any)
+	var totalAdd, totalDel int
+	for _, f := range files {
+		fm, ok := f.(map[string]any)
+		if !ok {
+			continue
+		}
+		add, _ := fm["additions"].(float64)
+		del, _ := fm["deletions"].(float64)
+		totalAdd += int(add)
+		totalDel += int(del)
+	}
+	return totalAdd, totalDel
+}
+
+// P4: skip-analysis keyword detection
+var skipAnalysisKeywords = []string{
+	"直接改", "不要分析", "skip analysis", "just fix it",
+	"直接修", "直接修复", "no analysis", "just change",
+}
+
+func containsSkipAnalysisKeyword(input string) string {
+	lower := strings.ToLower(input)
+	for _, kw := range skipAnalysisKeywords {
+		if strings.Contains(lower, strings.ToLower(kw)) {
+			return kw
+		}
+	}
+	return ""
 }

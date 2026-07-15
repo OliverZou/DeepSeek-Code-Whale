@@ -39,6 +39,7 @@ type FileConfig struct {
 	Plugins      FilePluginsConfig             `toml:"plugins,omitempty"`
 	Workflows    FileWorkflowsConfig           `toml:"workflows,omitempty"`
 	AutoReview   FileAutoReviewConfig          `toml:"auto_review,omitempty"`
+	Verify       FileVerifyConfig              `toml:"verify,omitempty"`
 	Hooks        map[string][]agent.HookConfig `toml:"hooks,omitempty"`
 }
 
@@ -205,6 +206,13 @@ type FileAutoReviewConfig struct {
 	AllowRules  []string `toml:"allow_rules,omitempty"`
 	DenyRules   []string `toml:"deny_rules,omitempty"`
 	Environment []string `toml:"environment,omitempty"`
+}
+
+type FileVerifyConfig struct {
+	Commands         []string `toml:"commands,omitempty"`
+	Timeout          string   `toml:"timeout,omitempty"`
+	RollbackOnFailure *bool   `toml:"rollback_on_failure,omitempty"`
+	ReviewThreshold  int      `toml:"review_threshold,omitempty"`
 }
 
 type LoadedConfig struct {

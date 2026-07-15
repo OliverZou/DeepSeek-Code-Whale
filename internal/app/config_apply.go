@@ -163,6 +163,9 @@ func ApplyFileConfig(cfg *Config, file FileConfig) error {
 	if len(file.AutoReview.Environment) > 0 {
 		cfg.AutoReviewEnvironment = append(cfg.AutoReviewEnvironment, file.AutoReview.Environment...)
 	}
+	if err := applyVerifyConfig(cfg, file.Verify); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -468,5 +471,25 @@ func applyPermissionsConfig(cfg *Config, file FilePermissionsConfig) error {
 		return fmt.Errorf("invalid permissions: %w", err)
 	}
 	cfg.PermissionRules = append(cfg.PermissionRules, rules...)
+	return nil
+}
+
+func applyVerifyConfig(cfg *Config, file FileVerifyConfig) error {
+	if len(file.Commands) > 0 {
+		cfg.VerifyCommands = append(cfg.VerifyCommands, file.Commands...)
+	}
+	if strings.TrimSpace(file.Timeout) != "" {
+		d, err := time.ParseDuration(strings.TrimSpace(file.Timeout))
+		if err != nil {
+			return fmt.Errorf("invalid verify.timeout: %w", err)
+		}
+		cfg.VerifyTimeout = d
+	}
+	if file.RollbackOnFailure != nil {
+		cfg.VerifyRollbackOnFailure = *file.RollbackOnFailure
+	}
+	if file.ReviewThreshold > 0 {
+		cfg.VerifyReviewThreshold = file.ReviewThreshold
+	}
 	return nil
 }
