@@ -75,6 +75,8 @@ type RunnerConfig struct {
 	VerifyCommands             []string
 	VerifyTimeout              time.Duration
 	VerifyReviewThreshold      int
+	VerifyTestCommands         []string
+	VerifyTestTimeout          time.Duration
 	GateReadBeforeEdit         bool
 	GateAnalyzeBeforeEdit      bool
 	GateAnalysisThreshold      int
@@ -107,6 +109,8 @@ type Runner struct {
 	verifyCommands             []string
 	verifyTimeout              time.Duration
 	verifyReviewThreshold      int
+	testCommands               []string
+	testTimeout                time.Duration
 	gateReadBeforeEdit         bool
 	gateAnalyzeBeforeEdit      bool
 	analysisThreshold          int
@@ -162,6 +166,8 @@ func NewRunner(cfg RunnerConfig) *Runner {
 		verifyCommands:             append([]string(nil), cfg.VerifyCommands...),
 		verifyTimeout:              cfg.VerifyTimeout,
 		verifyReviewThreshold:      cfg.VerifyReviewThreshold,
+		testCommands:               append([]string(nil), cfg.VerifyTestCommands...),
+		testTimeout:                cfg.VerifyTestTimeout,
 		gateReadBeforeEdit:         cfg.GateReadBeforeEdit,
 		gateAnalyzeBeforeEdit:      cfg.GateAnalyzeBeforeEdit,
 		analysisThreshold:          cfg.GateAnalysisThreshold,

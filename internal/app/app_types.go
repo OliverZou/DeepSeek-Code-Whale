@@ -68,6 +68,8 @@ type Config struct {
 	VerifyCommands                 []string
 	VerifyTimeout                  time.Duration
 	VerifyReviewThreshold          int
+	VerifyTestCommands             []string
+	VerifyTestTimeout              time.Duration
 	GateReadBeforeEdit             bool
 	GateAnalyzeBeforeEdit          bool
 	GateAnalysisThreshold          int

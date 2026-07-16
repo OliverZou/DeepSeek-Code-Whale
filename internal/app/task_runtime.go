@@ -121,6 +121,8 @@ func (a *App) rebuildTaskRuntimeLocked() error {
 		VerifyCommands:             cfg.VerifyCommands,
 		VerifyTimeout:              cfg.VerifyTimeout,
 		VerifyReviewThreshold:      cfg.VerifyReviewThreshold,
+		VerifyTestCommands:         cfg.VerifyTestCommands,
+		VerifyTestTimeout:          cfg.VerifyTestTimeout,
 		GateReadBeforeEdit:         cfg.GateReadBeforeEdit,
 		GateAnalyzeBeforeEdit:      cfg.GateAnalyzeBeforeEdit,
 		GateAnalysisThreshold:      cfg.GateAnalysisThreshold,

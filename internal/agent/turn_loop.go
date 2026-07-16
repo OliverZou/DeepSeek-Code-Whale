@@ -139,6 +139,9 @@ func (a *Agent) runStreamWithNewMessages(ctx context.Context, sessionID string, 
 		}
 		// P1: reset read-before-edit tracking at the start of every user turn
 		a.filesReadThisTurn = make(map[string]bool)
+		// P2: reset source/test file tracking for test reminder
+		a.sourceFilesThisTurn = make(map[string]bool)
+		a.testFilesThisTurn = make(map[string]bool)
 		// P4: reset analysis gate state
 		a.analysisProvidedThisTurn = false
 		a.skipAnalysisThisTurn = false

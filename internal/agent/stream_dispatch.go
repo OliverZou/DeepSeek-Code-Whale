@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"sort"
 	"strings"
 
 	"github.com/usewhale/whale/internal/core"
@@ -286,27 +287,41 @@ func (a *Agent) dispatchToolCalls(ctx context.Context, sc streamDispatchContext,
 		return nil, false, err
 	}
 
-	// P2: run auto-verify after all mutations in this dispatch batch.
-	// Append verify output to the last mutation tool's ModelText rather than
-	// creating a synthetic ToolResult, to avoid fake ToolCallID issues.
+	// P2: run auto-verify (build+lint) then auto-test after all mutations in
+	// this dispatch batch. Append output to the last mutation tool's ModelText.
 	if a.dirtySinceVerify {
-		if verifyResult := a.runAutoVerify(ctx); verifyResult != "" {
-			lastMutationIdx := -1
+		lastMutationIdx := -1
+		for i := range results {
+			if isMutationTool(results[i].Name) && results[i].Outcome == core.OutcomeSuccess {
+				lastMutationIdx = i
+			}
+		}
+		if lastMutationIdx < 0 {
 			for i := range results {
-				if isMutationTool(results[i].Name) && results[i].Outcome == core.OutcomeSuccess {
+				if isMutationTool(results[i].Name) {
 					lastMutationIdx = i
+					break
 				}
 			}
-			if lastMutationIdx < 0 {
-				for i := range results {
-					if isMutationTool(results[i].Name) {
-						lastMutationIdx = i
-						break
-					}
-				}
-			}
-			if lastMutationIdx >= 0 {
+		}
+		if lastMutationIdx >= 0 {
+			if verifyResult := a.runAutoVerify(ctx); verifyResult != "" {
 				results[lastMutationIdx].ModelText += "\n\n--- Auto-verify ---\n" + verifyResult
+			}
+			if testResult := a.runAutoTest(ctx); testResult != "" {
+				results[lastMutationIdx].ModelText += "\n\n--- Auto-test ---\n" + testResult
+			}
+			// P2: test reminder — source files were modified but no test files touched
+			if len(a.sourceFilesThisTurn) > 0 && len(a.testFilesThisTurn) == 0 && !a.skipAnalysisThisTurn {
+				files := make([]string, 0, len(a.sourceFilesThisTurn))
+				for f := range a.sourceFilesThisTurn {
+					files = append(files, f)
+				}
+				sort.Strings(files)
+				results[lastMutationIdx].ModelText += fmt.Sprintf(
+					"\n\n--- Test reminder ---\nYou modified source files (%s) but did not write or update any tests this turn. Consider adding corresponding tests.",
+					strings.Join(files, ", "),
+				)
 			}
 		}
 		a.dirtySinceVerify = false
@@ -930,4 +945,77 @@ func containsSkipAnalysisKeyword(input string) string {
 		}
 	}
 	return ""
+}
+
+// trackMutatedFiles extracts file paths from a mutation tool result's diff
+// metadata and classifies them as source or test files.
+func trackMutatedFiles(res core.ToolResult, sourceFiles, testFiles map[string]bool) {
+	if res.Metadata == nil {
+		return
+	}
+	kind, _ := res.Metadata["kind"].(string)
+	if kind != "file_diff" {
+		return
+	}
+	filesVal := reflect.ValueOf(res.Metadata["files"])
+	if filesVal.Kind() != reflect.Slice {
+		return
+	}
+	for i := 0; i < filesVal.Len(); i++ {
+		fm, ok := filesVal.Index(i).Interface().(map[string]any)
+		if !ok {
+			continue
+		}
+		path, _ := fm["path"].(string)
+		if path == "" {
+			continue
+		}
+		if isTestFile(path) {
+			testFiles[path] = true
+		} else if !isExemptFile(path) {
+			sourceFiles[path] = true
+		}
+	}
+}
+
+// isTestFile returns true if the path looks like a test file.
+func isTestFile(path string) bool {
+	base := strings.ToLower(filepath.Base(path))
+	for _, suffix := range []string{
+		"_test.go", "_test.py", ".test.js", ".test.ts",
+		".spec.js", ".spec.ts", ".test.jsx", ".test.tsx",
+		".spec.jsx", ".spec.tsx", "test_.go", "test_.py",
+	} {
+		if strings.HasSuffix(base, suffix) {
+			return true
+		}
+	}
+	if strings.HasPrefix(base, "test_") && strings.HasSuffix(base, ".py") {
+		return true
+	}
+	for _, pattern := range []string{"tests.java", "test.java"} {
+		if strings.HasSuffix(base, pattern) {
+			return true
+		}
+	}
+	return false
+}
+
+// isExemptFile returns true for config/doc files that don't need test coverage.
+func isExemptFile(path string) bool {
+	base := strings.ToLower(filepath.Base(path))
+	for _, suffix := range []string{
+		".md", ".txt", ".toml", ".yaml", ".yml", ".json",
+		".ini", ".cfg", ".conf", ".lock", ".mod",
+	} {
+		if strings.HasSuffix(base, suffix) {
+			return true
+		}
+	}
+	for _, name := range []string{"makefile", "dockerfile", ".gitignore", ".env"} {
+		if base == name {
+			return true
+		}
+	}
+	return false
 }

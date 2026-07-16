@@ -136,7 +136,13 @@ func TestAutoDetectVerifyCommands(t *testing.T) {
 		d := t.TempDir()
 		os.WriteFile(filepath.Join(d, "package.json"), []byte("{\"scripts\":{\"test\":\"j\"}}"), 0644)
 		cmds := autoDetectVerifyCommands(d)
-		if len(cmds) != 1 || cmds[0] != "npm test" { t.Fatalf("bad: %v", cmds) }
+		if cmds != nil { t.Fatalf("verify should be nil with only test script, got: %v", cmds) }
+	})
+	t.Run("npm build+lint", func(t *testing.T) {
+		d := t.TempDir()
+		os.WriteFile(filepath.Join(d, "package.json"), []byte("{\"scripts\":{\"build\":\"tsc\",\"lint\":\"eslint .\"}}"), 0644)
+		cmds := autoDetectVerifyCommands(d)
+		if len(cmds) != 2 || cmds[0] != "npm run build" || cmds[1] != "npm run lint" { t.Fatalf("bad: %v", cmds) }
 	})
 	t.Run("empty nil", func(t *testing.T) {
 		if cmds := autoDetectVerifyCommands(t.TempDir()); cmds != nil { t.Fatal("expected nil") }
@@ -181,11 +187,13 @@ func TestWithGateConfig(t *testing.T) {
 }
 
 func TestWithVerifyConfig(t *testing.T) {
-	opt := WithVerifyConfig([]string{"go test"}, 10, 5)
+	opt := WithVerifyConfig([]string{"go test"}, 10, 5, []string{"go test ./..."}, 60)
 	a := &Agent{}; opt(a)
 	if len(a.verifyCommands) != 1 || a.verifyCommands[0] != "go test" { t.Fatal("cmds") }
 	if a.verifyTimeout != 10 { t.Fatal("timeout") }
 	if a.verifyReviewThreshold != 5 { t.Fatal("threshold") }
+	if len(a.testCommands) != 1 || a.testCommands[0] != "go test ./..." { t.Fatal("test cmds") }
+	if a.testTimeout != 60 { t.Fatal("test timeout") }
 }
 
 func TestRenderMinimalChangeBlock(t *testing.T) {

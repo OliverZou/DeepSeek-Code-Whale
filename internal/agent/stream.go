@@ -254,13 +254,17 @@ func (a *Agent) appendDispatchedToolResult(ctx context.Context, sessionID string
 	if isMutationTool(call.Name) && primarySucceeded {
 		a.dirtySinceVerify = true
 	}
+	// P2: track source/test files for test reminder
+	if isMutationTool(call.Name) && primarySucceeded {
+		trackMutatedFiles(finalRes, a.sourceFilesThisTurn, a.testFilesThisTurn)
+	}
 	// P4: accumulate changed lines for analysis_threshold
 	if isMutationTool(call.Name) && primarySucceeded {
 		if adds, dels := diffCountsFromResult(finalRes); adds+dels > 0 {
 			a.mutationsChangeCountThisTurn += adds + dels
 		}
 	}
-	// P2: lightweight diff review prompt for large changes
+	// P2: diff self-review prompt after every successful mutation
 	if isMutationTool(call.Name) && primarySucceeded {
 		threshold := a.verifyReviewThreshold
 		if threshold == 0 {
@@ -269,6 +273,11 @@ func (a *Agent) appendDispatchedToolResult(ctx context.Context, sessionID string
 		if additions, deletions := diffCountsFromResult(finalRes); additions+deletions > threshold {
 			finalRes.ModelText += fmt.Sprintf(
 				"\n\n--- Change summary ---\n%d additions, %d deletions. Verify: (1) every change traces to the user's request, (2) no unrelated refactoring, (3) no missing error handling for new paths.",
+				additions, deletions,
+			)
+		} else if additions+deletions > 0 {
+			finalRes.ModelText += fmt.Sprintf(
+				"\n\n--- Self-review ---\n%d additions, %d deletions. Confirm every change traces to the user's request.",
 				additions, deletions,
 			)
 		}

@@ -213,6 +213,8 @@ type FileVerifyConfig struct {
 	Commands         []string `toml:"commands,omitempty"`
 	Timeout          string   `toml:"timeout,omitempty"`
 	ReviewThreshold  int      `toml:"review_threshold,omitempty"`
+	TestCommands     []string `toml:"test_commands,omitempty"`
+	TestTimeout      string   `toml:"test_timeout,omitempty"`
 }
 
 type FileGateConfig struct {

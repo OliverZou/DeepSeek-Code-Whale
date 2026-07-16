@@ -298,10 +298,14 @@ type Agent struct {
 	active                 sync.Map
 
 	filesReadThisTurn      map[string]bool // P1: read-before-edit gate tracking
-	verifyCommands        []string        // P2: post-edit auto-verify commands
+	verifyCommands        []string        // P2: post-edit auto-verify commands (build+lint)
 	verifyTimeout         time.Duration   // P2: auto-verify timeout
 	verifyReviewThreshold int             // P2: diff review prompt threshold
+	testCommands          []string        // P2: post-edit test commands
+	testTimeout           time.Duration   // P2: test commands timeout
 	dirtySinceVerify      bool            // P2: debounce flag for auto-verify
+	sourceFilesThisTurn   map[string]bool // P2: source files mutated this turn (for test reminder)
+	testFilesThisTurn     map[string]bool // P2: test files mutated this turn (for test reminder)
 	analysisProvidedThisTurn bool         // P4: analyze_problem called this turn
 	skipAnalysisThisTurn    bool          // P4: user explicitly skipped analysis
 	mutationsChangeCountThisTurn int      // P4: cumulative changed lines this turn (for analysis_threshold)
@@ -421,6 +425,8 @@ func NewAgentWithRegistry(provider llm.Provider, store store.MessageStore, tools
 		maxToolIters:           0, // 0 = unlimited: the interactive main agent is bounded by user cancellation, compaction, and the storm loop-guard (see maxConsecutiveStormRounds) — not by a round count. Subagents override via WithMaxToolIters.
 		maxParallelSubagents:   defaultMaxParallelSubagents(),
 		filesReadThisTurn:      make(map[string]bool),
+		sourceFilesThisTurn:    make(map[string]bool),
+		testFilesThisTurn:      make(map[string]bool),
 	}
 	for _, opt := range opts {
 		if opt != nil {
@@ -680,11 +686,13 @@ func WithClassifierConfig(cfg ClassifierConfig) AgentOption {
 }
 
 // WithVerifyConfig sets the post-edit auto-verify configuration (P2).
-func WithVerifyConfig(commands []string, timeout time.Duration, reviewThreshold int) AgentOption {
+func WithVerifyConfig(commands []string, timeout time.Duration, reviewThreshold int, testCommands []string, testTimeout time.Duration) AgentOption {
 	return func(a *Agent) {
 		a.verifyCommands = commands
 		a.verifyTimeout = timeout
 		a.verifyReviewThreshold = reviewThreshold
+		a.testCommands = testCommands
+		a.testTimeout = testTimeout
 	}
 }
 
@@ -701,6 +709,7 @@ func WithGateConfig(readBeforeEdit, analyzeBeforeEdit bool, analysisThreshold in
 }
 
 const defaultVerifyTimeout = 30 * time.Second
+const defaultTestTimeout = 60 * time.Second
 const defaultVerifyReviewThreshold = 20
 const maxVerifyOutputBytes = 4096
 
@@ -761,9 +770,43 @@ func (a *Agent) resolveVerifyCommands() []string {
 	return autoDetectVerifyCommands(a.workspaceRoot)
 }
 
-func autoDetectVerifyCommands(workspaceRoot string) []string {
+func (a *Agent) resolveTestCommands() []string {
+	if len(a.testCommands) > 0 {
+		return a.testCommands
+	}
+	if a.workspaceRoot == "" {
+		return nil
+	}
+	return autoDetectTestCommands(a.workspaceRoot)
+}
+
+func (a *Agent) runAutoTest(ctx context.Context) string {
+	commands := a.resolveTestCommands()
+	if len(commands) == 0 {
+		return ""
+	}
+	timeout := a.testTimeout
+	if timeout == 0 {
+		timeout = defaultTestTimeout
+	}
+
+	var results []string
+	for _, cmd := range commands {
+		ctx, cancel := context.WithTimeout(ctx, timeout)
+		out, err := a.execVerifyCommand(ctx, cmd)
+		cancel()
+		if err != nil {
+			results = append(results, fmt.Sprintf("$ %s\n[error: %s]", cmd, err.Error()))
+		} else {
+			results = append(results, fmt.Sprintf("$ %s\n%s", cmd, truncateVerifyOutput(out, maxVerifyOutputBytes)))
+		}
+	}
+	return strings.Join(results, "\n\n")
+}
+
+func autoDetectTestCommands(workspaceRoot string) []string {
 	if fileExists(filepath.Join(workspaceRoot, "go.mod")) {
-		return []string{"go build ./...", "go vet ./..."}
+		return []string{"go test ./... -count=1"}
 	}
 	pkgJSON := filepath.Join(workspaceRoot, "package.json")
 	if fileExists(pkgJSON) {
@@ -771,11 +814,42 @@ func autoDetectVerifyCommands(workspaceRoot string) []string {
 			return []string{"npm test"}
 		}
 	}
+	if fileExists(filepath.Join(workspaceRoot, "pyproject.toml")) || fileExists(filepath.Join(workspaceRoot, "pytest.ini")) {
+		return []string{"pytest -x -q"}
+	}
+	if fileExists(filepath.Join(workspaceRoot, "Cargo.toml")) {
+		return []string{"cargo test"}
+	}
+	if fileExists(filepath.Join(workspaceRoot, "Makefile")) {
+		if hasMakeTarget(workspaceRoot, "test") {
+			return []string{"make test"}
+		}
+	}
+	return nil
+}
+
+func autoDetectVerifyCommands(workspaceRoot string) []string {
+	if fileExists(filepath.Join(workspaceRoot, "go.mod")) {
+		return []string{"go build ./...", "go vet ./..."}
+	}
+	pkgJSON := filepath.Join(workspaceRoot, "package.json")
+	if fileExists(pkgJSON) {
+		var cmds []string
+		if hasNPMScript(pkgJSON, "build") {
+			cmds = append(cmds, "npm run build")
+		}
+		if hasNPMScript(pkgJSON, "lint") {
+			cmds = append(cmds, "npm run lint")
+		}
+		if len(cmds) > 0 {
+			return cmds
+		}
+	}
 	if fileExists(filepath.Join(workspaceRoot, "Cargo.toml")) {
 		return []string{"cargo check"}
 	}
 	if fileExists(filepath.Join(workspaceRoot, "pyproject.toml")) {
-		return []string{"ruff check .", "pytest"}
+		return []string{"ruff check ."}
 	}
 	if fileExists(filepath.Join(workspaceRoot, "pom.xml")) {
 		return []string{"mvn compile -q"}
@@ -784,6 +858,9 @@ func autoDetectVerifyCommands(workspaceRoot string) []string {
 		return []string{"gradle build -q"}
 	}
 	if fileExists(filepath.Join(workspaceRoot, "Makefile")) {
+		if hasMakeTarget(workspaceRoot, "lint") {
+			return []string{"make check", "make lint"}
+		}
 		return []string{"make check"}
 	}
 	return nil
@@ -807,6 +884,21 @@ func hasNPMScript(pkgJSON, script string) bool {
 	}
 	_, ok := pkg.Scripts[script]
 	return ok
+}
+
+func hasMakeTarget(workspaceRoot, target string) bool {
+	makefilePath := filepath.Join(workspaceRoot, "Makefile")
+	data, err := os.ReadFile(makefilePath)
+	if err != nil {
+		return false
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, target+":") || strings.HasPrefix(trimmed, target+" :") {
+			return true
+		}
+	}
+	return false
 }
 
 // Classifier returns the auto-review classifier for runtime toggle.

@@ -490,6 +490,16 @@ func applyVerifyConfig(cfg *Config, file FileVerifyConfig) error {
 	if file.ReviewThreshold > 0 {
 		cfg.VerifyReviewThreshold = file.ReviewThreshold
 	}
+	if len(file.TestCommands) > 0 {
+		cfg.VerifyTestCommands = append(cfg.VerifyTestCommands, file.TestCommands...)
+	}
+	if strings.TrimSpace(file.TestTimeout) != "" {
+		d, err := time.ParseDuration(strings.TrimSpace(file.TestTimeout))
+		if err != nil {
+			return fmt.Errorf("invalid verify.test_timeout: %w", err)
+		}
+		cfg.VerifyTestTimeout = d
+	}
 	return nil
 }
 
