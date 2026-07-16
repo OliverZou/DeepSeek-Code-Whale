@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"reflect"
 	"runtime"
 	"sort"
 	"strings"
@@ -846,6 +845,9 @@ func (a *Agent) checkReadBeforeEditGate(ctx context.Context, sc streamDispatchCo
 		}
 	}
 
+	if a.filesReadThisTurn == nil {
+		return false
+	}
 	if a.filesReadThisTurn[absPath] {
 		return false
 	}
@@ -863,6 +865,9 @@ func (a *Agent) checkReadBeforeEditGate(ctx context.Context, sc streamDispatchCo
 // recordFileRead tracks that a file was read in this turn for the
 // read-before-edit gate (P1). Called after read_file succeeds.
 func (a *Agent) recordFileRead(call core.ToolCall) {
+	if a.filesReadThisTurn == nil {
+		a.filesReadThisTurn = make(map[string]bool)
+	}
 	filePath := extractFilePathFromCall(call)
 	if filePath == "" {
 		return
@@ -896,18 +901,13 @@ func diffCountsFromResult(res core.ToolResult) (int, int) {
 	if kind != "file_diff" {
 		return 0, 0
 	}
-	// fileDiffMetadata builds "files" as []map[string]any, which cannot be
-	// type-asserted to []any in Go. Use reflect to iterate.
-	filesVal := reflect.ValueOf(res.Metadata["files"])
-	if filesVal.Kind() != reflect.Slice {
+	// files is []map[string]any as built by fileDiffMetadata (tools/diff_metadata.go).
+	files, ok := res.Metadata["files"].([]map[string]any)
+	if !ok {
 		return 0, 0
 	}
 	var totalAdd, totalDel int
-	for i := 0; i < filesVal.Len(); i++ {
-		fm, ok := filesVal.Index(i).Interface().(map[string]any)
-		if !ok {
-			continue
-		}
+	for _, fm := range files {
 		totalAdd += numericAsInt(fm["additions"])
 		totalDel += numericAsInt(fm["deletions"])
 	}
@@ -957,15 +957,11 @@ func trackMutatedFiles(res core.ToolResult, sourceFiles, testFiles map[string]bo
 	if kind != "file_diff" {
 		return
 	}
-	filesVal := reflect.ValueOf(res.Metadata["files"])
-	if filesVal.Kind() != reflect.Slice {
+	files, ok := res.Metadata["files"].([]map[string]any)
+	if !ok {
 		return
 	}
-	for i := 0; i < filesVal.Len(); i++ {
-		fm, ok := filesVal.Index(i).Interface().(map[string]any)
-		if !ok {
-			continue
-		}
+	for _, fm := range files {
 		path, _ := fm["path"].(string)
 		if path == "" {
 			continue

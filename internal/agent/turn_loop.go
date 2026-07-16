@@ -137,15 +137,7 @@ func (a *Agent) runStreamWithNewMessages(ctx context.Context, sessionID string, 
 		if a.classifier != nil {
 			a.classifier.ClearTurn(sessionID)
 		}
-		// P1: reset read-before-edit tracking at the start of every user turn
-		a.filesReadThisTurn = make(map[string]bool)
-		// P2: reset source/test file tracking for test reminder
-		a.sourceFilesThisTurn = make(map[string]bool)
-		a.testFilesThisTurn = make(map[string]bool)
-		// P4: reset analysis gate state
-		a.analysisProvidedThisTurn = false
-		a.skipAnalysisThisTurn = false
-		a.mutationsChangeCountThisTurn = 0
+		a.resetTurnState()
 		// P4: detect user intent to skip analysis
 		for _, msg := range newMessages {
 			if msg.Role == core.RoleUser && containsSkipAnalysisKeyword(msg.Text) != "" {

@@ -136,7 +136,7 @@ func TestAutoDetectVerifyCommands(t *testing.T) {
 	})
 	t.Run("Makefile with lint", func(t *testing.T) {
 		d := t.TempDir()
-		os.WriteFile(filepath.Join(d, "Makefile"), []byte("lint:\n\trun\n"), 0644)
+		os.WriteFile(filepath.Join(d, "Makefile"), []byte("check:\n\trun\n\nlint:\n\trun\n"), 0644)
 		cmds := autoDetectVerifyCommands(d)
 		if len(cmds) != 2 || cmds[0] != "make check" { t.Fatalf("bad: %v", cmds) }
 	})
@@ -144,7 +144,7 @@ func TestAutoDetectVerifyCommands(t *testing.T) {
 		d := t.TempDir()
 		os.WriteFile(filepath.Join(d, "Makefile"), []byte("build:\n\trun\n"), 0644)
 		cmds := autoDetectVerifyCommands(d)
-		if len(cmds) != 1 || cmds[0] != "make check" { t.Fatalf("bad: %v", cmds) }
+		if cmds != nil { t.Fatalf("expected nil when no check/lint targets: %v", cmds) }
 	})
 	t.Run("pyproject.toml", func(t *testing.T) {
 		d := t.TempDir(); os.WriteFile(filepath.Join(d, "pyproject.toml"), []byte("[project]\n"), 0644)
@@ -243,12 +243,7 @@ func TestTurnReset(t *testing.T) {
 		testFilesThisTurn:          map[string]bool{"a_test.go": true},
 		mutationsChangeCountThisTurn: 10,
 	}
-	a.filesReadThisTurn = make(map[string]bool)
-	a.analysisProvidedThisTurn = false
-	a.dirtySinceVerify = false
-	a.sourceFilesThisTurn = make(map[string]bool)
-	a.testFilesThisTurn = make(map[string]bool)
-	a.mutationsChangeCountThisTurn = 0
+	a.resetTurnState()
 	if len(a.filesReadThisTurn) != 0 || a.analysisProvidedThisTurn || a.dirtySinceVerify ||
 		len(a.sourceFilesThisTurn) != 0 || len(a.testFilesThisTurn) != 0 || a.mutationsChangeCountThisTurn != 0 {
 		t.Fatal("not reset")

@@ -297,21 +297,46 @@ type Agent struct {
 	maxParallelSubagents   int
 	active                 sync.Map
 
-	filesReadThisTurn      map[string]bool // P1: read-before-edit gate tracking
-	verifyCommands        []string        // P2: post-edit auto-verify commands (build+lint)
-	verifyTimeout         time.Duration   // P2: auto-verify timeout
-	verifyReviewThreshold int             // P2: diff review prompt threshold
-	testCommands          []string        // P2: post-edit test commands
-	testTimeout           time.Duration   // P2: test commands timeout
-	dirtySinceVerify      bool            // P2: debounce flag for auto-verify
-	sourceFilesThisTurn   map[string]bool // P2: source files mutated this turn (for test reminder)
-	testFilesThisTurn     map[string]bool // P2: test files mutated this turn (for test reminder)
-	analysisProvidedThisTurn bool         // P4: analyze_problem called this turn
-	skipAnalysisThisTurn    bool          // P4: user explicitly skipped analysis
-	mutationsChangeCountThisTurn int      // P4: cumulative changed lines this turn (for analysis_threshold)
-	gateReadBeforeEdit      bool          // P1: configurable gate switch
-	gateAnalyzeBeforeEdit   bool          // P4: configurable gate switch
-	analysisThreshold       int           // P4: skip analysis gate when changed lines below this
+	// Turn-level state (P1-P4 discipline). Reset by resetTurnState at the
+	// start of every user turn. Agent is per-session; no sync needed.
+	filesReadThisTurn           map[string]bool // P1: read-before-edit gate tracking
+	dirtySinceVerify            bool            // P2: debounce flag for auto-verify
+	sourceFilesThisTurn         map[string]bool // P2: source files mutated this turn (for test reminder)
+	testFilesThisTurn           map[string]bool // P2: test files mutated this turn (for test reminder)
+	analysisProvidedThisTurn    bool            // P4: analyze_problem called this turn
+	skipAnalysisThisTurn        bool            // P4: user explicitly skipped analysis
+	mutationsChangeCountThisTurn int            // P4: cumulative changed lines this turn (for analysis_threshold)
+
+	// Agent-level configuration (set once, read-only after construction).
+	verifyCommands        []string      // P2: post-edit auto-verify commands (build+lint)
+	verifyTimeout         time.Duration // P2: auto-verify timeout
+	verifyReviewThreshold int           // P2: diff review prompt threshold
+	testCommands          []string      // P2: post-edit test commands
+	testTimeout           time.Duration // P2: test commands timeout
+	gateReadBeforeEdit    bool          // P1: configurable gate switch
+	gateAnalyzeBeforeEdit bool          // P4: configurable gate switch
+	analysisThreshold     int           // P4: skip analysis gate when changed lines below this
+}
+
+// resetTurnState clears all turn-level discipline state at the start of a
+// new user turn. Called from the turn loop; not safe for concurrent use
+// across sessions (Agent is per-session, so this holds).
+func (a *Agent) resetTurnState() {
+	if a.filesReadThisTurn == nil {
+		a.filesReadThisTurn = make(map[string]bool)
+	} else {
+		clear(a.filesReadThisTurn)
+	}
+	a.dirtySinceVerify = false
+	if a.sourceFilesThisTurn == nil {
+		a.sourceFilesThisTurn = make(map[string]bool)
+	} else {
+		clear(a.sourceFilesThisTurn)
+	}
+	a.testFilesThisTurn = make(map[string]bool)
+	a.analysisProvidedThisTurn = false
+	a.skipAnalysisThisTurn = false
+	a.mutationsChangeCountThisTurn = 0
 }
 
 type activeTurnState struct {
@@ -858,10 +883,16 @@ func autoDetectVerifyCommands(workspaceRoot string) []string {
 		return []string{"gradle build -q"}
 	}
 	if fileExists(filepath.Join(workspaceRoot, "Makefile")) {
-		if hasMakeTarget(workspaceRoot, "lint") {
-			return []string{"make check", "make lint"}
+		var cmds []string
+		if hasMakeTarget(workspaceRoot, "check") {
+			cmds = append(cmds, "make check")
 		}
-		return []string{"make check"}
+		if hasMakeTarget(workspaceRoot, "lint") {
+			cmds = append(cmds, "make lint")
+		}
+		if len(cmds) > 0 {
+			return cmds
+		}
 	}
 	return nil
 }
