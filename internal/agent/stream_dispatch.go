@@ -893,12 +893,27 @@ func diffCountsFromResult(res core.ToolResult) (int, int) {
 		if !ok {
 			continue
 		}
-		add, _ := fm["additions"].(float64)
-		del, _ := fm["deletions"].(float64)
-		totalAdd += int(add)
-		totalDel += int(del)
+		totalAdd += numericAsInt(fm["additions"])
+		totalDel += numericAsInt(fm["deletions"])
 	}
 	return totalAdd, totalDel
+}
+
+// numericAsInt extracts an int from a value that may be float64 or int.
+func numericAsInt(v any) int {
+	if v == nil {
+		return 0
+	}
+	switch n := v.(type) {
+	case float64:
+		return int(n)
+	case int:
+		return n
+	case int64:
+		return int(n)
+	default:
+		return 0
+	}
 }
 
 // P4: skip-analysis keyword detection
