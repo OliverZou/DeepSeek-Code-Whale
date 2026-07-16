@@ -1,4 +1,4 @@
-package agent
+﻿package agent
 
 import (
 	"context"
@@ -18,14 +18,9 @@ func tc(name string, params map[string]any) core.ToolCall {
 
 func TestIsMutationTool(t *testing.T) {
 	tests := []struct{name string; want bool}{
-		{"edit", true},
-		{"write", true},
-		{"multi_edit", true},
-		{"read_file", false},
-		{"shell_run", false},
-		{"grep", false},
-		{"analyze_problem", false},
-		{"", false},
+		{"edit", true}, {"write", true}, {"multi_edit", true},
+		{"read_file", false}, {"shell_run", false}, {"grep", false},
+		{"analyze_problem", false}, {"", false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -45,9 +40,7 @@ func TestExtractFilePathFromCall(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := extractFilePathFromCall(tt.call)
-			if got != tt.want {
-				t.Errorf("extractFilePathFromCall() = %q, want %q", got, tt.want)
-			}
+			if got != tt.want { t.Errorf("extractFilePathFromCall() = %q, want %q", got, tt.want) }
 		})
 	}
 }
@@ -63,7 +56,6 @@ func TestCheckReadBeforeEditGate(t *testing.T) {
 		if !blocked { t.Fatal("expected blocked") }
 		if results[len(results)-1].Code != "read_before_edit_required" { t.Fatal("wrong code") }
 	})
-
 	t.Run("read allowed", func(t *testing.T) {
 		norm := normalizeWorkspacePath("existing.go", dir)
 		a := &Agent{workspaceRoot: dir, filesReadThisTurn: map[string]bool{norm: true}}
@@ -72,7 +64,6 @@ func TestCheckReadBeforeEditGate(t *testing.T) {
 			t.Fatal("should not block")
 		}
 	})
-
 	t.Run("new write exempt", func(t *testing.T) {
 		a := &Agent{workspaceRoot: dir, filesReadThisTurn: map[string]bool{}}
 		var results []core.ToolResult
@@ -80,7 +71,6 @@ func TestCheckReadBeforeEditGate(t *testing.T) {
 			t.Fatal("new file exempt")
 		}
 	})
-
 	t.Run("empty root skip", func(t *testing.T) {
 		a := &Agent{workspaceRoot: "", filesReadThisTurn: map[string]bool{}}
 		var results []core.ToolResult
@@ -132,17 +122,34 @@ func TestAutoDetectVerifyCommands(t *testing.T) {
 		cmds := autoDetectVerifyCommands(d)
 		if len(cmds) != 2 || cmds[0] != "go build ./..." { t.Fatalf("bad: %v", cmds) }
 	})
-	t.Run("npm test", func(t *testing.T) {
+	t.Run("npm only test nil", func(t *testing.T) {
 		d := t.TempDir()
 		os.WriteFile(filepath.Join(d, "package.json"), []byte("{\"scripts\":{\"test\":\"j\"}}"), 0644)
 		cmds := autoDetectVerifyCommands(d)
-		if cmds != nil { t.Fatalf("verify should be nil with only test script, got: %v", cmds) }
+		if cmds != nil { t.Fatalf("expected nil with only test: %v", cmds) }
 	})
 	t.Run("npm build+lint", func(t *testing.T) {
 		d := t.TempDir()
 		os.WriteFile(filepath.Join(d, "package.json"), []byte("{\"scripts\":{\"build\":\"tsc\",\"lint\":\"eslint .\"}}"), 0644)
 		cmds := autoDetectVerifyCommands(d)
 		if len(cmds) != 2 || cmds[0] != "npm run build" || cmds[1] != "npm run lint" { t.Fatalf("bad: %v", cmds) }
+	})
+	t.Run("Makefile with lint", func(t *testing.T) {
+		d := t.TempDir()
+		os.WriteFile(filepath.Join(d, "Makefile"), []byte("lint:\n\trun\n"), 0644)
+		cmds := autoDetectVerifyCommands(d)
+		if len(cmds) != 2 || cmds[0] != "make check" { t.Fatalf("bad: %v", cmds) }
+	})
+	t.Run("Makefile no lint", func(t *testing.T) {
+		d := t.TempDir()
+		os.WriteFile(filepath.Join(d, "Makefile"), []byte("build:\n\trun\n"), 0644)
+		cmds := autoDetectVerifyCommands(d)
+		if len(cmds) != 1 || cmds[0] != "make check" { t.Fatalf("bad: %v", cmds) }
+	})
+	t.Run("pyproject.toml", func(t *testing.T) {
+		d := t.TempDir(); os.WriteFile(filepath.Join(d, "pyproject.toml"), []byte("[project]\n"), 0644)
+		cmds := autoDetectVerifyCommands(d)
+		if len(cmds) != 1 || cmds[0] != "ruff check ." { t.Fatalf("bad: %v", cmds) }
 	})
 	t.Run("empty nil", func(t *testing.T) {
 		if cmds := autoDetectVerifyCommands(t.TempDir()); cmds != nil { t.Fatal("expected nil") }
@@ -154,6 +161,28 @@ func TestHasNPMScript(t *testing.T) {
 	os.WriteFile(p, []byte("{\"scripts\":{\"test\":\"j\"}}"), 0644)
 	if !hasNPMScript(p, "test") { t.Fatal("not found") }
 	if hasNPMScript("/nil", "test") { t.Fatal("should fail") }
+}
+
+func TestHasMakeTarget(t *testing.T) {
+	t.Run("target exists", func(t *testing.T) {
+		d := t.TempDir()
+		os.WriteFile(filepath.Join(d, "Makefile"), []byte("lint:\ncheck:\n"), 0644)
+		if !hasMakeTarget(d, "lint") { t.Fatal("not found") }
+		if !hasMakeTarget(d, "check") { t.Fatal("not found") }
+	})
+	t.Run("space before colon", func(t *testing.T) {
+		d := t.TempDir()
+		os.WriteFile(filepath.Join(d, "Makefile"), []byte("test :\n"), 0644)
+		if !hasMakeTarget(d, "test") { t.Fatal("space colon not found") }
+	})
+	t.Run("missing target", func(t *testing.T) {
+		d := t.TempDir()
+		os.WriteFile(filepath.Join(d, "Makefile"), []byte("build:\n"), 0644)
+		if hasMakeTarget(d, "lint") { t.Fatal("should not be found") }
+	})
+	t.Run("missing file", func(t *testing.T) {
+		if hasMakeTarget(t.TempDir(), "test") { t.Fatal("false for missing file") }
+	})
 }
 
 func TestTruncateVerifyOutput(t *testing.T) {
@@ -203,12 +232,191 @@ func TestRenderMinimalChangeBlock(t *testing.T) {
 	}
 }
 
+// --- P1-P4 turn-level reset ---
+
 func TestTurnReset(t *testing.T) {
-	a := &Agent{filesReadThisTurn: map[string]bool{"x": true}, analysisProvidedThisTurn: true, dirtySinceVerify: true}
+	a := &Agent{
+		filesReadThisTurn:          map[string]bool{"x": true},
+		analysisProvidedThisTurn:   true,
+		dirtySinceVerify:           true,
+		sourceFilesThisTurn:        map[string]bool{"a.go": true},
+		testFilesThisTurn:          map[string]bool{"a_test.go": true},
+		mutationsChangeCountThisTurn: 10,
+	}
 	a.filesReadThisTurn = make(map[string]bool)
 	a.analysisProvidedThisTurn = false
 	a.dirtySinceVerify = false
-	if len(a.filesReadThisTurn) != 0 || a.analysisProvidedThisTurn || a.dirtySinceVerify {
+	a.sourceFilesThisTurn = make(map[string]bool)
+	a.testFilesThisTurn = make(map[string]bool)
+	a.mutationsChangeCountThisTurn = 0
+	if len(a.filesReadThisTurn) != 0 || a.analysisProvidedThisTurn || a.dirtySinceVerify ||
+		len(a.sourceFilesThisTurn) != 0 || len(a.testFilesThisTurn) != 0 || a.mutationsChangeCountThisTurn != 0 {
 		t.Fatal("not reset")
 	}
+}
+
+// --- P2: new features from 787a92e ---
+
+func TestAutoDetectTestCommands(t *testing.T) {
+	t.Run("go.mod", func(t *testing.T) {
+		d := t.TempDir(); os.WriteFile(filepath.Join(d, "go.mod"), []byte("mod x\n"), 0644)
+		cmds := autoDetectTestCommands(d)
+		if len(cmds) != 1 || cmds[0] != "go test ./... -count=1" { t.Fatalf("bad: %v", cmds) }
+	})
+	t.Run("npm test script", func(t *testing.T) {
+		d := t.TempDir()
+		os.WriteFile(filepath.Join(d, "package.json"), []byte("{\"scripts\":{\"test\":\"jest\"}}"), 0644)
+		cmds := autoDetectTestCommands(d)
+		if len(cmds) != 1 || cmds[0] != "npm test" { t.Fatalf("bad: %v", cmds) }
+	})
+	t.Run("npm no test nil", func(t *testing.T) {
+		d := t.TempDir()
+		os.WriteFile(filepath.Join(d, "package.json"), []byte("{}"), 0644)
+		if cmds := autoDetectTestCommands(d); cmds != nil { t.Fatal("expected nil") }
+	})
+	t.Run("pyproject.toml", func(t *testing.T) {
+		d := t.TempDir(); os.WriteFile(filepath.Join(d, "pyproject.toml"), []byte("[project]\n"), 0644)
+		cmds := autoDetectTestCommands(d)
+		if len(cmds) != 1 || cmds[0] != "pytest -x -q" { t.Fatalf("bad: %v", cmds) }
+	})
+	t.Run("pytest.ini", func(t *testing.T) {
+		d := t.TempDir(); os.WriteFile(filepath.Join(d, "pytest.ini"), []byte("[pytest]\n"), 0644)
+		cmds := autoDetectTestCommands(d)
+		if len(cmds) != 1 || cmds[0] != "pytest -x -q" { t.Fatalf("bad: %v", cmds) }
+	})
+	t.Run("Cargo.toml", func(t *testing.T) {
+		d := t.TempDir(); os.WriteFile(filepath.Join(d, "Cargo.toml"), []byte("[package]\n"), 0644)
+		cmds := autoDetectTestCommands(d)
+		if len(cmds) != 1 || cmds[0] != "cargo test" { t.Fatalf("bad: %v", cmds) }
+	})
+	t.Run("Makefile with test", func(t *testing.T) {
+		d := t.TempDir()
+		os.WriteFile(filepath.Join(d, "Makefile"), []byte("test:\n\techo\n"), 0644)
+		cmds := autoDetectTestCommands(d)
+		if len(cmds) != 1 || cmds[0] != "make test" { t.Fatalf("bad: %v", cmds) }
+	})
+	t.Run("Makefile no test nil", func(t *testing.T) {
+		d := t.TempDir()
+		os.WriteFile(filepath.Join(d, "Makefile"), []byte("build:\n"), 0644)
+		if cmds := autoDetectTestCommands(d); cmds != nil { t.Fatal("expected nil") }
+	})
+	t.Run("empty nil", func(t *testing.T) {
+		if cmds := autoDetectTestCommands(t.TempDir()); cmds != nil { t.Fatal("expected nil") }
+	})
+}
+
+func TestIsTestFile(t *testing.T) {
+	tests := []struct{ path string; want bool }{
+		{"main_test.go", true}, {"main_test.py", true},
+		{"component.test.js", true}, {"component.spec.ts", true},
+		{"component.test.tsx", true}, {"component.spec.jsx", true},
+		{"test_utils.py", true}, {"test_.go", true}, {"test_.py", true},
+		{"main.go", false}, {"main.py", false}, {"main.js", false},
+		{"Makefile", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.path, func(t *testing.T) {
+			if got := isTestFile(tt.path); got != tt.want { t.Errorf("isTestFile(%q) = %v, want %v", tt.path, got, tt.want) }
+		})
+	}
+}
+
+func TestIsExemptFile(t *testing.T) {
+	tests := []struct{ path string; want bool }{
+		{"README.md", true}, {"config.toml", true},
+		{"config.yaml", true}, {"config.yml", true},
+		{"package.json", true}, {"go.mod", true}, {"go.work", false},
+		{"config.ini", true}, {"config.cfg", true}, {"config.conf", true},
+		{"notes.txt", true}, {"poetry.lock", true},
+		{"Makefile", true}, {"Dockerfile", true},
+		{".gitignore", true}, {".env", true},
+		{"main.go", false}, {"main.py", false},
+		{"main_test.go", false}, {"component.tsx", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.path, func(t *testing.T) {
+			if got := isExemptFile(tt.path); got != tt.want { t.Errorf("isExemptFile(%q) = %v, want %v", tt.path, got, tt.want) }
+		})
+	}
+}
+
+func TestIsExemptFileCaseInsensitive(t *testing.T) {
+	if !isExemptFile("makefile") || !isExemptFile("MAKEFILE") { t.Fatal("makefile case insensitive") }
+	if !isExemptFile("Dockerfile") || !isExemptFile("dockerfile") { t.Fatal("dockerfile case insensitive") }
+	if !isExemptFile(".GITIGNORE") { t.Fatal("gitignore case insensitive") }
+}
+
+func TestTrackMutatedFiles(t *testing.T) {
+	bm := func(files []map[string]any) map[string]any {
+		return map[string]any{"kind": "file_diff", "files": files}
+	}
+	t.Run("source file tracked", func(t *testing.T) {
+		src, tst := map[string]bool{}, map[string]bool{}
+		trackMutatedFiles(core.ToolResult{Metadata: bm([]map[string]any{{"path": "main.go"}})}, src, tst)
+		if !src["main.go"] { t.Fatal("main.go not in source") }
+		if len(tst) != 0 { t.Fatal("should not be in test") }
+	})
+	t.Run("test file separate", func(t *testing.T) {
+		src, tst := map[string]bool{}, map[string]bool{}
+		trackMutatedFiles(core.ToolResult{Metadata: bm([]map[string]any{{"path": "main_test.go"}})}, src, tst)
+		if len(src) != 0 { t.Fatal("test file in source") }
+		if !tst["main_test.go"] { t.Fatal("main_test.go not in test") }
+	})
+	t.Run("exempt ignored", func(t *testing.T) {
+		src, tst := map[string]bool{}, map[string]bool{}
+		trackMutatedFiles(core.ToolResult{Metadata: bm([]map[string]any{{"path": "README.md"}})}, src, tst)
+		if len(src) != 0 || len(tst) != 0 { t.Fatal("README.md should be exempt") }
+	})
+	t.Run("nil meta no-op", func(t *testing.T) {
+		src, tst := map[string]bool{}, map[string]bool{}
+		trackMutatedFiles(core.ToolResult{}, src, tst)
+		if len(src) != 0 || len(tst) != 0 { t.Fatal("nil meta should add nothing") }
+	})
+	t.Run("wrong kind no-op", func(t *testing.T) {
+		src, tst := map[string]bool{}, map[string]bool{}
+		trackMutatedFiles(core.ToolResult{Metadata: map[string]any{"kind": "other"}}, src, tst)
+		if len(src) != 0 || len(tst) != 0 { t.Fatal("wrong kind should add nothing") }
+	})
+	t.Run("mixed files", func(t *testing.T) {
+		src, tst := map[string]bool{}, map[string]bool{}
+		trackMutatedFiles(core.ToolResult{Metadata: bm([]map[string]any{
+			{"path": "handler.go"}, {"path": "handler_test.go"}, {"path": "config.yml"},
+		})}, src, tst)
+		if !src["handler.go"] { t.Fatal("handler.go missing") }
+		if !tst["handler_test.go"] { t.Fatal("handler_test.go missing") }
+		if src["config.yml"] || tst["config.yml"] { t.Fatal("config.yml should be exempt") }
+	})
+}
+
+func TestRunAutoTest(t *testing.T) {
+	t.Run("no commands empty", func(t *testing.T) {
+		a := &Agent{workspaceRoot: t.TempDir()}
+		if r := a.runAutoTest(context.Background()); r != "" { t.Fatalf("expected empty: %q", r) }
+	})
+	t.Run("echo succeeds", func(t *testing.T) {
+		a := &Agent{workspaceRoot: t.TempDir(), testCommands: []string{"echo testok"}}
+		if r := a.runAutoTest(context.Background()); !strings.Contains(r, "testok") { t.Fatalf("bad: %q", r) }
+	})
+	t.Run("failure error", func(t *testing.T) {
+		a := &Agent{workspaceRoot: t.TempDir(), testCommands: []string{"cmdnonexist_xyz_test"}}
+		if r := a.runAutoTest(context.Background()); !strings.Contains(r, "[error:") { t.Fatalf("bad: %q", r) }
+	})
+}
+
+func TestResolveTestCommands(t *testing.T) {
+	t.Run("configured returned", func(t *testing.T) {
+		a := &Agent{workspaceRoot: "/x", testCommands: []string{"go test ./..."}}
+		c := a.resolveTestCommands()
+		if len(c) != 1 || c[0] != "go test ./..." { t.Fatal("wrong") }
+	})
+	t.Run("empty root nil", func(t *testing.T) {
+		a := &Agent{workspaceRoot: ""}
+		if c := a.resolveTestCommands(); c != nil { t.Fatal("expected nil") }
+	})
+	t.Run("auto detect", func(t *testing.T) {
+		d := t.TempDir(); os.WriteFile(filepath.Join(d, "go.mod"), []byte("mod x\n"), 0644)
+		a := &Agent{workspaceRoot: d}
+		c := a.resolveTestCommands()
+		if len(c) != 1 || c[0] != "go test ./... -count=1" { t.Fatal("auto-detect failed") }
+	})
 }
