@@ -300,15 +300,15 @@ type Agent struct {
 	maxParallelSubagents   int
 	active                 sync.Map
 
-	// Turn-level state (P1-P4 discipline). Reset by resetTurnState at the
+	// Turn-level state (P1/P2/P4 discipline gates). Reset by resetTurnState at the
 	// start of every user turn. Agent is per-session; no sync needed.
-	filesReadThisTurn           map[string]bool // P1: read-before-edit gate tracking
-	dirtySinceVerify            bool            // P2: debounce flag for auto-verify
-	sourceFilesThisTurn         map[string]bool // P2: source files mutated this turn (for test reminder)
-	testFilesThisTurn           map[string]bool // P2: test files mutated this turn (for test reminder)
-	analysisProvidedThisTurn    bool            // P4: analyze_problem called this turn
-	skipAnalysisThisTurn        bool            // P4: user explicitly skipped analysis
-	mutationsChangeCountThisTurn int            // P4: cumulative changed lines this turn (for analysis_threshold)
+	filesReadThisTurn            map[string]bool // P1: read-before-edit gate tracking
+	dirtySinceVerify             bool            // P2: debounce flag for auto-verify
+	sourceFilesThisTurn          map[string]bool // P2: source files mutated this turn (for test reminder)
+	testFilesThisTurn            map[string]bool // P2: test files mutated this turn (for test reminder)
+	analysisProvidedThisTurn     bool            // P4: analyze_problem called this turn
+	skipAnalysisThisTurn         bool            // P4: user explicitly skipped analysis
+	mutationsChangeCountThisTurn int             // P4: cumulative changed lines this turn (for analysis_threshold)
 
 	// Agent-level configuration (set once, read-only after construction).
 	verifyCommands        []string      // P2: post-edit auto-verify commands (build+lint)
@@ -330,9 +330,9 @@ type Agent struct {
 	lastUserInput string // P2: last user message text, for review agent context
 }
 
-// resetTurnState clears all turn-level discipline state at the start of a
-// new user turn. Called from the turn loop; not safe for concurrent use
-// across sessions (Agent is per-session, so this holds).
+// resetTurnState clears turn-level discipline state (except lastUserInput,
+// which is set separately from the user message). Called from the turn loop;
+// not safe for concurrent use across sessions (Agent is per-session).
 func (a *Agent) resetTurnState() {
 	if a.filesReadThisTurn == nil {
 		a.filesReadThisTurn = make(map[string]bool)
@@ -766,7 +766,9 @@ const defaultVerifyReviewThreshold = 20
 const maxVerifyOutputBytes = 4096
 
 // runAutoVerify executes configured verification commands after file mutations.
-// It uses os/exec directly (no approval flow) with timeout and output truncation.
+// Uses os/exec directly (no approval flow) with timeout and output truncation.
+// Auto-detected commands are skipped when their config files were modified
+// this turn to prevent privilege escalation (see autoDetectedConfigDirty).
 func (a *Agent) runAutoVerify(ctx context.Context) string {
 	return a.runCommands(ctx, a.resolveVerifyCommands(), a.verifyTimeout, defaultVerifyTimeout)
 }
@@ -810,6 +812,7 @@ func (a *Agent) execVerifyCommand(ctx context.Context, command string) (string, 
 		cmd = exec.CommandContext(ctx, "sh", "-c", command)
 	}
 	cmd.Dir = a.workspaceRoot
+	cmd.WaitDelay = 5 * time.Second
 	out, err := cmd.CombinedOutput()
 	return string(out), err
 }
@@ -830,6 +833,9 @@ func (a *Agent) resolveVerifyCommands() []string {
 	if a.workspaceRoot == "" {
 		return nil
 	}
+	if a.autoDetectedConfigDirty() {
+		return nil
+	}
 	return autoDetectVerifyCommands(a.workspaceRoot)
 }
 
@@ -837,12 +843,26 @@ func (a *Agent) resolveTestCommands() []string {
 	if len(a.testCommands) > 0 {
 		return a.testCommands
 	}
-	// Auto-detection disabled by default: full test suites are too
-	// expensive to run on every mutation batch. Users can opt in
-	// via [verify] test_commands in config.toml.
 	return nil
 }
 
+// autoDetectedConfigDirty returns true if any file that auto-detection
+// reads (package.json, Makefile, go.mod, etc.) was modified in this turn.
+// This prevents a privilege escalation where the model writes a malicious
+// script into package.json and auto-verify executes it without approval.
+func (a *Agent) autoDetectedConfigDirty() bool {
+	configFiles := []string{
+		"package.json", "Makefile", "go.mod", "pyproject.toml",
+		"pytest.ini", "Cargo.toml",
+	}
+	for _, f := range configFiles {
+		absPath := normalizeWorkspacePath(f, a.workspaceRoot)
+		if a.filesReadThisTurn[absPath] {
+			return true
+		}
+	}
+	return false
+}
 
 func autoDetectTestCommands(workspaceRoot string) []string {
 	if fileExists(filepath.Join(workspaceRoot, "go.mod")) {

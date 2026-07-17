@@ -156,8 +156,9 @@ func (b *Toolset) analyzeProblemTools() []core.Tool {
 				},
 				"required": []string{"observed", "expected", "root_cause"},
 			},
-			readOnly: true,
-			fn:       b.analyzeProblem,
+			readOnly:     true,
+			capabilities: []string{"workspace.read", "workspace.write"},
+			fn:           b.analyzeProblem,
 		},
 	}
 }
@@ -175,12 +176,12 @@ func (b *Toolset) analyzeProblem(_ context.Context, call core.ToolCall) (core.To
 		return core.ToolResult{
 			ToolCallID: call.ID, Name: call.Name,
 			ModelText: "All three fields (observed, expected, root_cause) must be non-empty.",
-			Outcome: core.OutcomeFailure, Code: "empty_field",
+			Outcome:   core.OutcomeFailure, Code: "empty_field",
 		}, nil
 	}
 	return core.ToolResult{
 		ToolCallID: call.ID, Name: call.Name,
 		ModelText: "Analysis recorded. You may now use edit/write/multi_edit tools.",
-		Outcome: core.OutcomeSuccess, Code: "ok",
+		Outcome:   core.OutcomeSuccess, Code: "ok",
 	}, nil
 }

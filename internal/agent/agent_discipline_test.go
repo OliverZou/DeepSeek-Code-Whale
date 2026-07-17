@@ -1,4 +1,4 @@
-﻿package agent
+package agent
 
 import (
 	"context"
@@ -17,7 +17,10 @@ func tc(name string, params map[string]any) core.ToolCall {
 }
 
 func TestIsMutationTool(t *testing.T) {
-	tests := []struct{name string; want bool}{
+	tests := []struct {
+		name string
+		want bool
+	}{
 		{"edit", true}, {"write", true}, {"multi_edit", true},
 		{"read_file", false}, {"shell_run", false}, {"grep", false},
 		{"analyze_problem", false}, {"", false},
@@ -32,7 +35,11 @@ func TestIsMutationTool(t *testing.T) {
 }
 
 func TestExtractFilePathFromCall(t *testing.T) {
-	tests := []struct{name string; call core.ToolCall; want string}{
+	tests := []struct {
+		name string
+		call core.ToolCall
+		want string
+	}{
 		{"valid", tc("edit", map[string]any{"file_path": "m.go"}), "m.go"},
 		{"bad json", core.ToolCall{Input: "{bad"}, ""},
 		{"empty", core.ToolCall{Input: ""}, ""},
@@ -40,7 +47,9 @@ func TestExtractFilePathFromCall(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := extractFilePathFromCall(tt.call)
-			if got != tt.want { t.Errorf("extractFilePathFromCall() = %q, want %q", got, tt.want) }
+			if got != tt.want {
+				t.Errorf("extractFilePathFromCall() = %q, want %q", got, tt.want)
+			}
 		})
 	}
 }
@@ -49,32 +58,40 @@ func TestCheckReadBeforeEditGate(t *testing.T) {
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "existing.go"), []byte("package main\n"), 0644)
 
+	newSC := func() *streamDispatchContext {
+		return &streamDispatchContext{Events: make(chan AgentEvent, 8)}
+	}
+
 	t.Run("not read blocked", func(t *testing.T) {
 		a := &Agent{workspaceRoot: dir, filesReadThisTurn: map[string]bool{}}
 		var results []core.ToolResult
-		blocked := a.checkReadBeforeEditGate(context.Background(), streamDispatchContext{}, tc("edit", map[string]any{"file_path": "existing.go"}), &results)
-		if !blocked { t.Fatal("expected blocked") }
-		if results[len(results)-1].Code != "read_before_edit_required" { t.Fatal("wrong code") }
+		blocked := a.checkReadBeforeEditGate(context.Background(), newSC(), tc("edit", map[string]any{"file_path": "existing.go"}), &results)
+		if !blocked {
+			t.Fatal("expected blocked")
+		}
+		if results[len(results)-1].Code != "read_before_edit_required" {
+			t.Fatal("wrong code")
+		}
 	})
 	t.Run("read allowed", func(t *testing.T) {
 		norm := normalizeWorkspacePath("existing.go", dir)
 		a := &Agent{workspaceRoot: dir, filesReadThisTurn: map[string]bool{norm: true}}
 		var results []core.ToolResult
-		if a.checkReadBeforeEditGate(context.Background(), streamDispatchContext{}, tc("edit", map[string]any{"file_path": "existing.go"}), &results) {
+		if a.checkReadBeforeEditGate(context.Background(), newSC(), tc("edit", map[string]any{"file_path": "existing.go"}), &results) {
 			t.Fatal("should not block")
 		}
 	})
 	t.Run("new write exempt", func(t *testing.T) {
 		a := &Agent{workspaceRoot: dir, filesReadThisTurn: map[string]bool{}}
 		var results []core.ToolResult
-		if a.checkReadBeforeEditGate(context.Background(), streamDispatchContext{}, tc("write", map[string]any{"file_path": "nonew.go", "content": "x"}), &results) {
+		if a.checkReadBeforeEditGate(context.Background(), newSC(), tc("write", map[string]any{"file_path": "nonew.go", "content": "x"}), &results) {
 			t.Fatal("new file exempt")
 		}
 	})
 	t.Run("empty root skip", func(t *testing.T) {
 		a := &Agent{workspaceRoot: "", filesReadThisTurn: map[string]bool{}}
 		var results []core.ToolResult
-		if a.checkReadBeforeEditGate(context.Background(), streamDispatchContext{}, tc("edit", map[string]any{"file_path": "x.go"}), &results) {
+		if a.checkReadBeforeEditGate(context.Background(), newSC(), tc("edit", map[string]any{"file_path": "x.go"}), &results) {
 			t.Fatal("empty root must skip")
 		}
 	})
@@ -85,134 +102,198 @@ func TestRecordFileRead(t *testing.T) {
 	t.Run("tracks file", func(t *testing.T) {
 		a := &Agent{workspaceRoot: dir, filesReadThisTurn: map[string]bool{}}
 		a.recordFileRead(tc("read_file", map[string]any{"file_path": "a.go"}))
-		if !a.filesReadThisTurn[normalizeWorkspacePath("a.go", dir)] { t.Fatal("not tracked") }
+		if !a.filesReadThisTurn[normalizeWorkspacePath("a.go", dir)] {
+			t.Fatal("not tracked")
+		}
 	})
 	t.Run("multiple files", func(t *testing.T) {
 		a := &Agent{workspaceRoot: dir, filesReadThisTurn: map[string]bool{}}
 		a.recordFileRead(tc("read_file", map[string]any{"file_path": "a.go"}))
 		a.recordFileRead(tc("read_file", map[string]any{"file_path": "b.go"}))
-		if len(a.filesReadThisTurn) != 2 { t.Fatal("expected 2") }
+		if len(a.filesReadThisTurn) != 2 {
+			t.Fatal("expected 2")
+		}
 	})
 }
 
 func TestDiffCountsFromResult(t *testing.T) {
 	bm := func(files []map[string]any) map[string]any {
-		if len(files) == 0 { return nil }
+		if len(files) == 0 {
+			return nil
+		}
 		return map[string]any{"kind": "file_diff", "files": files}
 	}
 	t.Run("nil meta", func(t *testing.T) {
 		a, d := diffCountsFromResult(core.ToolResult{})
-		if a != 0 || d != 0 { t.Fatal("not zero") }
+		if a != 0 || d != 0 {
+			t.Fatal("not zero")
+		}
 	})
 	t.Run("single file", func(t *testing.T) {
 		m := bm([]map[string]any{{"additions": float64(5), "deletions": float64(3)}})
 		a, d := diffCountsFromResult(core.ToolResult{Metadata: m})
-		if a != 5 || d != 3 { t.Fatal("wrong") }
+		if a != 5 || d != 3 {
+			t.Fatal("wrong")
+		}
 	})
 	t.Run("int values", func(t *testing.T) {
 		m := bm([]map[string]any{{"additions": 5, "deletions": 3}})
 		a, d := diffCountsFromResult(core.ToolResult{Metadata: m})
-		if a != 5 || d != 3 { t.Fatal("wrong int") }
+		if a != 5 || d != 3 {
+			t.Fatal("wrong int")
+		}
 	})
 }
 
 func TestAutoDetectVerifyCommands(t *testing.T) {
 	t.Run("go.mod", func(t *testing.T) {
-		d := t.TempDir(); os.WriteFile(filepath.Join(d, "go.mod"), []byte("mod x\n"), 0644)
+		d := t.TempDir()
+		os.WriteFile(filepath.Join(d, "go.mod"), []byte("mod x\n"), 0644)
 		cmds := autoDetectVerifyCommands(d)
-		if len(cmds) != 2 || cmds[0] != "go build ./..." { t.Fatalf("bad: %v", cmds) }
+		if len(cmds) != 2 || cmds[0] != "go build ./..." {
+			t.Fatalf("bad: %v", cmds)
+		}
 	})
 	t.Run("npm only test nil", func(t *testing.T) {
 		d := t.TempDir()
 		os.WriteFile(filepath.Join(d, "package.json"), []byte("{\"scripts\":{\"test\":\"j\"}}"), 0644)
 		cmds := autoDetectVerifyCommands(d)
-		if cmds != nil { t.Fatalf("expected nil with only test: %v", cmds) }
+		if cmds != nil {
+			t.Fatalf("expected nil with only test: %v", cmds)
+		}
 	})
 	t.Run("npm build+lint", func(t *testing.T) {
 		d := t.TempDir()
 		os.WriteFile(filepath.Join(d, "package.json"), []byte("{\"scripts\":{\"build\":\"tsc\",\"lint\":\"eslint .\"}}"), 0644)
 		cmds := autoDetectVerifyCommands(d)
-		if len(cmds) != 2 || cmds[0] != "npm run build" || cmds[1] != "npm run lint" { t.Fatalf("bad: %v", cmds) }
+		if len(cmds) != 2 || cmds[0] != "npm run build" || cmds[1] != "npm run lint" {
+			t.Fatalf("bad: %v", cmds)
+		}
 	})
 	t.Run("Makefile with lint", func(t *testing.T) {
 		d := t.TempDir()
 		os.WriteFile(filepath.Join(d, "Makefile"), []byte("check:\n\trun\n\nlint:\n\trun\n"), 0644)
 		cmds := autoDetectVerifyCommands(d)
-		if len(cmds) != 2 || cmds[0] != "make check" { t.Fatalf("bad: %v", cmds) }
+		if len(cmds) != 2 || cmds[0] != "make check" {
+			t.Fatalf("bad: %v", cmds)
+		}
 	})
 	t.Run("Makefile no lint", func(t *testing.T) {
 		d := t.TempDir()
 		os.WriteFile(filepath.Join(d, "Makefile"), []byte("build:\n\trun\n"), 0644)
 		cmds := autoDetectVerifyCommands(d)
-		if cmds != nil { t.Fatalf("expected nil when no check/lint targets: %v", cmds) }
+		if cmds != nil {
+			t.Fatalf("expected nil when no check/lint targets: %v", cmds)
+		}
 	})
 	t.Run("pyproject.toml", func(t *testing.T) {
-		d := t.TempDir(); os.WriteFile(filepath.Join(d, "pyproject.toml"), []byte("[project]\n"), 0644)
+		d := t.TempDir()
+		os.WriteFile(filepath.Join(d, "pyproject.toml"), []byte("[project]\n"), 0644)
 		cmds := autoDetectVerifyCommands(d)
-		if len(cmds) != 1 || cmds[0] != "ruff check ." { t.Fatalf("bad: %v", cmds) }
+		if len(cmds) != 1 || cmds[0] != "ruff check ." {
+			t.Fatalf("bad: %v", cmds)
+		}
 	})
 	t.Run("empty nil", func(t *testing.T) {
-		if cmds := autoDetectVerifyCommands(t.TempDir()); cmds != nil { t.Fatal("expected nil") }
+		if cmds := autoDetectVerifyCommands(t.TempDir()); cmds != nil {
+			t.Fatal("expected nil")
+		}
 	})
 }
 
 func TestHasNPMScript(t *testing.T) {
-	d := t.TempDir(); p := filepath.Join(d, "p.json")
+	d := t.TempDir()
+	p := filepath.Join(d, "p.json")
 	os.WriteFile(p, []byte("{\"scripts\":{\"test\":\"j\"}}"), 0644)
-	if !hasNPMScript(p, "test") { t.Fatal("not found") }
-	if hasNPMScript("/nil", "test") { t.Fatal("should fail") }
+	if !hasNPMScript(p, "test") {
+		t.Fatal("not found")
+	}
+	if hasNPMScript("/nil", "test") {
+		t.Fatal("should fail")
+	}
 }
 
 func TestHasMakeTarget(t *testing.T) {
 	t.Run("target exists", func(t *testing.T) {
 		d := t.TempDir()
 		os.WriteFile(filepath.Join(d, "Makefile"), []byte("lint:\ncheck:\n"), 0644)
-		if !hasMakeTarget(d, "lint") { t.Fatal("not found") }
-		if !hasMakeTarget(d, "check") { t.Fatal("not found") }
+		if !hasMakeTarget(d, "lint") {
+			t.Fatal("not found")
+		}
+		if !hasMakeTarget(d, "check") {
+			t.Fatal("not found")
+		}
 	})
 	t.Run("space before colon", func(t *testing.T) {
 		d := t.TempDir()
 		os.WriteFile(filepath.Join(d, "Makefile"), []byte("test :\n"), 0644)
-		if !hasMakeTarget(d, "test") { t.Fatal("space colon not found") }
+		if !hasMakeTarget(d, "test") {
+			t.Fatal("space colon not found")
+		}
 	})
 	t.Run("missing target", func(t *testing.T) {
 		d := t.TempDir()
 		os.WriteFile(filepath.Join(d, "Makefile"), []byte("build:\n"), 0644)
-		if hasMakeTarget(d, "lint") { t.Fatal("should not be found") }
+		if hasMakeTarget(d, "lint") {
+			t.Fatal("should not be found")
+		}
 	})
 	t.Run("missing file", func(t *testing.T) {
-		if hasMakeTarget(t.TempDir(), "test") { t.Fatal("false for missing file") }
+		if hasMakeTarget(t.TempDir(), "test") {
+			t.Fatal("false for missing file")
+		}
 	})
 }
 
 func TestTruncateVerifyOutput(t *testing.T) {
-	if g := truncateVerifyOutput("hi", 100); g != "hi" { t.Fatal("changed") }
-	if g := truncateVerifyOutput(strings.Repeat("a", 100), 20); !strings.Contains(g, "truncated") { t.Fatal("not trunc") }
+	if g := truncateVerifyOutput("hi", 100); g != "hi" {
+		t.Fatal("changed")
+	}
+	if g := truncateVerifyOutput(strings.Repeat("a", 100), 20); !strings.Contains(g, "truncated") {
+		t.Fatal("not trunc")
+	}
 }
 
 func TestRunAutoVerify(t *testing.T) {
 	t.Run("echo ok", func(t *testing.T) {
 		a := &Agent{workspaceRoot: t.TempDir(), verifyCommands: []string{"echo ok"}}
-		if r := a.runAutoVerify(context.Background()); !strings.Contains(r, "ok") { t.Fatalf("bad: %q", r) }
+		if r := a.runAutoVerify(context.Background()); !strings.Contains(r, "ok") {
+			t.Fatalf("bad: %q", r)
+		}
 	})
 	t.Run("fail err", func(t *testing.T) {
 		a := &Agent{workspaceRoot: t.TempDir(), verifyCommands: []string{"cmdnonexist_xyz"}}
-		if r := a.runAutoVerify(context.Background()); !strings.Contains(r, "[error:") { t.Fatalf("bad: %q", r) }
+		if r := a.runAutoVerify(context.Background()); !strings.Contains(r, "[error:") {
+			t.Fatalf("bad: %q", r)
+		}
 	})
 }
 
 func TestContainsSkipAnalysisKeyword(t *testing.T) {
-	if containsSkipAnalysisKeyword("skip analysis now") == "" { t.Fatal("not found") }
-	if containsSkipAnalysisKeyword("Just Fix It") == "" { t.Fatal("case insensitive") }
-	if containsSkipAnalysisKeyword("please analyze") != "" { t.Fatal("false match") }
+	if containsSkipAnalysisKeyword("skip analysis now") == "" {
+		t.Fatal("not found")
+	}
+	if containsSkipAnalysisKeyword("Just Fix It") == "" {
+		t.Fatal("case insensitive")
+	}
+	if containsSkipAnalysisKeyword("please analyze") != "" {
+		t.Fatal("false match")
+	}
 }
 
 func TestWithGateConfig(t *testing.T) {
 	opt := WithGateConfig(false, true, 5)
-	a := &Agent{}; opt(a)
-	if a.gateReadBeforeEdit != false { t.Fatal("read") }
-	if a.gateAnalyzeBeforeEdit != true { t.Fatal("analyze") }
-	if a.analysisThreshold != 5 { t.Fatal("threshold") }
+	a := &Agent{}
+	opt(a)
+	if a.gateReadBeforeEdit != false {
+		t.Fatal("read")
+	}
+	if a.gateAnalyzeBeforeEdit != true {
+		t.Fatal("analyze")
+	}
+	if a.analysisThreshold != 5 {
+		t.Fatal("threshold")
+	}
 }
 
 func TestWithVerifyConfig(t *testing.T) {
@@ -227,22 +308,43 @@ func TestWithVerifyConfig(t *testing.T) {
 		ReviewAPIKey:    "sk-test",
 		ReviewBaseURL:   "https://api.example.com",
 	})
-	a := &Agent{}; opt(a)
-	if len(a.verifyCommands) != 1 || a.verifyCommands[0] != "go test" { t.Fatal("cmds") }
-	if a.verifyTimeout != 10 { t.Fatal("timeout") }
-	if a.verifyReviewThreshold != 5 { t.Fatal("threshold") }
-	if len(a.testCommands) != 1 || a.testCommands[0] != "go test ./..." { t.Fatal("test cmds") }
-	if a.testTimeout != 60 { t.Fatal("test timeout") }
-	if !a.reviewAgentEnabled { t.Fatal("review agent") }
-	if a.reviewModel != "deepseek-v4-pro" { t.Fatal("review model") }
-	if a.reviewAPIKey != "sk-test" { t.Fatal("review api key") }
-	if a.reviewBaseURL != "https://api.example.com" { t.Fatal("review base url") }
+	a := &Agent{}
+	opt(a)
+	if len(a.verifyCommands) != 1 || a.verifyCommands[0] != "go test" {
+		t.Fatal("cmds")
+	}
+	if a.verifyTimeout != 10 {
+		t.Fatal("timeout")
+	}
+	if a.verifyReviewThreshold != 5 {
+		t.Fatal("threshold")
+	}
+	if len(a.testCommands) != 1 || a.testCommands[0] != "go test ./..." {
+		t.Fatal("test cmds")
+	}
+	if a.testTimeout != 60 {
+		t.Fatal("test timeout")
+	}
+	if !a.reviewAgentEnabled {
+		t.Fatal("review agent")
+	}
+	if a.reviewModel != "deepseek-v4-pro" {
+		t.Fatal("review model")
+	}
+	if a.reviewAPIKey != "sk-test" {
+		t.Fatal("review api key")
+	}
+	if a.reviewBaseURL != "https://api.example.com" {
+		t.Fatal("review base url")
+	}
 }
 
 func TestRenderMinimalChangeBlock(t *testing.T) {
 	b := renderMinimalChangeBlock()
 	for _, w := range []string{"Minimal change", "traceable", "Do not refactor", "50 lines"} {
-		if !strings.Contains(b, w) { t.Errorf("missing: %q", w) }
+		if !strings.Contains(b, w) {
+			t.Errorf("missing: %q", w)
+		}
 	}
 }
 
@@ -250,11 +352,11 @@ func TestRenderMinimalChangeBlock(t *testing.T) {
 
 func TestTurnReset(t *testing.T) {
 	a := &Agent{
-		filesReadThisTurn:          map[string]bool{"x": true},
-		analysisProvidedThisTurn:   true,
-		dirtySinceVerify:           true,
-		sourceFilesThisTurn:        map[string]bool{"a.go": true},
-		testFilesThisTurn:          map[string]bool{"a_test.go": true},
+		filesReadThisTurn:            map[string]bool{"x": true},
+		analysisProvidedThisTurn:     true,
+		dirtySinceVerify:             true,
+		sourceFilesThisTurn:          map[string]bool{"a.go": true},
+		testFilesThisTurn:            map[string]bool{"a_test.go": true},
 		mutationsChangeCountThisTurn: 10,
 	}
 	a.resetTurnState()
@@ -268,54 +370,79 @@ func TestTurnReset(t *testing.T) {
 
 func TestAutoDetectTestCommands(t *testing.T) {
 	t.Run("go.mod", func(t *testing.T) {
-		d := t.TempDir(); os.WriteFile(filepath.Join(d, "go.mod"), []byte("mod x\n"), 0644)
+		d := t.TempDir()
+		os.WriteFile(filepath.Join(d, "go.mod"), []byte("mod x\n"), 0644)
 		cmds := autoDetectTestCommands(d)
-		if len(cmds) != 1 || cmds[0] != "go test ./... -count=1" { t.Fatalf("bad: %v", cmds) }
+		if len(cmds) != 1 || cmds[0] != "go test ./... -count=1" {
+			t.Fatalf("bad: %v", cmds)
+		}
 	})
 	t.Run("npm test script", func(t *testing.T) {
 		d := t.TempDir()
 		os.WriteFile(filepath.Join(d, "package.json"), []byte("{\"scripts\":{\"test\":\"jest\"}}"), 0644)
 		cmds := autoDetectTestCommands(d)
-		if len(cmds) != 1 || cmds[0] != "npm test" { t.Fatalf("bad: %v", cmds) }
+		if len(cmds) != 1 || cmds[0] != "npm test" {
+			t.Fatalf("bad: %v", cmds)
+		}
 	})
 	t.Run("npm no test nil", func(t *testing.T) {
 		d := t.TempDir()
 		os.WriteFile(filepath.Join(d, "package.json"), []byte("{}"), 0644)
-		if cmds := autoDetectTestCommands(d); cmds != nil { t.Fatal("expected nil") }
+		if cmds := autoDetectTestCommands(d); cmds != nil {
+			t.Fatal("expected nil")
+		}
 	})
 	t.Run("pyproject.toml", func(t *testing.T) {
-		d := t.TempDir(); os.WriteFile(filepath.Join(d, "pyproject.toml"), []byte("[project]\n"), 0644)
+		d := t.TempDir()
+		os.WriteFile(filepath.Join(d, "pyproject.toml"), []byte("[project]\n"), 0644)
 		cmds := autoDetectTestCommands(d)
-		if len(cmds) != 1 || cmds[0] != "pytest -x -q" { t.Fatalf("bad: %v", cmds) }
+		if len(cmds) != 1 || cmds[0] != "pytest -x -q" {
+			t.Fatalf("bad: %v", cmds)
+		}
 	})
 	t.Run("pytest.ini", func(t *testing.T) {
-		d := t.TempDir(); os.WriteFile(filepath.Join(d, "pytest.ini"), []byte("[pytest]\n"), 0644)
+		d := t.TempDir()
+		os.WriteFile(filepath.Join(d, "pytest.ini"), []byte("[pytest]\n"), 0644)
 		cmds := autoDetectTestCommands(d)
-		if len(cmds) != 1 || cmds[0] != "pytest -x -q" { t.Fatalf("bad: %v", cmds) }
+		if len(cmds) != 1 || cmds[0] != "pytest -x -q" {
+			t.Fatalf("bad: %v", cmds)
+		}
 	})
 	t.Run("Cargo.toml", func(t *testing.T) {
-		d := t.TempDir(); os.WriteFile(filepath.Join(d, "Cargo.toml"), []byte("[package]\n"), 0644)
+		d := t.TempDir()
+		os.WriteFile(filepath.Join(d, "Cargo.toml"), []byte("[package]\n"), 0644)
 		cmds := autoDetectTestCommands(d)
-		if len(cmds) != 1 || cmds[0] != "cargo test" { t.Fatalf("bad: %v", cmds) }
+		if len(cmds) != 1 || cmds[0] != "cargo test" {
+			t.Fatalf("bad: %v", cmds)
+		}
 	})
 	t.Run("Makefile with test", func(t *testing.T) {
 		d := t.TempDir()
 		os.WriteFile(filepath.Join(d, "Makefile"), []byte("test:\n\techo\n"), 0644)
 		cmds := autoDetectTestCommands(d)
-		if len(cmds) != 1 || cmds[0] != "make test" { t.Fatalf("bad: %v", cmds) }
+		if len(cmds) != 1 || cmds[0] != "make test" {
+			t.Fatalf("bad: %v", cmds)
+		}
 	})
 	t.Run("Makefile no test nil", func(t *testing.T) {
 		d := t.TempDir()
 		os.WriteFile(filepath.Join(d, "Makefile"), []byte("build:\n"), 0644)
-		if cmds := autoDetectTestCommands(d); cmds != nil { t.Fatal("expected nil") }
+		if cmds := autoDetectTestCommands(d); cmds != nil {
+			t.Fatal("expected nil")
+		}
 	})
 	t.Run("empty nil", func(t *testing.T) {
-		if cmds := autoDetectTestCommands(t.TempDir()); cmds != nil { t.Fatal("expected nil") }
+		if cmds := autoDetectTestCommands(t.TempDir()); cmds != nil {
+			t.Fatal("expected nil")
+		}
 	})
 }
 
 func TestIsTestFile(t *testing.T) {
-	tests := []struct{ path string; want bool }{
+	tests := []struct {
+		path string
+		want bool
+	}{
 		{"main_test.go", true}, {"main_test.py", true},
 		{"component.test.js", true}, {"component.spec.ts", true},
 		{"component.test.tsx", true}, {"component.spec.jsx", true},
@@ -325,13 +452,18 @@ func TestIsTestFile(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.path, func(t *testing.T) {
-			if got := isTestFile(tt.path); got != tt.want { t.Errorf("isTestFile(%q) = %v, want %v", tt.path, got, tt.want) }
+			if got := isTestFile(tt.path); got != tt.want {
+				t.Errorf("isTestFile(%q) = %v, want %v", tt.path, got, tt.want)
+			}
 		})
 	}
 }
 
 func TestIsExemptFile(t *testing.T) {
-	tests := []struct{ path string; want bool }{
+	tests := []struct {
+		path string
+		want bool
+	}{
 		{"README.md", true}, {"config.toml", true},
 		{"config.yaml", true}, {"config.yml", true},
 		{"package.json", true}, {"go.mod", true}, {"go.work", false},
@@ -344,15 +476,23 @@ func TestIsExemptFile(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.path, func(t *testing.T) {
-			if got := isExemptFile(tt.path); got != tt.want { t.Errorf("isExemptFile(%q) = %v, want %v", tt.path, got, tt.want) }
+			if got := isExemptFile(tt.path); got != tt.want {
+				t.Errorf("isExemptFile(%q) = %v, want %v", tt.path, got, tt.want)
+			}
 		})
 	}
 }
 
 func TestIsExemptFileCaseInsensitive(t *testing.T) {
-	if !isExemptFile("makefile") || !isExemptFile("MAKEFILE") { t.Fatal("makefile case insensitive") }
-	if !isExemptFile("Dockerfile") || !isExemptFile("dockerfile") { t.Fatal("dockerfile case insensitive") }
-	if !isExemptFile(".GITIGNORE") { t.Fatal("gitignore case insensitive") }
+	if !isExemptFile("makefile") || !isExemptFile("MAKEFILE") {
+		t.Fatal("makefile case insensitive")
+	}
+	if !isExemptFile("Dockerfile") || !isExemptFile("dockerfile") {
+		t.Fatal("dockerfile case insensitive")
+	}
+	if !isExemptFile(".GITIGNORE") {
+		t.Fatal("gitignore case insensitive")
+	}
 }
 
 func TestTrackMutatedFiles(t *testing.T) {
@@ -362,53 +502,79 @@ func TestTrackMutatedFiles(t *testing.T) {
 	t.Run("source file tracked", func(t *testing.T) {
 		src, tst := map[string]bool{}, map[string]bool{}
 		trackMutatedFiles(core.ToolResult{Metadata: bm([]map[string]any{{"path": "main.go"}})}, src, tst)
-		if !src["main.go"] { t.Fatal("main.go not in source") }
-		if len(tst) != 0 { t.Fatal("should not be in test") }
+		if !src["main.go"] {
+			t.Fatal("main.go not in source")
+		}
+		if len(tst) != 0 {
+			t.Fatal("should not be in test")
+		}
 	})
 	t.Run("test file separate", func(t *testing.T) {
 		src, tst := map[string]bool{}, map[string]bool{}
 		trackMutatedFiles(core.ToolResult{Metadata: bm([]map[string]any{{"path": "main_test.go"}})}, src, tst)
-		if len(src) != 0 { t.Fatal("test file in source") }
-		if !tst["main_test.go"] { t.Fatal("main_test.go not in test") }
+		if len(src) != 0 {
+			t.Fatal("test file in source")
+		}
+		if !tst["main_test.go"] {
+			t.Fatal("main_test.go not in test")
+		}
 	})
 	t.Run("exempt ignored", func(t *testing.T) {
 		src, tst := map[string]bool{}, map[string]bool{}
 		trackMutatedFiles(core.ToolResult{Metadata: bm([]map[string]any{{"path": "README.md"}})}, src, tst)
-		if len(src) != 0 || len(tst) != 0 { t.Fatal("README.md should be exempt") }
+		if len(src) != 0 || len(tst) != 0 {
+			t.Fatal("README.md should be exempt")
+		}
 	})
 	t.Run("nil meta no-op", func(t *testing.T) {
 		src, tst := map[string]bool{}, map[string]bool{}
 		trackMutatedFiles(core.ToolResult{}, src, tst)
-		if len(src) != 0 || len(tst) != 0 { t.Fatal("nil meta should add nothing") }
+		if len(src) != 0 || len(tst) != 0 {
+			t.Fatal("nil meta should add nothing")
+		}
 	})
 	t.Run("wrong kind no-op", func(t *testing.T) {
 		src, tst := map[string]bool{}, map[string]bool{}
 		trackMutatedFiles(core.ToolResult{Metadata: map[string]any{"kind": "other"}}, src, tst)
-		if len(src) != 0 || len(tst) != 0 { t.Fatal("wrong kind should add nothing") }
+		if len(src) != 0 || len(tst) != 0 {
+			t.Fatal("wrong kind should add nothing")
+		}
 	})
 	t.Run("mixed files", func(t *testing.T) {
 		src, tst := map[string]bool{}, map[string]bool{}
 		trackMutatedFiles(core.ToolResult{Metadata: bm([]map[string]any{
 			{"path": "handler.go"}, {"path": "handler_test.go"}, {"path": "config.yml"},
 		})}, src, tst)
-		if !src["handler.go"] { t.Fatal("handler.go missing") }
-		if !tst["handler_test.go"] { t.Fatal("handler_test.go missing") }
-		if src["config.yml"] || tst["config.yml"] { t.Fatal("config.yml should be exempt") }
+		if !src["handler.go"] {
+			t.Fatal("handler.go missing")
+		}
+		if !tst["handler_test.go"] {
+			t.Fatal("handler_test.go missing")
+		}
+		if src["config.yml"] || tst["config.yml"] {
+			t.Fatal("config.yml should be exempt")
+		}
 	})
 }
 
 func TestRunAutoTest(t *testing.T) {
 	t.Run("no commands empty", func(t *testing.T) {
 		a := &Agent{workspaceRoot: t.TempDir()}
-		if r := a.runAutoTest(context.Background()); r != "" { t.Fatalf("expected empty: %q", r) }
+		if r := a.runAutoTest(context.Background()); r != "" {
+			t.Fatalf("expected empty: %q", r)
+		}
 	})
 	t.Run("echo succeeds", func(t *testing.T) {
 		a := &Agent{workspaceRoot: t.TempDir(), testCommands: []string{"echo testok"}}
-		if r := a.runAutoTest(context.Background()); !strings.Contains(r, "testok") { t.Fatalf("bad: %q", r) }
+		if r := a.runAutoTest(context.Background()); !strings.Contains(r, "testok") {
+			t.Fatalf("bad: %q", r)
+		}
 	})
 	t.Run("failure error", func(t *testing.T) {
 		a := &Agent{workspaceRoot: t.TempDir(), testCommands: []string{"cmdnonexist_xyz_test"}}
-		if r := a.runAutoTest(context.Background()); !strings.Contains(r, "[error:") { t.Fatalf("bad: %q", r) }
+		if r := a.runAutoTest(context.Background()); !strings.Contains(r, "[error:") {
+			t.Fatalf("bad: %q", r)
+		}
 	})
 }
 
@@ -416,17 +582,24 @@ func TestResolveTestCommands(t *testing.T) {
 	t.Run("configured returned", func(t *testing.T) {
 		a := &Agent{workspaceRoot: "/x", testCommands: []string{"go test ./..."}}
 		c := a.resolveTestCommands()
-		if len(c) != 1 || c[0] != "go test ./..." { t.Fatal("wrong") }
+		if len(c) != 1 || c[0] != "go test ./..." {
+			t.Fatal("wrong")
+		}
 	})
 	t.Run("empty root nil", func(t *testing.T) {
 		a := &Agent{workspaceRoot: ""}
-		if c := a.resolveTestCommands(); c != nil { t.Fatal("expected nil") }
+		if c := a.resolveTestCommands(); c != nil {
+			t.Fatal("expected nil")
+		}
 	})
-	t.Run("auto detect", func(t *testing.T) {
-		d := t.TempDir(); os.WriteFile(filepath.Join(d, "go.mod"), []byte("mod x\n"), 0644)
+	t.Run("auto detect disabled by default", func(t *testing.T) {
+		d := t.TempDir()
+		os.WriteFile(filepath.Join(d, "go.mod"), []byte("mod x\n"), 0644)
 		a := &Agent{workspaceRoot: d}
 		c := a.resolveTestCommands()
-		if len(c) != 1 || c[0] != "go test ./... -count=1" { t.Fatal("auto-detect failed") }
+		if c != nil {
+			t.Fatal("auto-detect should be disabled by default")
+		}
 	})
 }
 
@@ -434,43 +607,73 @@ func TestMergeVerificationResults(t *testing.T) {
 	t.Run("review only", func(t *testing.T) {
 		review := "FINDING [P1]: foo.go:15 — missing error handling — Fix: check err\nFINDING [P2]: bar.go:30 — hardcoded value — Fix: extract constant"
 		merged := mergeVerificationResults("", "", review)
-		if !strings.Contains(merged, "#1 [P1]") || !strings.Contains(merged, "#2 [P2]") { t.Fatalf("bad:\n%s", merged) }
-		if !strings.Contains(merged, "sources: review") { t.Fatalf("missing source:\n%s", merged) }
+		if !strings.Contains(merged, "#1 [P1]") || !strings.Contains(merged, "#2 [P2]") {
+			t.Fatalf("bad:\n%s", merged)
+		}
+		if !strings.Contains(merged, "sources: review") {
+			t.Fatalf("missing source:\n%s", merged)
+		}
 	})
 	t.Run("review + verify overlap", func(t *testing.T) {
 		verify := "$ go build ./...\nfoo.go:15: undefined: result"
 		review := "FINDING [P0]: foo.go:15 — null dereference — Fix: add nil check"
 		merged := mergeVerificationResults(verify, "", review)
-		if !strings.Contains(merged, "#1 [P0]") { t.Fatalf("bad:\n%s", merged) }
-		if !strings.Contains(merged, "sources: review, verify") { t.Fatalf("missing verify source:\n%s", merged) }
-		if !strings.Contains(merged, "[verify]") { t.Fatalf("missing verify detail:\n%s", merged) }
+		if !strings.Contains(merged, "#1 [P0]") {
+			t.Fatalf("bad:\n%s", merged)
+		}
+		if !strings.Contains(merged, "sources: review, verify") {
+			t.Fatalf("missing verify source:\n%s", merged)
+		}
+		if !strings.Contains(merged, "[verify]") {
+			t.Fatalf("missing verify detail:\n%s", merged)
+		}
 	})
 	t.Run("verify error without review", func(t *testing.T) {
 		verify := "$ go build ./...\nbaz.go:8: undefined: x"
 		merged := mergeVerificationResults(verify, "", "")
-		if !strings.Contains(merged, "#1 [P0]") { t.Fatalf("bad:\n%s", merged) }
-		if !strings.Contains(merged, "no review finding matched") { t.Fatalf("bad:\n%s", merged) }
-		if !strings.Contains(merged, "sources: verify") { t.Fatalf("bad:\n%s", merged) }
+		if !strings.Contains(merged, "#1 [P0]") {
+			t.Fatalf("bad:\n%s", merged)
+		}
+		if !strings.Contains(merged, "no review finding matched") {
+			t.Fatalf("bad:\n%s", merged)
+		}
+		if !strings.Contains(merged, "sources: verify") {
+			t.Fatalf("bad:\n%s", merged)
+		}
 	})
 	t.Run("test failure without review", func(t *testing.T) {
 		test := "$ go test ./...\nFAIL qux_test.go:42"
 		merged := mergeVerificationResults("", test, "")
-		if !strings.Contains(merged, "#1 [P1]") { t.Fatalf("bad:\n%s", merged) }
-		if !strings.Contains(merged, "test failure") { t.Fatalf("bad:\n%s", merged) }
+		if !strings.Contains(merged, "#1 [P1]") {
+			t.Fatalf("bad:\n%s", merged)
+		}
+		if !strings.Contains(merged, "test failure") {
+			t.Fatalf("bad:\n%s", merged)
+		}
 	})
 	t.Run("review pass with no errors", func(t *testing.T) {
 		merged := mergeVerificationResults("", "", "REVIEW: PASS\nChecked all changes.")
-		if merged != "All checks passed." { t.Fatalf("bad: %q", merged) }
+		if merged != "All checks passed." {
+			t.Fatalf("bad: %q", merged)
+		}
 	})
 	t.Run("all empty", func(t *testing.T) {
 		merged := mergeVerificationResults("", "", "")
-		if merged != "" { t.Fatalf("expected empty, got: %q", merged) }
+		if merged != "" {
+			t.Fatalf("expected empty, got: %q", merged)
+		}
 	})
 	t.Run("severity ordering", func(t *testing.T) {
 		review := "FINDING [P2]: a.go:1 — low — Fix: fix\nFINDING [P0]: b.go:2 — critical — Fix: fix\nFINDING [P1]: c.go:3 — high — Fix: fix"
 		merged := mergeVerificationResults("", "", review)
-		if !strings.HasPrefix(merged, "#1 [P0]") { t.Fatalf("P0 not first:\n%s", merged) }
-		if !strings.Contains(merged, "#2 [P1]") { t.Fatalf("P1 not second:\n%s", merged) }
-		if !strings.Contains(merged, "#3 [P2]") { t.Fatalf("P2 not third:\n%s", merged) }
+		if !strings.HasPrefix(merged, "#1 [P0]") {
+			t.Fatalf("P0 not first:\n%s", merged)
+		}
+		if !strings.Contains(merged, "#2 [P1]") {
+			t.Fatalf("P1 not second:\n%s", merged)
+		}
+		if !strings.Contains(merged, "#3 [P2]") {
+			t.Fatalf("P2 not third:\n%s", merged)
+		}
 	})
 }

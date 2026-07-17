@@ -174,7 +174,7 @@ func (a *Agent) dispatchToolCalls(ctx context.Context, sc streamDispatchContext,
 		// paths) are exempt. Disabled when workspaceRoot is empty or gate
 		// is explicitly turned off via [gate] config.
 		if isMutationTool(call.Name) && a.gateReadBeforeEdit {
-			if blocked := a.checkReadBeforeEditGate(ctx, sc, call, &results); blocked {
+			if blocked := a.checkReadBeforeEditGate(ctx, &sc, call, &results); blocked {
 				continue
 			}
 		}
@@ -186,17 +186,18 @@ func (a *Agent) dispatchToolCalls(ctx context.Context, sc streamDispatchContext,
 		if isMutationTool(call.Name) && !a.analysisProvidedThisTurn && !a.skipAnalysisThisTurn && a.gateAnalyzeBeforeEdit && a.workspaceRoot != "" {
 			belowThreshold := a.analysisThreshold > 0 && a.mutationsChangeCountThisTurn > 0 && a.mutationsChangeCountThisTurn < a.analysisThreshold
 			if !belowThreshold {
-				results = append(results, core.ToolResult{
+				if err := appendToolResult(ctx, &sc, &results, core.ToolResult{
 					ToolCallID: call.ID,
 					Name:       call.Name,
 					ModelText:  "You must call analyze_problem first to record your root cause analysis before making changes.",
 					Outcome:    core.OutcomeFailure,
 					Code:       "analysis_required_before_edit",
-				})
+				}); err != nil {
+					return nil, false, err
+				}
 				continue
 			}
 		}
-
 
 		handled, err := a.dispatchPreApprovalSpecialTool(ctx, sc, call, &results)
 		if err != nil {
@@ -334,36 +335,50 @@ func (a *Agent) dispatchToolCalls(ctx context.Context, sc streamDispatchContext,
 
 			var verifyText, testText, reviewText string
 			for i := 0; i < 3; i++ {
-				out := <-ch
-				switch out.label {
-				case "verify":
-					verifyText = out.text
-				case "test":
-					testText = out.text
-				case "review":
-					reviewText = out.text
+				select {
+				case out := <-ch:
+					switch out.label {
+					case "verify":
+						verifyText = out.text
+					case "test":
+						testText = out.text
+					case "review":
+						reviewText = out.text
+					}
+				case <-ctx.Done():
+					return nil, false, ctx.Err()
 				}
 			}
 
 			merged := mergeVerificationResults(verifyText, testText, reviewText)
 			if merged != "" {
-				results[lastMutationIdx].ModelText += "\n\n--- Verification results ---\n" + merged
+				results = append(results, core.ToolResult{
+					ToolCallID: results[lastMutationIdx].ToolCallID + "_verify",
+					Name:       results[lastMutationIdx].Name,
+					ModelText:  "--- Verification results ---\n" + merged,
+					Outcome:    core.OutcomeSuccess,
+					Code:       "auto_verify",
+				})
 			}
 
-			// P2: test reminder — source files were modified but no test files touched
 			if len(a.sourceFilesThisTurn) > 0 && len(a.testFilesThisTurn) == 0 {
 				files := make([]string, 0, len(a.sourceFilesThisTurn))
 				for f := range a.sourceFilesThisTurn {
 					files = append(files, f)
 				}
 				sort.Strings(files)
-				results[lastMutationIdx].ModelText += fmt.Sprintf(
-					"\n\n--- Test reminder ---\nYou modified source files (%s) but did not write or update any tests this turn. Consider adding corresponding tests.",
-					strings.Join(files, ", "),
-				)
+				results = append(results, core.ToolResult{
+					ToolCallID: results[lastMutationIdx].ToolCallID + "_reminder",
+					Name:       results[lastMutationIdx].Name,
+					ModelText:  fmt.Sprintf("--- Test reminder ---\nYou modified source files (%s) but did not write or update any tests this turn. Consider adding corresponding tests.", strings.Join(files, ", ")),
+					Outcome:    core.OutcomeSuccess,
+					Code:       "test_reminder",
+				})
 			}
 		}
-		a.dirtySinceVerify = false
+		if lastMutationIdx >= 0 {
+			a.dirtySinceVerify = false
+		}
 	}
 
 	toolMsg, err := a.createDispatchToolMessage(ctx, sc, results)
@@ -867,7 +882,7 @@ func extractFilePathFromCall(call core.ToolCall) string {
 	return args.FilePath
 }
 
-func (a *Agent) checkReadBeforeEditGate(ctx context.Context, sc streamDispatchContext, call core.ToolCall, results *[]core.ToolResult) bool {
+func (a *Agent) checkReadBeforeEditGate(ctx context.Context, sc *streamDispatchContext, call core.ToolCall, results *[]core.ToolResult) bool {
 
 	if a.workspaceRoot == "" {
 		return false
@@ -878,7 +893,6 @@ func (a *Agent) checkReadBeforeEditGate(ctx context.Context, sc streamDispatchCo
 	}
 	absPath := normalizeWorkspacePath(filePath, a.workspaceRoot)
 
-	// Exempt: new file (does not exist yet) — no need to read first
 	if _, err := os.Stat(absPath); os.IsNotExist(err) {
 		return false
 	}
@@ -890,13 +904,15 @@ func (a *Agent) checkReadBeforeEditGate(ctx context.Context, sc streamDispatchCo
 		return false
 	}
 
-	*results = append(*results, core.ToolResult{
+	if err := appendToolResult(ctx, sc, results, core.ToolResult{
 		ToolCallID: call.ID,
 		Name:       call.Name,
 		ModelText:  fmt.Sprintf("File %q has not been read in this turn. Use read_file first to inspect the current content before editing.", filePath),
 		Outcome:    core.OutcomeFailure,
 		Code:       "read_before_edit_required",
-	})
+	}); err != nil {
+		return true
+	}
 	return true
 }
 
@@ -1018,7 +1034,7 @@ func isTestFile(path string) bool {
 	for _, suffix := range []string{
 		"_test.go", "_test.py", ".test.js", ".test.ts",
 		".spec.js", ".spec.ts", ".test.jsx", ".test.tsx",
-		".spec.jsx", ".spec.tsx", "test_.go", "test_.py",
+		".spec.jsx", ".spec.tsx",
 	} {
 		if strings.HasSuffix(base, suffix) {
 			return true

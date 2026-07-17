@@ -140,7 +140,7 @@ func (a *Agent) runStreamWithNewMessages(ctx context.Context, sessionID string, 
 		a.resetTurnState()
 		// P4: detect user intent to skip analysis
 		for _, msg := range newMessages {
-			if msg.Role == core.RoleUser {
+			if msg.Role == core.RoleUser && !msg.Hidden {
 				if containsSkipAnalysisKeyword(msg.Text) != "" {
 					a.skipAnalysisThisTurn = true
 				}

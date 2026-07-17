@@ -40,14 +40,28 @@ func parseReviewFindings(reviewText string) []verificationFinding {
 	return findings
 }
 
-var fileRefRe = regexp.MustCompile(`(\S+\.(?:go|py|js|ts|tsx|jsx|java|rs|c|cpp|h|rb))(?::\d+)?`)
+var fileRefRe = regexp.MustCompile(`(\S+\.(?:go|py|js|ts|tsx|jsx|java|rs|c|cpp|h|rb))(?::(\d+))?`)
 
 func extractFileRefs(text string) map[string]bool {
 	refs := make(map[string]bool)
+	errorIndicators := []string{"error", "fail", "FAIL", "Error", "panic", "fatal", "FATAL", "undefined", "cannot", "syntax", "unresolved", "not found", "missing", "import"}
 	for _, line := range strings.Split(text, "\n") {
-		for _, m := range fileRefRe.FindAllString(line, -1) {
-			parts := strings.SplitN(m, ":", 2)
-			normalized := strings.ReplaceAll(parts[0], `\`, "/")
+		hasError := false
+		lowerLine := strings.ToLower(line)
+		for _, ind := range errorIndicators {
+			if strings.Contains(lowerLine, strings.ToLower(ind)) {
+				hasError = true
+				break
+			}
+		}
+		if !hasError {
+			continue
+		}
+		for _, m := range fileRefRe.FindAllStringSubmatch(line, -1) {
+			if len(m) < 2 || m[1] == "" {
+				continue
+			}
+			normalized := strings.ReplaceAll(m[1], `\`, "/")
 			refs[strings.ToLower(normalized)] = true
 		}
 	}
@@ -152,9 +166,10 @@ func mergeVerificationResults(verifyText, testText, reviewText string) string {
 // matching to avoid false positives when a file path is referenced
 // in output about a different file.
 func extractLinesForFile(text, file string) string {
+	lowerFile := strings.ToLower(file)
 	var lines []string
 	for _, line := range strings.Split(text, "\n") {
-		if strings.Contains(line, file) {
+		if strings.Contains(strings.ToLower(line), lowerFile) {
 			lines = append(lines, line)
 		}
 	}
