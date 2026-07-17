@@ -287,8 +287,9 @@ func (a *Agent) dispatchToolCalls(ctx context.Context, sc streamDispatchContext,
 		return nil, false, err
 	}
 
-	// P2: run auto-verify (build+lint) then auto-test after all mutations in
-	// this dispatch batch. Append output to the last mutation tool's ModelText.
+	// P2: run auto-verify, auto-test, and review agent in parallel after all
+	// mutations in this dispatch batch. Append output to the last mutation
+	// tool's ModelText once all complete.
 	if a.dirtySinceVerify {
 		lastMutationIdx := -1
 		for i := range results {
@@ -305,12 +306,46 @@ func (a *Agent) dispatchToolCalls(ctx context.Context, sc streamDispatchContext,
 			}
 		}
 		if lastMutationIdx >= 0 {
-			if verifyResult := a.runAutoVerify(ctx); verifyResult != "" {
-				results[lastMutationIdx].ModelText += "\n\n--- Auto-verify ---\n" + verifyResult
+			type verifyOut struct{ label, text string }
+			ch := make(chan verifyOut, 3)
+
+			go func() {
+				if r := a.runAutoVerify(ctx); r != "" {
+					ch <- verifyOut{"Auto-verify", r}
+				} else {
+					ch <- verifyOut{}
+				}
+			}()
+			go func() {
+				if r := a.runAutoTest(ctx); r != "" {
+					ch <- verifyOut{"Auto-test", r}
+				} else {
+					ch <- verifyOut{}
+				}
+			}()
+			go func() {
+				threshold := a.verifyReviewThreshold
+				if threshold == 0 {
+					threshold = defaultVerifyReviewThreshold
+				}
+				if a.reviewAgentEnabled && a.mutationsChangeCountThisTurn >= threshold {
+					if diffText := collectDiffText(results); diffText != "" {
+						if r := a.runReviewAgent(ctx, diffText, a.lastUserInput); r != "" {
+							ch <- verifyOut{"Code review", r}
+							return
+						}
+					}
+				}
+				ch <- verifyOut{}
+			}()
+
+			for i := 0; i < 3; i++ {
+				out := <-ch
+				if out.text != "" {
+					results[lastMutationIdx].ModelText += fmt.Sprintf("\n\n--- %s ---\n%s", out.label, out.text)
+				}
 			}
-			if testResult := a.runAutoTest(ctx); testResult != "" {
-				results[lastMutationIdx].ModelText += "\n\n--- Auto-test ---\n" + testResult
-			}
+
 			// P2: test reminder — source files were modified but no test files touched
 			if len(a.sourceFilesThisTurn) > 0 && len(a.testFilesThisTurn) == 0 && !a.skipAnalysisThisTurn {
 				files := make([]string, 0, len(a.sourceFilesThisTurn))
@@ -322,18 +357,6 @@ func (a *Agent) dispatchToolCalls(ctx context.Context, sc streamDispatchContext,
 					"\n\n--- Test reminder ---\nYou modified source files (%s) but did not write or update any tests this turn. Consider adding corresponding tests.",
 					strings.Join(files, ", "),
 				)
-			}
-			// P2: third-party review agent for large changes
-			threshold := a.verifyReviewThreshold
-			if threshold == 0 {
-				threshold = defaultVerifyReviewThreshold
-			}
-			if a.reviewAgentEnabled && a.mutationsChangeCountThisTurn >= threshold {
-				if diffText := collectDiffText(results); diffText != "" {
-					if reviewResult := a.runReviewAgent(ctx, diffText, a.lastUserInput); reviewResult != "" {
-						results[lastMutationIdx].ModelText += "\n\n--- Code review ---\n" + reviewResult
-					}
-				}
 			}
 		}
 		a.dirtySinceVerify = false
