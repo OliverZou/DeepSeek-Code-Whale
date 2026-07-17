@@ -216,7 +216,17 @@ func TestWithGateConfig(t *testing.T) {
 }
 
 func TestWithVerifyConfig(t *testing.T) {
-	opt := WithVerifyConfig([]string{"go test"}, 10, 5, []string{"go test ./..."}, 60, true, "deepseek-v4-pro", "sk-test", "https://api.example.com")
+	opt := WithVerifyConfig(VerifyConfig{
+		Commands:        []string{"go test"},
+		Timeout:         10,
+		ReviewThreshold: 5,
+		TestCommands:    []string{"go test ./..."},
+		TestTimeout:     60,
+		ReviewAgent:     true,
+		ReviewModel:     "deepseek-v4-pro",
+		ReviewAPIKey:    "sk-test",
+		ReviewBaseURL:   "https://api.example.com",
+	})
 	a := &Agent{}; opt(a)
 	if len(a.verifyCommands) != 1 || a.verifyCommands[0] != "go test" { t.Fatal("cmds") }
 	if a.verifyTimeout != 10 { t.Fatal("timeout") }

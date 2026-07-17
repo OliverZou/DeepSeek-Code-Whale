@@ -721,18 +721,29 @@ func WithClassifierConfig(cfg ClassifierConfig) AgentOption {
 	}
 }
 
-// WithVerifyConfig sets the post-edit auto-verify configuration (P2).
-func WithVerifyConfig(commands []string, timeout time.Duration, reviewThreshold int, testCommands []string, testTimeout time.Duration, reviewAgentEnabled bool, reviewModel, reviewAPIKey, reviewBaseURL string) AgentOption {
+type VerifyConfig struct {
+	Commands        []string
+	Timeout         time.Duration
+	ReviewThreshold int
+	TestCommands    []string
+	TestTimeout     time.Duration
+	ReviewAgent     bool
+	ReviewModel     string
+	ReviewAPIKey    string
+	ReviewBaseURL   string
+}
+
+func WithVerifyConfig(cfg VerifyConfig) AgentOption {
 	return func(a *Agent) {
-		a.verifyCommands = commands
-		a.verifyTimeout = timeout
-		a.verifyReviewThreshold = reviewThreshold
-		a.testCommands = testCommands
-		a.testTimeout = testTimeout
-		a.reviewAgentEnabled = reviewAgentEnabled
-		a.reviewModel = reviewModel
-		a.reviewAPIKey = reviewAPIKey
-		a.reviewBaseURL = reviewBaseURL
+		a.verifyCommands = cfg.Commands
+		a.verifyTimeout = cfg.Timeout
+		a.verifyReviewThreshold = cfg.ReviewThreshold
+		a.testCommands = cfg.TestCommands
+		a.testTimeout = cfg.TestTimeout
+		a.reviewAgentEnabled = cfg.ReviewAgent
+		a.reviewModel = cfg.ReviewModel
+		a.reviewAPIKey = cfg.ReviewAPIKey
+		a.reviewBaseURL = cfg.ReviewBaseURL
 	}
 }
 
@@ -756,13 +767,19 @@ const maxVerifyOutputBytes = 4096
 // runAutoVerify executes configured verification commands after file mutations.
 // It uses os/exec directly (no approval flow) with timeout and output truncation.
 func (a *Agent) runAutoVerify(ctx context.Context) string {
-	commands := a.resolveVerifyCommands()
+	return a.runCommands(ctx, a.resolveVerifyCommands(), a.verifyTimeout, defaultVerifyTimeout)
+}
+
+func (a *Agent) runAutoTest(ctx context.Context) string {
+	return a.runCommands(ctx, a.resolveTestCommands(), a.testTimeout, defaultTestTimeout)
+}
+
+func (a *Agent) runCommands(ctx context.Context, commands []string, timeout, defaultTimeout time.Duration) string {
 	if len(commands) == 0 {
 		return ""
 	}
-	timeout := a.verifyTimeout
 	if timeout == 0 {
-		timeout = defaultVerifyTimeout
+		timeout = defaultTimeout
 	}
 
 	var results []string
@@ -820,29 +837,6 @@ func (a *Agent) resolveTestCommands() []string {
 	return autoDetectTestCommands(a.workspaceRoot)
 }
 
-func (a *Agent) runAutoTest(ctx context.Context) string {
-	commands := a.resolveTestCommands()
-	if len(commands) == 0 {
-		return ""
-	}
-	timeout := a.testTimeout
-	if timeout == 0 {
-		timeout = defaultTestTimeout
-	}
-
-	var results []string
-	for _, cmd := range commands {
-		ctx, cancel := context.WithTimeout(ctx, timeout)
-		out, err := a.execVerifyCommand(ctx, cmd)
-		cancel()
-		if err != nil {
-			results = append(results, fmt.Sprintf("$ %s\n[error: %s]", cmd, err.Error()))
-		} else {
-			results = append(results, fmt.Sprintf("$ %s\n%s", cmd, truncateVerifyOutput(out, maxVerifyOutputBytes)))
-		}
-	}
-	return strings.Join(results, "\n\n")
-}
 
 func autoDetectTestCommands(workspaceRoot string) []string {
 	if fileExists(filepath.Join(workspaceRoot, "go.mod")) {

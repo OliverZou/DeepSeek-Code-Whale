@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"reflect"
+
 	"runtime"
 	"sort"
 	"strings"
@@ -885,11 +885,9 @@ func (a *Agent) checkReadBeforeEditGate(ctx context.Context, sc streamDispatchCo
 	}
 	absPath := normalizeWorkspacePath(filePath, a.workspaceRoot)
 
-	// Exempt: write to a new file (file does not exist yet)
-	if call.Name == "write" {
-		if _, err := os.Stat(absPath); os.IsNotExist(err) {
-			return false
-		}
+	// Exempt: new file (does not exist yet) — no need to read first
+	if _, err := os.Stat(absPath); os.IsNotExist(err) {
+		return false
 	}
 
 	if a.filesReadThisTurn == nil {
@@ -1076,15 +1074,11 @@ func collectDiffText(results []core.ToolResult) string {
 		if kind != "file_diff" {
 			continue
 		}
-		filesVal := reflect.ValueOf(res.Metadata["files"])
-		if filesVal.Kind() != reflect.Slice {
+		files, ok := res.Metadata["files"].([]map[string]any)
+		if !ok {
 			continue
 		}
-		for i := 0; i < filesVal.Len(); i++ {
-			fm, ok := filesVal.Index(i).Interface().(map[string]any)
-			if !ok {
-				continue
-			}
+		for _, fm := range files {
 			diff, _ := fm["unified_diff"].(string)
 			if diff != "" {
 				parts = append(parts, diff)

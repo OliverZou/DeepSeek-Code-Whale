@@ -67,3 +67,5 @@ promo/
 
 # --- Tool Artifacts ---
 .omx/
+/build_whale.bat
+/plan-agent-discipline.md

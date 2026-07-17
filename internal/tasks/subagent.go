@@ -321,7 +321,17 @@ func (r *Runner) SpawnSubagentWithProgress(ctx context.Context, req SpawnSubagen
 			agent.WithMaxToolCalls(maxToolCalls),
 			agent.WithMaxTurns(cfg.MaxTurns),
 			agent.WithExtraSystemBlocks(extraBlocks...),
-			agent.WithVerifyConfig(r.verifyCommands, r.verifyTimeout, r.verifyReviewThreshold, r.testCommands, r.testTimeout, r.reviewAgentEnabled, r.reviewModel, r.reviewAPIKey, r.reviewBaseURL),
+			agent.WithVerifyConfig(agent.VerifyConfig{
+				Commands:        r.verifyCommands,
+				Timeout:         r.verifyTimeout,
+				ReviewThreshold: r.verifyReviewThreshold,
+				TestCommands:    r.testCommands,
+				TestTimeout:     r.testTimeout,
+				ReviewAgent:     r.reviewAgentEnabled,
+				ReviewModel:     r.reviewModel,
+				ReviewAPIKey:    r.reviewAPIKey,
+				ReviewBaseURL:   r.reviewBaseURL,
+			}),
 			agent.WithGateConfig(r.gateReadBeforeEdit, r.gateAnalyzeBeforeEdit, r.analysisThreshold),
 		)
 	}

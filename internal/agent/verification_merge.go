@@ -133,6 +133,9 @@ func mergeVerificationResults(verifyText, testText, reviewText string) string {
 	return strings.TrimRight(b.String(), "\n")
 }
 
+// TODO: Consider splitting on delimiter blocks instead of substring
+// matching to avoid false positives when a file path is referenced
+// in output about a different file.
 func extractLinesForFile(text, file string) string {
 	var lines []string
 	for _, line := range strings.Split(text, "\n") {
