@@ -216,13 +216,17 @@ func TestWithGateConfig(t *testing.T) {
 }
 
 func TestWithVerifyConfig(t *testing.T) {
-	opt := WithVerifyConfig([]string{"go test"}, 10, 5, []string{"go test ./..."}, 60)
+	opt := WithVerifyConfig([]string{"go test"}, 10, 5, []string{"go test ./..."}, 60, true, "deepseek-v4-pro", "sk-test", "https://api.example.com")
 	a := &Agent{}; opt(a)
 	if len(a.verifyCommands) != 1 || a.verifyCommands[0] != "go test" { t.Fatal("cmds") }
 	if a.verifyTimeout != 10 { t.Fatal("timeout") }
 	if a.verifyReviewThreshold != 5 { t.Fatal("threshold") }
 	if len(a.testCommands) != 1 || a.testCommands[0] != "go test ./..." { t.Fatal("test cmds") }
 	if a.testTimeout != 60 { t.Fatal("test timeout") }
+	if !a.reviewAgentEnabled { t.Fatal("review agent") }
+	if a.reviewModel != "deepseek-v4-pro" { t.Fatal("review model") }
+	if a.reviewAPIKey != "sk-test" { t.Fatal("review api key") }
+	if a.reviewBaseURL != "https://api.example.com" { t.Fatal("review base url") }
 }
 
 func TestRenderMinimalChangeBlock(t *testing.T) {

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"sort"
 	"strings"
@@ -321,6 +322,18 @@ func (a *Agent) dispatchToolCalls(ctx context.Context, sc streamDispatchContext,
 					"\n\n--- Test reminder ---\nYou modified source files (%s) but did not write or update any tests this turn. Consider adding corresponding tests.",
 					strings.Join(files, ", "),
 				)
+			}
+			// P2: third-party review agent for large changes
+			threshold := a.verifyReviewThreshold
+			if threshold == 0 {
+				threshold = defaultVerifyReviewThreshold
+			}
+			if a.reviewAgentEnabled && a.mutationsChangeCountThisTurn >= threshold {
+				if diffText := collectDiffText(results); diffText != "" {
+					if reviewResult := a.runReviewAgent(ctx, diffText, a.lastUserInput); reviewResult != "" {
+						results[lastMutationIdx].ModelText += "\n\n--- Code review ---\n" + reviewResult
+					}
+				}
 			}
 		}
 		a.dirtySinceVerify = false
@@ -1014,4 +1027,35 @@ func isExemptFile(path string) bool {
 		}
 	}
 	return false
+}
+
+func collectDiffText(results []core.ToolResult) string {
+	var parts []string
+	for _, res := range results {
+		if !isMutationTool(res.Name) {
+			continue
+		}
+		if res.Metadata == nil {
+			continue
+		}
+		kind, _ := res.Metadata["kind"].(string)
+		if kind != "file_diff" {
+			continue
+		}
+		filesVal := reflect.ValueOf(res.Metadata["files"])
+		if filesVal.Kind() != reflect.Slice {
+			continue
+		}
+		for i := 0; i < filesVal.Len(); i++ {
+			fm, ok := filesVal.Index(i).Interface().(map[string]any)
+			if !ok {
+				continue
+			}
+			diff, _ := fm["unified_diff"].(string)
+			if diff != "" {
+				parts = append(parts, diff)
+			}
+		}
+	}
+	return strings.Join(parts, "\n")
 }

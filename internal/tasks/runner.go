@@ -77,6 +77,10 @@ type RunnerConfig struct {
 	VerifyReviewThreshold      int
 	VerifyTestCommands         []string
 	VerifyTestTimeout          time.Duration
+	VerifyReviewAgent          bool
+	VerifyReviewModel          string
+	VerifyReviewAPIKey         string
+	VerifyReviewBaseURL        string
 	GateReadBeforeEdit         bool
 	GateAnalyzeBeforeEdit      bool
 	GateAnalysisThreshold      int
@@ -111,6 +115,10 @@ type Runner struct {
 	verifyReviewThreshold      int
 	testCommands               []string
 	testTimeout                time.Duration
+	reviewAgentEnabled         bool
+	reviewModel                string
+	reviewAPIKey               string
+	reviewBaseURL              string
 	gateReadBeforeEdit         bool
 	gateAnalyzeBeforeEdit      bool
 	analysisThreshold          int
@@ -168,6 +176,10 @@ func NewRunner(cfg RunnerConfig) *Runner {
 		verifyReviewThreshold:      cfg.VerifyReviewThreshold,
 		testCommands:               append([]string(nil), cfg.VerifyTestCommands...),
 		testTimeout:                cfg.VerifyTestTimeout,
+		reviewAgentEnabled:         cfg.VerifyReviewAgent,
+		reviewModel:                cfg.VerifyReviewModel,
+		reviewAPIKey:               cfg.VerifyReviewAPIKey,
+		reviewBaseURL:              cfg.VerifyReviewBaseURL,
 		gateReadBeforeEdit:         cfg.GateReadBeforeEdit,
 		gateAnalyzeBeforeEdit:      cfg.GateAnalyzeBeforeEdit,
 		analysisThreshold:          cfg.GateAnalysisThreshold,

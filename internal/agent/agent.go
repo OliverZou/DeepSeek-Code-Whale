@@ -1,10 +1,13 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -313,9 +316,17 @@ type Agent struct {
 	verifyReviewThreshold int           // P2: diff review prompt threshold
 	testCommands          []string      // P2: post-edit test commands
 	testTimeout           time.Duration // P2: test commands timeout
+	reviewAgentEnabled    bool          // P2: third-party review agent switch
+	reviewModel           string        // P2: review agent model (e.g. deepseek-v4-pro)
+	reviewAPIKey          string        // P2: review agent API key
+	reviewBaseURL         string        // P2: review agent API base URL
+	reviewClient          *http.Client  // P2: review agent HTTP client (lazy init)
 	gateReadBeforeEdit    bool          // P1: configurable gate switch
 	gateAnalyzeBeforeEdit bool          // P4: configurable gate switch
 	analysisThreshold     int           // P4: skip analysis gate when changed lines below this
+
+	// Turn-level state for review agent.
+	lastUserInput string // P2: last user message text, for review agent context
 }
 
 // resetTurnState clears all turn-level discipline state at the start of a
@@ -711,13 +722,17 @@ func WithClassifierConfig(cfg ClassifierConfig) AgentOption {
 }
 
 // WithVerifyConfig sets the post-edit auto-verify configuration (P2).
-func WithVerifyConfig(commands []string, timeout time.Duration, reviewThreshold int, testCommands []string, testTimeout time.Duration) AgentOption {
+func WithVerifyConfig(commands []string, timeout time.Duration, reviewThreshold int, testCommands []string, testTimeout time.Duration, reviewAgentEnabled bool, reviewModel, reviewAPIKey, reviewBaseURL string) AgentOption {
 	return func(a *Agent) {
 		a.verifyCommands = commands
 		a.verifyTimeout = timeout
 		a.verifyReviewThreshold = reviewThreshold
 		a.testCommands = testCommands
 		a.testTimeout = testTimeout
+		a.reviewAgentEnabled = reviewAgentEnabled
+		a.reviewModel = reviewModel
+		a.reviewAPIKey = reviewAPIKey
+		a.reviewBaseURL = reviewBaseURL
 	}
 }
 
@@ -851,6 +866,103 @@ func autoDetectTestCommands(workspaceRoot string) []string {
 		}
 	}
 	return nil
+}
+
+const reviewAgentMaxTokens = 4096
+const reviewAgentDefaultTimeout = 30 * time.Second
+
+func (a *Agent) runReviewAgent(ctx context.Context, diffText, userRequest string) string {
+	if !a.reviewAgentEnabled || strings.TrimSpace(diffText) == "" {
+		return ""
+	}
+	apiKey := strings.TrimSpace(a.reviewAPIKey)
+	if apiKey == "" {
+		apiKey = strings.TrimSpace(os.Getenv("DEEPSEEK_API_KEY"))
+	}
+	if apiKey == "" {
+		return ""
+	}
+	baseURL := strings.TrimSpace(a.reviewBaseURL)
+	if baseURL == "" {
+		baseURL = strings.TrimSpace(os.Getenv("DEEPSEEK_BASE_URL"))
+	}
+	if baseURL == "" {
+		baseURL = "https://api.deepseek.com"
+	}
+	model := strings.TrimSpace(a.reviewModel)
+	if model == "" {
+		model = defaults.DefaultModel
+	}
+
+	timeout := reviewAgentDefaultTimeout
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	userPrompt := buildReviewerPrompt(userRequest, diffText)
+	payload := map[string]any{
+		"model": model,
+		"messages": []map[string]string{
+			{"role": "system", "content": reviewerSystemPrompt},
+			{"role": "user", "content": userPrompt},
+		},
+		"max_tokens":  reviewAgentMaxTokens,
+		"temperature": 0,
+		"stream":      false,
+	}
+
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Sprintf("[review agent error: %s]", err.Error())
+	}
+
+	url := baseURL + "/chat/completions"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return fmt.Sprintf("[review agent error: %s]", err.Error())
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+
+	if a.reviewClient == nil {
+		a.reviewClient = &http.Client{
+			Timeout: timeout + 5*time.Second,
+		}
+	}
+
+	resp, err := a.reviewClient.Do(req)
+	if err != nil {
+		return fmt.Sprintf("[review agent error: %s]", err.Error())
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Sprintf("[review agent error: %s]", err.Error())
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Sprintf("[review agent error: API returned %d]", resp.StatusCode)
+	}
+
+	var chatResp struct {
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal(respBody, &chatResp); err != nil {
+		return fmt.Sprintf("[review agent error: %s]", err.Error())
+	}
+	if len(chatResp.Choices) == 0 {
+		return "[review agent error: empty response]"
+	}
+
+	content := strings.TrimSpace(chatResp.Choices[0].Message.Content)
+	if content == "" {
+		return ""
+	}
+	return content
 }
 
 func autoDetectVerifyCommands(workspaceRoot string) []string {

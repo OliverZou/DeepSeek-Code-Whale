@@ -70,6 +70,10 @@ type Config struct {
 	VerifyReviewThreshold          int
 	VerifyTestCommands             []string
 	VerifyTestTimeout              time.Duration
+	VerifyReviewAgent              bool
+	VerifyReviewModel              string
+	VerifyReviewAPIKey             string
+	VerifyReviewBaseURL            string
 	GateReadBeforeEdit             bool
 	GateAnalyzeBeforeEdit          bool
 	GateAnalysisThreshold          int

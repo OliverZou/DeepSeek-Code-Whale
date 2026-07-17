@@ -139,7 +139,7 @@ func (a *App) ensureAgent() (*agent.Agent, error) {
 				return a.approvalFn(req)
 			}),
 			agent.WithUserInputFunc(a.userInput),
-			agent.WithVerifyConfig(a.cfg.VerifyCommands, a.cfg.VerifyTimeout, a.cfg.VerifyReviewThreshold, a.cfg.VerifyTestCommands, a.cfg.VerifyTestTimeout),
+			agent.WithVerifyConfig(a.cfg.VerifyCommands, a.cfg.VerifyTimeout, a.cfg.VerifyReviewThreshold, a.cfg.VerifyTestCommands, a.cfg.VerifyTestTimeout, a.cfg.VerifyReviewAgent, a.cfg.VerifyReviewModel, a.cfg.VerifyReviewAPIKey, a.cfg.VerifyReviewBaseURL),
 			agent.WithGateConfig(a.cfg.GateReadBeforeEdit, a.cfg.GateAnalyzeBeforeEdit, a.cfg.GateAnalysisThreshold),
 		)
 	}

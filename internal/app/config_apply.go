@@ -500,6 +500,18 @@ func applyVerifyConfig(cfg *Config, file FileVerifyConfig) error {
 		}
 		cfg.VerifyTestTimeout = d
 	}
+	if file.ReviewAgent != nil {
+		cfg.VerifyReviewAgent = *file.ReviewAgent
+	}
+	if strings.TrimSpace(file.ReviewModel) != "" {
+		cfg.VerifyReviewModel = strings.TrimSpace(file.ReviewModel)
+	}
+	if strings.TrimSpace(file.ReviewAPIKey) != "" {
+		cfg.VerifyReviewAPIKey = strings.TrimSpace(file.ReviewAPIKey)
+	}
+	if strings.TrimSpace(file.ReviewBaseURL) != "" {
+		cfg.VerifyReviewBaseURL = strings.TrimRight(strings.TrimSpace(file.ReviewBaseURL), "/")
+	}
 	return nil
 }
 

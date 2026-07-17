@@ -215,6 +215,10 @@ type FileVerifyConfig struct {
 	ReviewThreshold  int      `toml:"review_threshold,omitempty"`
 	TestCommands     []string `toml:"test_commands,omitempty"`
 	TestTimeout      string   `toml:"test_timeout,omitempty"`
+	ReviewAgent      *bool    `toml:"review_agent,omitempty"`
+	ReviewModel      string   `toml:"review_model,omitempty"`
+	ReviewAPIKey     string   `toml:"review_api_key,omitempty"`
+	ReviewBaseURL    string   `toml:"review_base_url,omitempty"`
 }
 
 type FileGateConfig struct {
