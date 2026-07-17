@@ -246,6 +246,11 @@ func (a *Agent) appendDispatchedToolResult(ctx context.Context, sessionID string
 	if call.Name == "read_file" && primarySucceeded {
 		a.recordFileRead(call)
 	}
+	// P1: successful mutation also counts as having "read" the file,
+	// so a subsequent edit in the same turn is not blocked.
+	if isMutationTool(call.Name) && primarySucceeded {
+		a.recordFileRead(call)
+	}
 	// P4: track analyze_problem success for the analysis gate
 	if call.Name == "analyze_problem" && primarySucceeded {
 		a.analysisProvidedThisTurn = true

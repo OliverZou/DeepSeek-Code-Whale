@@ -184,7 +184,7 @@ func (a *Agent) dispatchToolCalls(ctx context.Context, sc streamDispatchContext,
 		// explicitly turned off via [gate] config, or cumulative changed
 		// lines this turn are below analysis_threshold.
 		if isMutationTool(call.Name) && !a.analysisProvidedThisTurn && !a.skipAnalysisThisTurn && a.gateAnalyzeBeforeEdit && a.workspaceRoot != "" {
-			belowThreshold := a.analysisThreshold > 0 && a.mutationsChangeCountThisTurn < a.analysisThreshold
+			belowThreshold := a.analysisThreshold > 0 && a.mutationsChangeCountThisTurn > 0 && a.mutationsChangeCountThisTurn < a.analysisThreshold
 			if !belowThreshold {
 				results = append(results, core.ToolResult{
 					ToolCallID: call.ID,
@@ -358,7 +358,7 @@ func (a *Agent) dispatchToolCalls(ctx context.Context, sc streamDispatchContext,
 			}
 
 			// P2: test reminder — source files were modified but no test files touched
-			if len(a.sourceFilesThisTurn) > 0 && len(a.testFilesThisTurn) == 0 && !a.skipAnalysisThisTurn {
+			if len(a.sourceFilesThisTurn) > 0 && len(a.testFilesThisTurn) == 0 {
 				files := make([]string, 0, len(a.sourceFilesThisTurn))
 				for f := range a.sourceFilesThisTurn {
 					files = append(files, f)
@@ -979,7 +979,7 @@ func numericAsInt(v any) int {
 // P4: skip-analysis keyword detection
 var skipAnalysisKeywords = []string{
 	"直接改", "不要分析", "skip analysis", "just fix it",
-	"直接修", "直接修复", "no analysis", "just change",
+	"直接修", "直接修复", "skip analyze", "just change",
 }
 
 func containsSkipAnalysisKeyword(input string) string {

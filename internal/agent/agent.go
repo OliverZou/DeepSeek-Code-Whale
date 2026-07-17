@@ -788,7 +788,12 @@ func (a *Agent) runCommands(ctx context.Context, commands []string, timeout, def
 		out, err := a.execVerifyCommand(ctx, cmd)
 		cancel()
 		if err != nil {
-			results = append(results, fmt.Sprintf("$ %s\n[error: %s]", cmd, err.Error()))
+			detail := strings.TrimSpace(out)
+			if detail != "" {
+				results = append(results, fmt.Sprintf("$ %s\n[error: %s]\n%s", cmd, err.Error(), truncateVerifyOutput(detail, maxVerifyOutputBytes)))
+			} else {
+				results = append(results, fmt.Sprintf("$ %s\n[error: %s]", cmd, err.Error()))
+			}
 		} else {
 			results = append(results, fmt.Sprintf("$ %s\n%s", cmd, truncateVerifyOutput(out, maxVerifyOutputBytes)))
 		}
@@ -816,7 +821,7 @@ func truncateVerifyOutput(s string, maxBytes int) string {
 }
 
 // resolveVerifyCommands returns configured verify commands, or auto-detected
-// commands if none are configured. Auto-detection is lazy and cached.
+// commands if none are configured.
 func (a *Agent) resolveVerifyCommands() []string {
 	if len(a.verifyCommands) > 0 {
 		return a.verifyCommands
@@ -831,10 +836,10 @@ func (a *Agent) resolveTestCommands() []string {
 	if len(a.testCommands) > 0 {
 		return a.testCommands
 	}
-	if a.workspaceRoot == "" {
-		return nil
-	}
-	return autoDetectTestCommands(a.workspaceRoot)
+	// Auto-detection disabled by default: full test suites are too
+	// expensive to run on every mutation batch. Users can opt in
+	// via [verify] test_commands in config.toml.
+	return nil
 }
 
 

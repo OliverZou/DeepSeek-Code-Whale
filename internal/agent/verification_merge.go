@@ -18,7 +18,7 @@ type verificationFinding struct {
 	rawTest   string
 }
 
-var findingRe = regexp.MustCompile(`FINDING \[(P[0-3])\]:\s*(\S+?)(?::(\d+))?\s*—\s*(.+?)\s*—\s*Fix:\s*(.+)`)
+var findingRe = regexp.MustCompile(`FINDING \[(P[0-3])\]:\s*(\S+?)(?::(\d+))?\s*[—\-]+\s*(.+?)\s*[—\-]+\s*Fix:\s*(.+)`)
 
 func parseReviewFindings(reviewText string) []verificationFinding {
 	var findings []verificationFinding
@@ -79,6 +79,7 @@ func mergeVerificationResults(verifyText, testText, reviewText string) string {
 			severity:  "P0",
 			file:      file,
 			problem:   "build/lint error (no review finding matched)",
+			fix:       "see verify output below",
 			sources:   []string{"verify"},
 			rawVerify: extractLinesForFile(verifyText, file),
 		})
@@ -91,6 +92,7 @@ func mergeVerificationResults(verifyText, testText, reviewText string) string {
 			severity: "P1",
 			file:     file,
 			problem:  "test failure (no review finding matched)",
+			fix:      "see test output below",
 			sources:  []string{"test"},
 			rawTest:  extractLinesForFile(testText, file),
 		})
@@ -100,7 +102,19 @@ func mergeVerificationResults(verifyText, testText, reviewText string) string {
 		if strings.Contains(reviewText, "REVIEW: PASS") {
 			return "All checks passed."
 		}
-		return ""
+		// Fallback: if verify or test produced output but no findings were
+		// extracted, return the raw output so the model can see failures.
+		var parts []string
+		if verifyText != "" {
+			parts = append(parts, "--- verify output ---\n"+verifyText)
+		}
+		if testText != "" {
+			parts = append(parts, "--- test output ---\n"+testText)
+		}
+		if reviewText != "" {
+			parts = append(parts, "--- review output ---\n"+reviewText)
+		}
+		return strings.Join(parts, "\n\n")
 	}
 
 	sort.Slice(findings, func(i, j int) bool {
