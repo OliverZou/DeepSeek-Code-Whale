@@ -47,7 +47,8 @@ func extractFileRefs(text string) map[string]bool {
 	for _, line := range strings.Split(text, "\n") {
 		for _, m := range fileRefRe.FindAllString(line, -1) {
 			parts := strings.SplitN(m, ":", 2)
-			refs[strings.ToLower(parts[0])] = true
+			normalized := strings.ReplaceAll(parts[0], `\`, "/")
+			refs[strings.ToLower(normalized)] = true
 		}
 	}
 	return refs
@@ -61,7 +62,7 @@ func mergeVerificationResults(verifyText, testText, reviewText string) string {
 
 	for i := range findings {
 		f := &findings[i]
-		lowerFile := strings.ToLower(f.file)
+		lowerFile := strings.ToLower(strings.ReplaceAll(f.file, `\`, "/"))
 		if verifyRefs[lowerFile] {
 			f.sources = append(f.sources, "verify")
 			f.rawVerify = extractLinesForFile(verifyText, f.file)

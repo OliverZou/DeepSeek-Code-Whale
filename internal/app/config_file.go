@@ -217,7 +217,7 @@ type FileVerifyConfig struct {
 	TestTimeout      string   `toml:"test_timeout,omitempty"`
 	ReviewAgent      *bool    `toml:"review_agent,omitempty"`
 	ReviewModel      string   `toml:"review_model,omitempty"`
-	ReviewAPIKey     string   `toml:"review_api_key,omitempty"`
+	ReviewAPIKey     string   `toml:"review_api_key,omitempty"` // prefer DEEPSEEK_API_KEY env var
 	ReviewBaseURL    string   `toml:"review_base_url,omitempty"`
 }
 

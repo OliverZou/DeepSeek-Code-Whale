@@ -321,6 +321,7 @@ type Agent struct {
 	reviewAPIKey          string        // P2: review agent API key
 	reviewBaseURL         string        // P2: review agent API base URL
 	reviewClient          *http.Client  // P2: review agent HTTP client (lazy init)
+	reviewClientOnce      sync.Once     // P2: guards reviewClient initialization
 	gateReadBeforeEdit    bool          // P1: configurable gate switch
 	gateAnalyzeBeforeEdit bool          // P4: configurable gate switch
 	analysisThreshold     int           // P4: skip analysis gate when changed lines below this
@@ -874,16 +875,16 @@ func (a *Agent) runReviewAgent(ctx context.Context, diffText, userRequest string
 	if !a.reviewAgentEnabled || strings.TrimSpace(diffText) == "" {
 		return ""
 	}
-	apiKey := strings.TrimSpace(a.reviewAPIKey)
+	apiKey := strings.TrimSpace(os.Getenv("DEEPSEEK_API_KEY"))
 	if apiKey == "" {
-		apiKey = strings.TrimSpace(os.Getenv("DEEPSEEK_API_KEY"))
+		apiKey = strings.TrimSpace(a.reviewAPIKey)
 	}
 	if apiKey == "" {
 		return ""
 	}
-	baseURL := strings.TrimSpace(a.reviewBaseURL)
+	baseURL := strings.TrimSpace(os.Getenv("DEEPSEEK_BASE_URL"))
 	if baseURL == "" {
-		baseURL = strings.TrimSpace(os.Getenv("DEEPSEEK_BASE_URL"))
+		baseURL = strings.TrimSpace(a.reviewBaseURL)
 	}
 	if baseURL == "" {
 		baseURL = "https://api.deepseek.com"
@@ -922,11 +923,11 @@ func (a *Agent) runReviewAgent(ctx context.Context, diffText, userRequest string
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+apiKey)
 
-	if a.reviewClient == nil {
+	a.reviewClientOnce.Do(func() {
 		a.reviewClient = &http.Client{
 			Timeout: timeout + 5*time.Second,
 		}
-	}
+	})
 
 	resp, err := a.reviewClient.Do(req)
 	if err != nil {

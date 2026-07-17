@@ -297,14 +297,7 @@ func (a *Agent) dispatchToolCalls(ctx context.Context, sc streamDispatchContext,
 				lastMutationIdx = i
 			}
 		}
-		if lastMutationIdx < 0 {
-			for i := range results {
-				if isMutationTool(results[i].Name) {
-					lastMutationIdx = i
-					break
-				}
-			}
-		}
+
 		if lastMutationIdx >= 0 {
 			type verifyOut struct{ label, text string }
 			ch := make(chan verifyOut, 3)
