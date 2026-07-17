@@ -419,3 +419,48 @@ func TestResolveTestCommands(t *testing.T) {
 		if len(c) != 1 || c[0] != "go test ./... -count=1" { t.Fatal("auto-detect failed") }
 	})
 }
+
+func TestMergeVerificationResults(t *testing.T) {
+	t.Run("review only", func(t *testing.T) {
+		review := "FINDING [P1]: foo.go:15 — missing error handling — Fix: check err\nFINDING [P2]: bar.go:30 — hardcoded value — Fix: extract constant"
+		merged := mergeVerificationResults("", "", review)
+		if !strings.Contains(merged, "#1 [P1]") || !strings.Contains(merged, "#2 [P2]") { t.Fatalf("bad:\n%s", merged) }
+		if !strings.Contains(merged, "sources: review") { t.Fatalf("missing source:\n%s", merged) }
+	})
+	t.Run("review + verify overlap", func(t *testing.T) {
+		verify := "$ go build ./...\nfoo.go:15: undefined: result"
+		review := "FINDING [P0]: foo.go:15 — null dereference — Fix: add nil check"
+		merged := mergeVerificationResults(verify, "", review)
+		if !strings.Contains(merged, "#1 [P0]") { t.Fatalf("bad:\n%s", merged) }
+		if !strings.Contains(merged, "sources: review, verify") { t.Fatalf("missing verify source:\n%s", merged) }
+		if !strings.Contains(merged, "[verify]") { t.Fatalf("missing verify detail:\n%s", merged) }
+	})
+	t.Run("verify error without review", func(t *testing.T) {
+		verify := "$ go build ./...\nbaz.go:8: undefined: x"
+		merged := mergeVerificationResults(verify, "", "")
+		if !strings.Contains(merged, "#1 [P0]") { t.Fatalf("bad:\n%s", merged) }
+		if !strings.Contains(merged, "no review finding matched") { t.Fatalf("bad:\n%s", merged) }
+		if !strings.Contains(merged, "sources: verify") { t.Fatalf("bad:\n%s", merged) }
+	})
+	t.Run("test failure without review", func(t *testing.T) {
+		test := "$ go test ./...\nFAIL qux_test.go:42"
+		merged := mergeVerificationResults("", test, "")
+		if !strings.Contains(merged, "#1 [P1]") { t.Fatalf("bad:\n%s", merged) }
+		if !strings.Contains(merged, "test failure") { t.Fatalf("bad:\n%s", merged) }
+	})
+	t.Run("review pass with no errors", func(t *testing.T) {
+		merged := mergeVerificationResults("", "", "REVIEW: PASS\nChecked all changes.")
+		if merged != "All checks passed." { t.Fatalf("bad: %q", merged) }
+	})
+	t.Run("all empty", func(t *testing.T) {
+		merged := mergeVerificationResults("", "", "")
+		if merged != "" { t.Fatalf("expected empty, got: %q", merged) }
+	})
+	t.Run("severity ordering", func(t *testing.T) {
+		review := "FINDING [P2]: a.go:1 — low — Fix: fix\nFINDING [P0]: b.go:2 — critical — Fix: fix\nFINDING [P1]: c.go:3 — high — Fix: fix"
+		merged := mergeVerificationResults("", "", review)
+		if !strings.HasPrefix(merged, "#1 [P0]") { t.Fatalf("P0 not first:\n%s", merged) }
+		if !strings.Contains(merged, "#2 [P1]") { t.Fatalf("P1 not second:\n%s", merged) }
+		if !strings.Contains(merged, "#3 [P2]") { t.Fatalf("P2 not third:\n%s", merged) }
+	})
+}

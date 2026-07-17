@@ -311,14 +311,14 @@ func (a *Agent) dispatchToolCalls(ctx context.Context, sc streamDispatchContext,
 
 			go func() {
 				if r := a.runAutoVerify(ctx); r != "" {
-					ch <- verifyOut{"Auto-verify", r}
+					ch <- verifyOut{"verify", r}
 				} else {
 					ch <- verifyOut{}
 				}
 			}()
 			go func() {
 				if r := a.runAutoTest(ctx); r != "" {
-					ch <- verifyOut{"Auto-test", r}
+					ch <- verifyOut{"test", r}
 				} else {
 					ch <- verifyOut{}
 				}
@@ -331,7 +331,7 @@ func (a *Agent) dispatchToolCalls(ctx context.Context, sc streamDispatchContext,
 				if a.reviewAgentEnabled && a.mutationsChangeCountThisTurn >= threshold {
 					if diffText := collectDiffText(results); diffText != "" {
 						if r := a.runReviewAgent(ctx, diffText, a.lastUserInput); r != "" {
-							ch <- verifyOut{"Code review", r}
+							ch <- verifyOut{"review", r}
 							return
 						}
 					}
@@ -339,11 +339,22 @@ func (a *Agent) dispatchToolCalls(ctx context.Context, sc streamDispatchContext,
 				ch <- verifyOut{}
 			}()
 
+			var verifyText, testText, reviewText string
 			for i := 0; i < 3; i++ {
 				out := <-ch
-				if out.text != "" {
-					results[lastMutationIdx].ModelText += fmt.Sprintf("\n\n--- %s ---\n%s", out.label, out.text)
+				switch out.label {
+				case "verify":
+					verifyText = out.text
+				case "test":
+					testText = out.text
+				case "review":
+					reviewText = out.text
 				}
+			}
+
+			merged := mergeVerificationResults(verifyText, testText, reviewText)
+			if merged != "" {
+				results[lastMutationIdx].ModelText += "\n\n--- Verification results ---\n" + merged
 			}
 
 			// P2: test reminder — source files were modified but no test files touched
