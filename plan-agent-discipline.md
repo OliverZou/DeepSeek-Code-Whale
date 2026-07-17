@@ -83,22 +83,26 @@ if isMutationTool(call.Name) && a.gateReadBeforeEdit {
 | | 现有 `/review` | P2 自动验证 |
 |---|---|---|
 | 触发方式 | 用户手动 | 编辑后自动 |
-| 审查范围 | 整体改动 | 当前 dispatch 批次的 diff |
+| 审查范围 | 整体改动 | 当前 dispatch 批次（build/lint）或整个 turn（test/review） |
 | 审查深度 | 全量 | 构建错误 + 测试失败 + P0-P3 严重度 findings |
-| 时机 | 改完之后 | dispatch 批次结束后立即 |
+| 时机 | 改完之后 | build/lint: 批次级；test/review: turn 级 |
 
-#### Debbounce 机制
+#### 两级 Debounce 机制
 
-LLM 可能在同一 dispatch 批次中连续调用多次 edit/multi_edit。用"脏标记"延迟验证，在 dispatch 批次结束后统一执行一次：
+**批次级（快速反馈）**：build/lint 在每个 dispatch 批次结束后立即执行，延迟约 10-15s，提供快速编译错误反馈。
+
+**Turn 级（深度验证）**：test 和 review agent 在整个 turn 结束后执行一次，不在每个 dispatch 批次中重复运行。延迟约 30-90s，但只在 turn 完成后运行一次，不影响编辑迭代速度。
 
 ```go
 // stream.go — mutation 工具成功后设置脏标记
 if isMutationTool(call.Name) && primarySucceeded {
-    a.dirtySinceVerify = true
+    a.dirtySinceVerify = true   // 批次级：触发 build/lint
+    a.dirtySinceTurnTest = true // turn 级：触发 test + review
 }
 ```
 
-验证在 `stream_dispatch.go` 的 `dispatchToolCalls` 末尾执行（在 `flushPendingParallelBatches` 之后、`createDispatchToolMessage` 之前）。
+- Build/lint 在 `stream_dispatch.go` 的 `dispatchToolCalls` 末尾执行
+- Test + review 在 `turn_loop.go` 的 turn 结束后执行（`runTurnLevelVerification`），结果持久化到 session history
 
 #### 第一层：构建/lint 验证
 
@@ -221,90 +225,58 @@ Minimal change principle.
 - `internal/agent/system_prompt.go` — 新增 `renderMinimalChangeBlock`
 - `internal/tools/catalog_files.go` — write 工具描述修改
 
-### P4: 结构化根因分析（Structured Root Cause Analysis）
+### P4: 结构化根因分析（提示层，非硬门控）
 
-**原理**：在 Plan 模式的基础上，为 Agent 模式增加轻量级的"分析阶段"——edit 工具解锁前，LLM 必须先输出对问题的理解。
+**原理**：鼓励 LLM 在编辑前先理解问题，但不强制。通过系统提示 + 可选工具引导，而非硬门控拦截。
+
+**设计决策**：P4 最初实现为硬门控（`analysis_required_before_edit`），但实际效果是安全剧场——LLM 可以写垃圾内容通过门控，却增加了每次编辑的延迟和交互摩擦。降级为提示层后，LLM 仍可使用 `analyze_problem` 工具记录分析，但不会被强制拦截。
 
 **实现**：
 
-1. 新增 turn 级别的状态标记 `analysisProvidedThisTurn`：
+1. **系统提示**（`system_prompt.go`）：在最小变更原则 block 中追加分析鼓励：
 
-```go
-// agent.go
-type Agent struct {
-    // ...
-    analysisProvidedThisTurn  bool
-    skipAnalysisThisTurn      bool // 用户明确跳过时设置
-    mutationsChangeCountThisTurn int // P4: 累计变更行数（用于 analysis_threshold）
-}
+```
+- Before making changes, understand the problem: what is the observed behavior, what should happen, and why. Use analyze_problem to record your root cause analysis.
 ```
 
-2. 新增"分析工具" `analyze_problem`（只读工具），**必须标记 capabilities** 以确保子代理能获取：
+2. **可选工具** `analyze_problem`（只读工具），标记 capabilities 以确保子代理能获取：
 
 ```go
 toolFn{
     name:        "analyze_problem",
-    description: "Record your analysis of the root cause before making changes...",
+    description: "Record your analysis of the root cause before making changes. Recommended before edit/write/multi_edit...",
     readOnly:     true,
     capabilities: []string{"workspace.read", "workspace.write"},
     fn:           b.analyzeProblem,
 }
 ```
 
-`workspace.read` + `workspace.write` 双标记确保无论子代理拥有哪种 capability 都能获取此工具，避免死锁。
-
-3. 在 `stream_dispatch.go` 中，mutation 工具执行前检查。**门控拦截结果必须走 `appendToolResult`**：
-
-```go
-if isMutationTool(call.Name) && !a.analysisProvidedThisTurn && !a.skipAnalysisThisTurn && a.gateAnalyzeBeforeEdit && a.workspaceRoot != "" {
-    belowThreshold := a.analysisThreshold > 0 && a.mutationsChangeCountThisTurn > 0 && a.mutationsChangeCountThisTurn < a.analysisThreshold
-    if !belowThreshold {
-        if err := appendToolResult(ctx, &sc, &results, core.ToolResult{...}); err != nil {
-            return nil, false, err
-        }
-        continue
-    }
-}
-```
-
-4. Turn 开始时通过 `resetTurnState()` 重置。
-
-**豁免**：
-- 用户明确说"直接改"、"skip analysis"、"just fix it"等关键词时跳过（`skipAnalysisThisTurn`）。关键词检测在 `turn_loop.go` 中，**跳过 hidden 消息**（`!msg.Hidden`）。
-- `analysis_threshold`：当累计变更行数低于阈值时豁免。首次编辑时 `mutationsChangeCountThisTurn == 0`，不触发豁免（`mutationsChangeCountThisTurn > 0` 检查），确保首次大修改也被分析。
-- `workspaceRoot == ""` 时跳过门控。
+3. **无硬门控**：不再在 `stream_dispatch.go` 中拦截未分析的编辑请求。无 `analysisProvidedThisTurn`、`skipAnalysisThisTurn`、`mutationsChangeCountThisTurn` 等状态字段。无 `[gate] analyze_before_edit` 和 `[gate] analysis_threshold` 配置。
 
 **改动文件**：
-- `internal/agent/agent.go` — 新增 `analysisProvidedThisTurn`、`skipAnalysisThisTurn`、`mutationsChangeCountThisTurn` 字段
-- `internal/agent/turn_loop.go` — turn 开始时重置 + skip 关键词检测（跳过 hidden）
-- `internal/agent/stream_dispatch.go` — analysis gate 检查（使用 `appendToolResult`）+ skip 关键词列表
-- `internal/agent/stream.go` — analyze_problem 成功后设置标记 + 变更行数累计
-- `internal/tools/catalog_runtime.go` — 新增 `analyze_problem` 工具（含 capabilities 标签）
+- `internal/agent/system_prompt.go` — 最小变更 block 追加分析鼓励
+- `internal/tools/catalog_runtime.go` — `analyze_problem` 工具（可选，含 capabilities 标签）
 
 ## 跨领域问题
 
 ### Subagent / spawn_subagent 的门控
 
-子代理（spawn_subagent）的编辑也受 P1/P4 的门控。
+子代理（spawn_subagent）的编辑也受 P1 门控。
 
-**结论：子代理独立维护门控状态，同样遵守先读再改、先分析再改。**
+**结论：子代理独立维护门控状态，同样遵守先读再改。**
 
 - `spawn_subagent` 创建的子 `Agent` 实例通过 `newChild` 传递 `WithVerifyConfig` + `WithGateConfig`，自然继承门控配置。
-- 子代理在自己的 turn 循环中独立遵守门控规则。
-- `analyze_problem` 工具标记了 `workspace.read` + `workspace.write` capabilities，确保有写权限的子代理能获取此工具，不会死锁。
+- 子代理在自己的 turn 循环中独立遵守 P1 门控规则。
+- `analyze_problem` 工具标记了 `workspace.read` + `workspace.write` capabilities，确保有写权限的子代理能获取此工具。
 
 ### 配置统一
 
-P1、P2、P4 的门控和验证都可在 `~/.whale/config.toml` 中统一配置：
+P1、P2 的门控和验证都可在 `~/.whale/config.toml` 中统一配置：
 
 ```toml
 [gate]
 # P1: 编辑前是否必须先读文件
 read_before_edit = true    # 默认 true
-# P4: 编辑前是否必须先调用 analyze_problem
-analyze_before_edit = true # 默认 true
-# P4: 变更行数低于此值时豁免分析（0 = 始终要求分析）
-analysis_threshold = 0     # 默认 0
 
 [verify]
 # P2: 编辑后自动运行的验证命令（用户显式配置）
@@ -363,14 +335,14 @@ P4 (结构化根因分析) ── 依赖 P1，与 P2 并行，形成完整闭环
 | 风险 | 缓解 |
 |------|------|
 | P1 拦截合法的快速修改 | 新文件豁免；提供 `[gate] read_before_edit = false` 配置项关闭 |
-| P2 构建验证耗时过长 | 30s 超时；可配置关闭；debounce 避免重复执行 |
+| P2 验证延迟过高 | build/lint 批次级（~10s）；test/review turn 级（不阻塞编辑迭代） |
 | P2 自动推断错误 | 用户可在 `[verify]` 中显式指定，覆盖推断 |
 | P2 自动推断命令被投毒 | `autoDetectedConfigDirty` 检测配置文件修改，跳过自动推断 |
 | P2 轻量审查提示被忽略 | 提示是软约束，硬约束靠 P1（先读）+ P4（先分析） |
 | P3 提示被 LLM 忽略 | 提示只是软约束，硬约束靠 P1/P2/P4 |
-| P4 增加交互轮次 | `analysis_threshold` 豁免小变更；用户可显式跳过 |
-| P4 analyze_problem 被滥用为形式主义 | 要求填写 observed/expected/root_cause 三个字段，不允许留空 |
-| P4 子代理死锁 | `analyze_problem` 标记 `workspace.read` + `workspace.write` capabilities |
+| P4 增加交互轮次 | P4 已降级为提示层，无硬门控，不增加延迟 |
+| P4 analyze_problem 被滥用为形式主义 | P4 已降级为提示层，工具可选，无强制 |
+| P4 子代理死锁 | P4 已降级为提示层，无门控拦截 |
 | Subagent 绕过门控 | 子代理独立维护门控状态，同样遵守先读再改、先分析再改 |
 | P2 debounce 期间 LLM 已基于旧状态继续推理 | 验证结果作为独立 tool result 追加，LLM 下一轮可见 |
 | P2 review agent API key 泄露 | 环境变量优先于配置文件 |
