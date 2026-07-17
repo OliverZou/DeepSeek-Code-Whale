@@ -269,30 +269,12 @@ func TestRunAutoVerify(t *testing.T) {
 	})
 }
 
-func TestContainsSkipAnalysisKeyword(t *testing.T) {
-	if containsSkipAnalysisKeyword("skip analysis now") == "" {
-		t.Fatal("not found")
-	}
-	if containsSkipAnalysisKeyword("Just Fix It") == "" {
-		t.Fatal("case insensitive")
-	}
-	if containsSkipAnalysisKeyword("please analyze") != "" {
-		t.Fatal("false match")
-	}
-}
-
 func TestWithGateConfig(t *testing.T) {
-	opt := WithGateConfig(false, true, 5)
+	opt := WithGateConfig(false)
 	a := &Agent{}
 	opt(a)
 	if a.gateReadBeforeEdit != false {
 		t.Fatal("read")
-	}
-	if a.gateAnalyzeBeforeEdit != true {
-		t.Fatal("analyze")
-	}
-	if a.analysisThreshold != 5 {
-		t.Fatal("threshold")
 	}
 }
 
@@ -348,20 +330,19 @@ func TestRenderMinimalChangeBlock(t *testing.T) {
 	}
 }
 
-// --- P1-P4 turn-level reset ---
+// --- P1/P2 turn-level reset ---
 
 func TestTurnReset(t *testing.T) {
 	a := &Agent{
-		filesReadThisTurn:            map[string]bool{"x": true},
-		analysisProvidedThisTurn:     true,
-		dirtySinceVerify:             true,
-		sourceFilesThisTurn:          map[string]bool{"a.go": true},
-		testFilesThisTurn:            map[string]bool{"a_test.go": true},
-		mutationsChangeCountThisTurn: 10,
+		filesReadThisTurn:   map[string]bool{"x": true},
+		dirtySinceVerify:    true,
+		dirtySinceTurnTest:  true,
+		sourceFilesThisTurn: map[string]bool{"a.go": true},
+		testFilesThisTurn:   map[string]bool{"a_test.go": true},
 	}
 	a.resetTurnState()
-	if len(a.filesReadThisTurn) != 0 || a.analysisProvidedThisTurn || a.dirtySinceVerify ||
-		len(a.sourceFilesThisTurn) != 0 || len(a.testFilesThisTurn) != 0 || a.mutationsChangeCountThisTurn != 0 {
+	if len(a.filesReadThisTurn) != 0 || a.dirtySinceVerify || a.dirtySinceTurnTest ||
+		len(a.sourceFilesThisTurn) != 0 || len(a.testFilesThisTurn) != 0 {
 		t.Fatal("not reset")
 	}
 }

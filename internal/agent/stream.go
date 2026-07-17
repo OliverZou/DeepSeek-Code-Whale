@@ -251,23 +251,14 @@ func (a *Agent) appendDispatchedToolResult(ctx context.Context, sessionID string
 	if isMutationTool(call.Name) && primarySucceeded {
 		a.recordFileRead(call)
 	}
-	// P4: track analyze_problem success for the analysis gate
-	if call.Name == "analyze_problem" && primarySucceeded {
-		a.analysisProvidedThisTurn = true
-	}
 	// P2: mark dirty on successful mutation for auto-verify debounce
 	if isMutationTool(call.Name) && primarySucceeded {
 		a.dirtySinceVerify = true
+		a.dirtySinceTurnTest = true
 	}
 	// P2: track source/test files for test reminder
 	if isMutationTool(call.Name) && primarySucceeded {
 		trackMutatedFiles(finalRes, a.sourceFilesThisTurn, a.testFilesThisTurn)
-	}
-	// P4: accumulate changed lines for analysis_threshold
-	if isMutationTool(call.Name) && primarySucceeded {
-		if adds, dels := diffCountsFromResult(finalRes); adds+dels > 0 {
-			a.mutationsChangeCountThisTurn += adds + dels
-		}
 	}
 	// P2: diff self-review prompt after every successful mutation
 	if isMutationTool(call.Name) && primarySucceeded {

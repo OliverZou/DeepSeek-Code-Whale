@@ -332,7 +332,7 @@ func (r *Runner) SpawnSubagentWithProgress(ctx context.Context, req SpawnSubagen
 				ReviewAPIKey:    r.reviewAPIKey,
 				ReviewBaseURL:   r.reviewBaseURL,
 			}),
-			agent.WithGateConfig(r.gateReadBeforeEdit, r.gateAnalyzeBeforeEdit, r.analysisThreshold),
+			agent.WithGateConfig(r.gateReadBeforeEdit),
 		)
 	}
 	runChild := func(runCtx context.Context, progress func(core.ToolProgress)) (SpawnSubagentResponse, error) {

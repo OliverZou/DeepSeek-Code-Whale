@@ -75,9 +75,8 @@ type Config struct {
 	VerifyReviewAPIKey             string
 	VerifyReviewBaseURL            string
 	GateReadBeforeEdit             bool
-	GateAnalyzeBeforeEdit          bool
-	GateAnalysisThreshold          int
-	configDefaulted                bool
+
+	configDefaulted bool
 }
 
 type MultimodalProviderConfig struct {

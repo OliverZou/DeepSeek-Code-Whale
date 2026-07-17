@@ -145,7 +145,7 @@ func (b *Toolset) analyzeProblemTools() []core.Tool {
 	return []core.Tool{
 		toolFn{
 			name:        "analyze_problem",
-			description: "Record your analysis of the root cause before making changes. Required before edit/write/multi_edit in a turn. State: what is the observed behavior, what is the expected behavior, and what is the root cause.",
+			description: "Record your analysis of the root cause before making changes. Recommended before edit/write/multi_edit. State: what is the observed behavior, what is the expected behavior, and what is the root cause.",
 			parameters: map[string]any{
 				"type":                 "object",
 				"additionalProperties": false,

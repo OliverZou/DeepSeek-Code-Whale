@@ -150,7 +150,7 @@ func (a *App) ensureAgent() (*agent.Agent, error) {
 				ReviewAPIKey:    a.cfg.VerifyReviewAPIKey,
 				ReviewBaseURL:   a.cfg.VerifyReviewBaseURL,
 			}),
-			agent.WithGateConfig(a.cfg.GateReadBeforeEdit, a.cfg.GateAnalyzeBeforeEdit, a.cfg.GateAnalysisThreshold),
+			agent.WithGateConfig(a.cfg.GateReadBeforeEdit),
 		)
 	}
 	return a.a, nil

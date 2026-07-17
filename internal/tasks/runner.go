@@ -82,8 +82,6 @@ type RunnerConfig struct {
 	VerifyReviewAPIKey         string
 	VerifyReviewBaseURL        string
 	GateReadBeforeEdit         bool
-	GateAnalyzeBeforeEdit      bool
-	GateAnalysisThreshold      int
 }
 
 type Runner struct {
@@ -120,13 +118,12 @@ type Runner struct {
 	reviewAPIKey               string
 	reviewBaseURL              string
 	gateReadBeforeEdit         bool
-	gateAnalyzeBeforeEdit      bool
-	analysisThreshold          int
-	approvalFunc               policy.ApprovalFunc
-	subagentBudgetMu           sync.Mutex
-	subagentBudget             SubagentBudget
-	backgroundMu               sync.Mutex
-	backgroundCancels          map[string]context.CancelFunc
+
+	approvalFunc      policy.ApprovalFunc
+	subagentBudgetMu  sync.Mutex
+	subagentBudget    SubagentBudget
+	backgroundMu      sync.Mutex
+	backgroundCancels map[string]context.CancelFunc
 }
 
 func NewRunner(cfg RunnerConfig) *Runner {
@@ -181,9 +178,8 @@ func NewRunner(cfg RunnerConfig) *Runner {
 		reviewAPIKey:               cfg.VerifyReviewAPIKey,
 		reviewBaseURL:              cfg.VerifyReviewBaseURL,
 		gateReadBeforeEdit:         cfg.GateReadBeforeEdit,
-		gateAnalyzeBeforeEdit:      cfg.GateAnalyzeBeforeEdit,
-		analysisThreshold:          cfg.GateAnalysisThreshold,
-		backgroundCancels:          map[string]context.CancelFunc{},
+
+		backgroundCancels: map[string]context.CancelFunc{},
 	}
 }
 

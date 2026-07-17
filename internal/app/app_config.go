@@ -35,7 +35,7 @@ func DefaultConfig() Config {
 		WorkflowsEnabled:             false,
 		WorkflowKeywordTrigger:       true,
 		GateReadBeforeEdit:           true,
-		GateAnalyzeBeforeEdit:        true,
-		configDefaulted:              true,
+
+		configDefaulted: true,
 	}
 }

@@ -65,6 +65,7 @@ const (
 	AgentEventTypePrefixCacheMetrics     AgentEventType = "prefix_cache_metrics"
 	AgentEventTypeUsage                  AgentEventType = "usage"
 	AgentEventTypeBudgetWarning          AgentEventType = "budget_warning"
+	AgentEventTypeTurnVerification       AgentEventType = "turn_verification"
 	AgentEventTypeTurnCancelled          AgentEventType = "turn_cancelled"
 	AgentEventTypeForcedSummaryStarted   AgentEventType = "forced_summary_started"
 	AgentEventTypeForcedSummaryDone      AgentEventType = "forced_summary_done"
@@ -138,33 +139,34 @@ type ToolPolicyDecision struct {
 }
 
 type AgentEvent struct {
-	Type           AgentEventType
-	Content        string
-	ReasoningDelta string
-	ToolArgs       *ToolArgsProgress
-	ToolArgsRepair *ToolArgsRepair
-	ToolBlocked    *ToolCallBlocked
-	Approval       *ToolApprovalRequired
-	ApprovalGrant  *ToolApprovalGranted
-	Scavenged      *ToolCallScavenged
-	Policy         *ToolPolicyDecision
-	Recovery       *ToolRecoveryInfo
-	ProviderRetry  *llmretry.Info
-	Compact        *CompactInfo
-	PrefixDrift    *PrefixDriftInfo
-	CacheMetrics   *PrefixCacheMetricsInfo
-	Usage          *UsageInfo
-	Budget         *BudgetWarningInfo
-	Hook           *HookEventInfo
-	Task           *TaskActivityInfo
-	PlanUpdate     *PlanUpdateInfo
-	Classifier     *ClassifierReviewEvent
-	ToolCall       *core.ToolCall
-	UserInputReq   *core.UserInputRequest
-	UserInputResp  *core.UserInputResponse
-	Result         *core.ToolResult
-	Message        *core.Message
-	Err            error
+	Type             AgentEventType
+	Content          string
+	ReasoningDelta   string
+	ToolArgs         *ToolArgsProgress
+	ToolArgsRepair   *ToolArgsRepair
+	ToolBlocked      *ToolCallBlocked
+	Approval         *ToolApprovalRequired
+	ApprovalGrant    *ToolApprovalGranted
+	Scavenged        *ToolCallScavenged
+	Policy           *ToolPolicyDecision
+	Recovery         *ToolRecoveryInfo
+	ProviderRetry    *llmretry.Info
+	Compact          *CompactInfo
+	PrefixDrift      *PrefixDriftInfo
+	CacheMetrics     *PrefixCacheMetricsInfo
+	Usage            *UsageInfo
+	Budget           *BudgetWarningInfo
+	Hook             *HookEventInfo
+	Task             *TaskActivityInfo
+	PlanUpdate       *PlanUpdateInfo
+	Classifier       *ClassifierReviewEvent
+	ToolCall         *core.ToolCall
+	UserInputReq     *core.UserInputRequest
+	UserInputResp    *core.UserInputResponse
+	Result           *core.ToolResult
+	Message          *core.Message
+	TurnVerification *string
+	Err              error
 }
 
 type PlanUpdateStep struct {
@@ -300,15 +302,13 @@ type Agent struct {
 	maxParallelSubagents   int
 	active                 sync.Map
 
-	// Turn-level state (P1/P2/P4 discipline gates). Reset by resetTurnState at the
+	// Turn-level state (P1/P2 discipline). Reset by resetTurnState at the
 	// start of every user turn. Agent is per-session; no sync needed.
-	filesReadThisTurn            map[string]bool // P1: read-before-edit gate tracking
-	dirtySinceVerify             bool            // P2: debounce flag for auto-verify
-	sourceFilesThisTurn          map[string]bool // P2: source files mutated this turn (for test reminder)
-	testFilesThisTurn            map[string]bool // P2: test files mutated this turn (for test reminder)
-	analysisProvidedThisTurn     bool            // P4: analyze_problem called this turn
-	skipAnalysisThisTurn         bool            // P4: user explicitly skipped analysis
-	mutationsChangeCountThisTurn int             // P4: cumulative changed lines this turn (for analysis_threshold)
+	filesReadThisTurn   map[string]bool // P1: read-before-edit gate tracking
+	dirtySinceVerify    bool            // P2: debounce flag for auto-verify (build/lint)
+	dirtySinceTurnTest  bool            // P2: turn-level test+review debounce
+	sourceFilesThisTurn map[string]bool // P2: source files mutated this turn (for test reminder)
+	testFilesThisTurn   map[string]bool // P2: test files mutated this turn (for test reminder)
 
 	// Agent-level configuration (set once, read-only after construction).
 	verifyCommands        []string      // P2: post-edit auto-verify commands (build+lint)
@@ -323,11 +323,100 @@ type Agent struct {
 	reviewClient          *http.Client  // P2: review agent HTTP client (lazy init)
 	reviewClientOnce      sync.Once     // P2: guards reviewClient initialization
 	gateReadBeforeEdit    bool          // P1: configurable gate switch
-	gateAnalyzeBeforeEdit bool          // P4: configurable gate switch
-	analysisThreshold     int           // P4: skip analysis gate when changed lines below this
 
 	// Turn-level state for review agent.
 	lastUserInput string // P2: last user message text, for review agent context
+}
+
+// runTurnLevelVerification runs test and review agent once per turn,
+// after the LLM has finished responding. Results are persisted as a
+// tool message in the session history so the model sees them next turn.
+func (a *Agent) runTurnLevelVerification(ctx context.Context, sessionID string, emit func(AgentEvent) bool) {
+	type turnVerifyOut struct{ label, text string }
+	ch := make(chan turnVerifyOut, 2)
+
+	go func() {
+		if r := a.runAutoTest(ctx); r != "" {
+			ch <- turnVerifyOut{"test", r}
+		} else {
+			ch <- turnVerifyOut{}
+		}
+	}()
+	go func() {
+		if a.reviewAgentEnabled {
+			if diffText := a.collectTurnDiffText(sessionID); diffText != "" {
+				if r := a.runReviewAgent(ctx, diffText, a.lastUserInput); r != "" {
+					ch <- turnVerifyOut{"review", r}
+					return
+				}
+			}
+		}
+		ch <- turnVerifyOut{}
+	}()
+
+	var testText, reviewText string
+	for i := 0; i < 2; i++ {
+		select {
+		case out := <-ch:
+			switch out.label {
+			case "test":
+				testText = out.text
+			case "review":
+				reviewText = out.text
+			}
+		case <-ctx.Done():
+			return
+		}
+	}
+
+	merged := mergeVerificationResults("", testText, reviewText)
+	if merged == "" {
+		return
+	}
+
+	msg := core.TextMessage(sessionID, core.RoleTool, "--- Turn verification ---\n"+merged, false)
+	if _, err := a.store.Create(ctx, msg); err != nil {
+		return
+	}
+	emit(AgentEvent{Type: AgentEventTypeTurnVerification, TurnVerification: &merged})
+}
+
+// collectTurnDiffText gathers diff text from all mutation tool results
+// in the current turn's session history.
+func (a *Agent) collectTurnDiffText(sessionID string) string {
+	msgs, err := a.store.List(context.Background(), sessionID)
+	if err != nil {
+		return ""
+	}
+	var parts []string
+	for _, msg := range msgs {
+		if msg.Role != core.RoleTool {
+			continue
+		}
+		for _, tr := range msg.ToolResults {
+			if !isMutationTool(tr.Name) || tr.Outcome != core.OutcomeSuccess {
+				continue
+			}
+			if tr.Metadata == nil {
+				continue
+			}
+			kind, _ := tr.Metadata["kind"].(string)
+			if kind != "file_diff" {
+				continue
+			}
+			files, ok := tr.Metadata["files"].([]map[string]any)
+			if !ok {
+				continue
+			}
+			for _, fm := range files {
+				diff, _ := fm["unified_diff"].(string)
+				if diff != "" {
+					parts = append(parts, diff)
+				}
+			}
+		}
+	}
+	return strings.Join(parts, "\n")
 }
 
 // resetTurnState clears turn-level discipline state (except lastUserInput,
@@ -340,15 +429,13 @@ func (a *Agent) resetTurnState() {
 		clear(a.filesReadThisTurn)
 	}
 	a.dirtySinceVerify = false
+	a.dirtySinceTurnTest = false
 	if a.sourceFilesThisTurn == nil {
 		a.sourceFilesThisTurn = make(map[string]bool)
 	} else {
 		clear(a.sourceFilesThisTurn)
 	}
 	a.testFilesThisTurn = make(map[string]bool)
-	a.analysisProvidedThisTurn = false
-	a.skipAnalysisThisTurn = false
-	a.mutationsChangeCountThisTurn = 0
 }
 
 type activeTurnState struct {
@@ -748,15 +835,11 @@ func WithVerifyConfig(cfg VerifyConfig) AgentOption {
 	}
 }
 
-// WithGateConfig sets the gate configuration for P1/P4 discipline gates.
-// Both default to true; set to false to disable.
-// analysisThreshold: skip analysis gate when cumulative changed lines this turn
-// are below this value. 0 means always require analysis.
-func WithGateConfig(readBeforeEdit, analyzeBeforeEdit bool, analysisThreshold int) AgentOption {
+// WithGateConfig sets the P1 read-before-edit gate configuration.
+// Defaults to true; set to false to disable.
+func WithGateConfig(readBeforeEdit bool) AgentOption {
 	return func(a *Agent) {
 		a.gateReadBeforeEdit = readBeforeEdit
-		a.gateAnalyzeBeforeEdit = analyzeBeforeEdit
-		a.analysisThreshold = analysisThreshold
 	}
 }
 

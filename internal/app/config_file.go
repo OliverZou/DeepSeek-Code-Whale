@@ -210,21 +210,19 @@ type FileAutoReviewConfig struct {
 }
 
 type FileVerifyConfig struct {
-	Commands         []string `toml:"commands,omitempty"`
-	Timeout          string   `toml:"timeout,omitempty"`
-	ReviewThreshold  int      `toml:"review_threshold,omitempty"`
-	TestCommands     []string `toml:"test_commands,omitempty"`
-	TestTimeout      string   `toml:"test_timeout,omitempty"`
-	ReviewAgent      *bool    `toml:"review_agent,omitempty"`
-	ReviewModel      string   `toml:"review_model,omitempty"`
-	ReviewAPIKey     string   `toml:"review_api_key,omitempty"` // prefer DEEPSEEK_API_KEY env var
-	ReviewBaseURL    string   `toml:"review_base_url,omitempty"`
+	Commands        []string `toml:"commands,omitempty"`
+	Timeout         string   `toml:"timeout,omitempty"`
+	ReviewThreshold int      `toml:"review_threshold,omitempty"`
+	TestCommands    []string `toml:"test_commands,omitempty"`
+	TestTimeout     string   `toml:"test_timeout,omitempty"`
+	ReviewAgent     *bool    `toml:"review_agent,omitempty"`
+	ReviewModel     string   `toml:"review_model,omitempty"`
+	ReviewAPIKey    string   `toml:"review_api_key,omitempty"` // prefer DEEPSEEK_API_KEY env var
+	ReviewBaseURL   string   `toml:"review_base_url,omitempty"`
 }
 
 type FileGateConfig struct {
-	ReadBeforeEdit    *bool `toml:"read_before_edit,omitempty"`
-	AnalyzeBeforeEdit *bool `toml:"analyze_before_edit,omitempty"`
-	AnalysisThreshold int   `toml:"analysis_threshold,omitempty"`
+	ReadBeforeEdit *bool `toml:"read_before_edit,omitempty"`
 }
 
 type LoadedConfig struct {

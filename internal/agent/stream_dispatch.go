@@ -179,26 +179,6 @@ func (a *Agent) dispatchToolCalls(ctx context.Context, sc streamDispatchContext,
 			}
 		}
 
-		// P4: analysis gate — mutation tools require analyze_problem first.
-		// Disabled when workspaceRoot is empty, user skips, gate is
-		// explicitly turned off via [gate] config, or cumulative changed
-		// lines this turn are below analysis_threshold.
-		if isMutationTool(call.Name) && !a.analysisProvidedThisTurn && !a.skipAnalysisThisTurn && a.gateAnalyzeBeforeEdit && a.workspaceRoot != "" {
-			belowThreshold := a.analysisThreshold > 0 && a.mutationsChangeCountThisTurn > 0 && a.mutationsChangeCountThisTurn < a.analysisThreshold
-			if !belowThreshold {
-				if err := appendToolResult(ctx, &sc, &results, core.ToolResult{
-					ToolCallID: call.ID,
-					Name:       call.Name,
-					ModelText:  "You must call analyze_problem first to record your root cause analysis before making changes.",
-					Outcome:    core.OutcomeFailure,
-					Code:       "analysis_required_before_edit",
-				}); err != nil {
-					return nil, false, err
-				}
-				continue
-			}
-		}
-
 		handled, err := a.dispatchPreApprovalSpecialTool(ctx, sc, call, &results)
 		if err != nil {
 			return nil, false, err
@@ -301,7 +281,7 @@ func (a *Agent) dispatchToolCalls(ctx context.Context, sc streamDispatchContext,
 
 		if lastMutationIdx >= 0 {
 			type verifyOut struct{ label, text string }
-			ch := make(chan verifyOut, 3)
+			ch := make(chan verifyOut, 1)
 
 			go func() {
 				if r := a.runAutoVerify(ctx); r != "" {
@@ -310,52 +290,22 @@ func (a *Agent) dispatchToolCalls(ctx context.Context, sc streamDispatchContext,
 					ch <- verifyOut{}
 				}
 			}()
-			go func() {
-				if r := a.runAutoTest(ctx); r != "" {
-					ch <- verifyOut{"test", r}
-				} else {
-					ch <- verifyOut{}
-				}
-			}()
-			go func() {
-				threshold := a.verifyReviewThreshold
-				if threshold == 0 {
-					threshold = defaultVerifyReviewThreshold
-				}
-				if a.reviewAgentEnabled && a.mutationsChangeCountThisTurn >= threshold {
-					if diffText := collectDiffText(results); diffText != "" {
-						if r := a.runReviewAgent(ctx, diffText, a.lastUserInput); r != "" {
-							ch <- verifyOut{"review", r}
-							return
-						}
-					}
-				}
-				ch <- verifyOut{}
-			}()
 
-			var verifyText, testText, reviewText string
-			for i := 0; i < 3; i++ {
-				select {
-				case out := <-ch:
-					switch out.label {
-					case "verify":
-						verifyText = out.text
-					case "test":
-						testText = out.text
-					case "review":
-						reviewText = out.text
-					}
-				case <-ctx.Done():
-					return nil, false, ctx.Err()
+			var verifyText string
+			select {
+			case out := <-ch:
+				if out.label == "verify" {
+					verifyText = out.text
 				}
+			case <-ctx.Done():
+				return nil, false, ctx.Err()
 			}
 
-			merged := mergeVerificationResults(verifyText, testText, reviewText)
-			if merged != "" {
+			if verifyText != "" {
 				results = append(results, core.ToolResult{
 					ToolCallID: results[lastMutationIdx].ToolCallID + "_verify",
 					Name:       results[lastMutationIdx].Name,
-					ModelText:  "--- Verification results ---\n" + merged,
+					ModelText:  "--- Build/lint results ---\n" + verifyText,
 					Outcome:    core.OutcomeSuccess,
 					Code:       "auto_verify",
 				})
@@ -983,22 +933,6 @@ func numericAsInt(v any) int {
 	default:
 		return 0
 	}
-}
-
-// P4: skip-analysis keyword detection
-var skipAnalysisKeywords = []string{
-	"直接改", "不要分析", "skip analysis", "just fix it",
-	"直接修", "直接修复", "skip analyze", "just change",
-}
-
-func containsSkipAnalysisKeyword(input string) string {
-	lower := strings.ToLower(input)
-	for _, kw := range skipAnalysisKeywords {
-		if strings.Contains(lower, strings.ToLower(kw)) {
-			return kw
-		}
-	}
-	return ""
 }
 
 // trackMutatedFiles extracts file paths from a mutation tool result's diff

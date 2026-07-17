@@ -140,9 +140,8 @@ func initAppRuntime(cfg Config, sessionInit appSessionInit, toolInit appToolInit
 		VerifyReviewAPIKey:         cfg.VerifyReviewAPIKey,
 		VerifyReviewBaseURL:        cfg.VerifyReviewBaseURL,
 		GateReadBeforeEdit:         cfg.GateReadBeforeEdit,
-		GateAnalyzeBeforeEdit:      cfg.GateAnalyzeBeforeEdit,
-		GateAnalysisThreshold:      cfg.GateAnalysisThreshold,
-		ApprovalFunc:               approvalFunc,
+
+		ApprovalFunc: approvalFunc,
 	})
 	taskTools := tasks.NewTools(taskRunner)
 	goalTools := newGoalTools(cfg.DataDir, sessionInit.sessionsDir, parentSessionIDFunc)

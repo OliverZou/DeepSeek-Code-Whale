@@ -128,8 +128,7 @@ func (a *App) rebuildTaskRuntimeLocked() error {
 		VerifyReviewAPIKey:         cfg.VerifyReviewAPIKey,
 		VerifyReviewBaseURL:        cfg.VerifyReviewBaseURL,
 		GateReadBeforeEdit:         cfg.GateReadBeforeEdit,
-		GateAnalyzeBeforeEdit:      cfg.GateAnalyzeBeforeEdit,
-		GateAnalysisThreshold:      cfg.GateAnalysisThreshold,
+
 		ApprovalFunc: func(req policy.ApprovalRequest) policy.ApprovalDecision {
 			a.approvalMu.Lock()
 			defer a.approvalMu.Unlock()

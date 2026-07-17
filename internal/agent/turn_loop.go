@@ -138,12 +138,8 @@ func (a *Agent) runStreamWithNewMessages(ctx context.Context, sessionID string, 
 			a.classifier.ClearTurn(sessionID)
 		}
 		a.resetTurnState()
-		// P4: detect user intent to skip analysis
 		for _, msg := range newMessages {
 			if msg.Role == core.RoleUser && !msg.Hidden {
-				if containsSkipAnalysisKeyword(msg.Text) != "" {
-					a.skipAnalysisThisTurn = true
-				}
 				a.lastUserInput = msg.Text
 			}
 		}
@@ -455,6 +451,12 @@ func (a *Agent) runStreamWithNewMessages(ctx context.Context, sessionID string, 
 			// yields no plan — the user can simply ask again — matching reasonix.
 			if a.mode == session.ModePlan && strings.TrimSpace(assistant.Text) != "" {
 				emit(AgentEvent{Type: AgentEventTypePlanCompleted, Content: assistant.Text})
+			}
+			// P2: turn-level test + review agent. Runs once after the turn
+			// completes, not per dispatch batch (too expensive/slow).
+			if a.dirtySinceTurnTest {
+				a.runTurnLevelVerification(ctx, sessionID, emit)
+				a.dirtySinceTurnTest = false
 			}
 			emit(AgentEvent{Type: AgentEventTypeDone, Message: &assistant})
 			return
