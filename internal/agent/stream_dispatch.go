@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"regexp"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -126,6 +127,17 @@ func (a *Agent) dispatchToolCalls(ctx context.Context, sc streamDispatchContext,
 		}
 		return flushPendingParallelReasoning()
 	}
+	// P4: capture assistant reasoning text for root cause cross-check
+	a.lastAssistantText = sc.Assistant.Text
+
+	// Propagate parent read files to any runner-based tools (e.g. spawn_subagent)
+	// so that child agents inherit the parent's P1 read-before-edit file tracker.
+	for _, t := range sc.Tools.Tools() {
+		if sr, ok := t.(interface{ SetParentReadFilesSource(func() map[string]bool) }); ok {
+			sr.SetParentReadFilesSource(func() map[string]bool { return a.filesReadThisTurn })
+		}
+	}
+
 	for i, call := range dispatchCalls {
 		if call.Name != parallelSubagentToolName {
 			if err := flushPendingParallelSubagents(); err != nil {
@@ -301,6 +313,7 @@ func (a *Agent) dispatchToolCalls(ctx context.Context, sc streamDispatchContext,
 				return nil, false, ctx.Err()
 			}
 
+			verifyText = parseBuildErrors(verifyText)
 			if verifyText != "" {
 				results = append(results, core.ToolResult{
 					ToolCallID: results[lastMutationIdx].ToolCallID + "_verify",
@@ -1030,3 +1043,27 @@ func collectDiffText(results []core.ToolResult) string {
 	}
 	return strings.Join(parts, "\n")
 }
+
+
+var buildErrorRe = regexp.MustCompile(`(\S+\.\w+):(\d+):\d*:\s*(.+)`)
+
+func parseBuildErrors(output string) string {
+	var lines []string
+	for _, line := range strings.Split(output, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		m := buildErrorRe.FindStringSubmatch(trimmed)
+		if m == nil {
+			lines = append(lines, trimmed)
+			continue
+		}
+		lines = append(lines, fmt.Sprintf("#%d [P0] %s:%s — %s", len(lines)+1, m[1], m[2], m[3]))
+	}
+	if len(lines) == 0 {
+		return output
+	}
+	return strings.Join(lines, "\n")
+}
+
