@@ -487,9 +487,6 @@ func applyVerifyConfig(cfg *Config, file FileVerifyConfig) error {
 		cfg.VerifyTimeout = d
 	}
 
-	if file.ReviewThreshold > 0 {
-		cfg.VerifyReviewThreshold = file.ReviewThreshold
-	}
 	if len(file.TestCommands) > 0 {
 		cfg.VerifyTestCommands = append(cfg.VerifyTestCommands, file.TestCommands...)
 	}
@@ -499,18 +496,6 @@ func applyVerifyConfig(cfg *Config, file FileVerifyConfig) error {
 			return fmt.Errorf("invalid verify.test_timeout: %w", err)
 		}
 		cfg.VerifyTestTimeout = d
-	}
-	if file.ReviewAgent != nil {
-		cfg.VerifyReviewAgent = *file.ReviewAgent
-	}
-	if strings.TrimSpace(file.ReviewModel) != "" {
-		cfg.VerifyReviewModel = strings.TrimSpace(file.ReviewModel)
-	}
-	if strings.TrimSpace(file.ReviewAPIKey) != "" {
-		cfg.VerifyReviewAPIKey = strings.TrimSpace(file.ReviewAPIKey)
-	}
-	if strings.TrimSpace(file.ReviewBaseURL) != "" {
-		cfg.VerifyReviewBaseURL = strings.TrimRight(strings.TrimSpace(file.ReviewBaseURL), "/")
 	}
 	return nil
 }

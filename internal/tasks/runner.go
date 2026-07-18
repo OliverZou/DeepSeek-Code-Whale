@@ -74,13 +74,8 @@ type RunnerConfig struct {
 	ApprovalFunc               policy.ApprovalFunc
 	VerifyCommands             []string
 	VerifyTimeout              time.Duration
-	VerifyReviewThreshold      int
 	VerifyTestCommands         []string
 	VerifyTestTimeout          time.Duration
-	VerifyReviewAgent          bool
-	VerifyReviewModel          string
-	VerifyReviewAPIKey         string
-	VerifyReviewBaseURL        string
 	GateReadBeforeEdit         bool
 }
 
@@ -110,13 +105,8 @@ type Runner struct {
 	usageLogPath               string
 	verifyCommands             []string
 	verifyTimeout              time.Duration
-	verifyReviewThreshold      int
 	testCommands               []string
 	testTimeout                time.Duration
-	reviewAgentEnabled         bool
-	reviewModel                string
-	reviewAPIKey               string
-	reviewBaseURL              string
 	gateReadBeforeEdit         bool
 
 	approvalFunc      policy.ApprovalFunc
@@ -168,16 +158,11 @@ func NewRunner(cfg RunnerConfig) *Runner {
 		summaryMaxChars:            summaryMaxChars,
 		usageLogPath:               strings.TrimSpace(cfg.UsageLogPath),
 		approvalFunc:               cfg.ApprovalFunc,
-		verifyCommands:             append([]string(nil), cfg.VerifyCommands...),
-		verifyTimeout:              cfg.VerifyTimeout,
-		verifyReviewThreshold:      cfg.VerifyReviewThreshold,
-		testCommands:               append([]string(nil), cfg.VerifyTestCommands...),
-		testTimeout:                cfg.VerifyTestTimeout,
-		reviewAgentEnabled:         cfg.VerifyReviewAgent,
-		reviewModel:                cfg.VerifyReviewModel,
-		reviewAPIKey:               cfg.VerifyReviewAPIKey,
-		reviewBaseURL:              cfg.VerifyReviewBaseURL,
-		gateReadBeforeEdit:         cfg.GateReadBeforeEdit,
+		verifyCommands:    append([]string(nil), cfg.VerifyCommands...),
+		verifyTimeout:     cfg.VerifyTimeout,
+		testCommands:      append([]string(nil), cfg.VerifyTestCommands...),
+		testTimeout:       cfg.VerifyTestTimeout,
+		gateReadBeforeEdit: cfg.GateReadBeforeEdit,
 
 		backgroundCancels: map[string]context.CancelFunc{},
 	}

@@ -67,13 +67,8 @@ type Config struct {
 	AutoReviewEnvironment          []string
 	VerifyCommands                 []string
 	VerifyTimeout                  time.Duration
-	VerifyReviewThreshold          int
 	VerifyTestCommands             []string
 	VerifyTestTimeout              time.Duration
-	VerifyReviewAgent              bool
-	VerifyReviewModel              string
-	VerifyReviewAPIKey             string
-	VerifyReviewBaseURL            string
 	GateReadBeforeEdit             bool
 
 	configDefaulted bool

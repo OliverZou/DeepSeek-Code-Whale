@@ -120,13 +120,8 @@ func (a *App) rebuildTaskRuntimeLocked() error {
 		UsageLogPath:               filepath.Join(cfg.DataDir, "usage"),
 		VerifyCommands:             cfg.VerifyCommands,
 		VerifyTimeout:              cfg.VerifyTimeout,
-		VerifyReviewThreshold:      cfg.VerifyReviewThreshold,
 		VerifyTestCommands:         cfg.VerifyTestCommands,
 		VerifyTestTimeout:          cfg.VerifyTestTimeout,
-		VerifyReviewAgent:          cfg.VerifyReviewAgent,
-		VerifyReviewModel:          cfg.VerifyReviewModel,
-		VerifyReviewAPIKey:         cfg.VerifyReviewAPIKey,
-		VerifyReviewBaseURL:        cfg.VerifyReviewBaseURL,
 		GateReadBeforeEdit:         cfg.GateReadBeforeEdit,
 
 		ApprovalFunc: func(req policy.ApprovalRequest) policy.ApprovalDecision {
