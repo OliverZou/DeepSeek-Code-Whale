@@ -242,6 +242,42 @@ func (a *Agent) appendDispatchedToolResult(ctx context.Context, sessionID string
 	if prepared.PreHookContext != "" {
 		addHookContextToToolResult(&finalRes, prepared.PreHookContext)
 	}
+	// P1: record read_file calls for the read-before-edit gate
+	if call.Name == "read_file" && primarySucceeded {
+		a.recordFileRead(call)
+	}
+	// P1: successful mutation also counts as having "read" the file,
+	// so a subsequent edit in the same turn is not blocked.
+	if isMutationTool(call.Name) && primarySucceeded {
+		a.recordFileRead(call)
+	}
+	// P2: mark dirty on successful mutation for auto-verify debounce
+	if isMutationTool(call.Name) && primarySucceeded {
+		a.dirtySinceVerify = true
+		a.dirtySinceTurnTest = true
+	}
+	// P2: track source/test files for test reminder
+	if isMutationTool(call.Name) && primarySucceeded {
+		trackMutatedFiles(finalRes, a.sourceFilesThisTurn, a.testFilesThisTurn)
+	}
+	// P2: diff self-review prompt after every successful mutation
+	if isMutationTool(call.Name) && primarySucceeded {
+		threshold := a.verifyReviewThreshold
+		if threshold == 0 {
+			threshold = defaultVerifyReviewThreshold
+		}
+		if additions, deletions := diffCountsFromResult(finalRes); additions+deletions > threshold {
+			finalRes.ModelText += fmt.Sprintf(
+				"\n\n--- Change summary ---\n%d additions, %d deletions. Verify: (1) every change traces to the user's request, (2) no unrelated refactoring, (3) no missing error handling for new paths.",
+				additions, deletions,
+			)
+		} else if additions+deletions > 0 {
+			finalRes.ModelText += fmt.Sprintf(
+				"\n\n--- Self-review ---\n%d additions, %d deletions. Confirm every change traces to the user's request.",
+				additions, deletions,
+			)
+		}
+	}
 	// Parallel spawn_subagent batches run post hooks only after the whole batch
 	// returns, in original tool-call order, so stored tool results and events
 	// stay deterministic even when the underlying subagents finish out of order.

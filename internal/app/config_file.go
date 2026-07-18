@@ -40,6 +40,8 @@ type FileConfig struct {
 	Workflows    FileWorkflowsConfig           `toml:"workflows,omitempty"`
 	Lsp          FileLSPConfig                 `toml:"lsp,omitempty"`
 	AutoReview   FileAutoReviewConfig          `toml:"auto_review,omitempty"`
+	Verify       FileVerifyConfig              `toml:"verify,omitempty"`
+	Gate         FileGateConfig                `toml:"gate,omitempty"`
 	Hooks        map[string][]agent.HookConfig `toml:"hooks,omitempty"`
 }
 
@@ -212,6 +214,17 @@ type FileAutoReviewConfig struct {
 	AllowRules  []string `toml:"allow_rules,omitempty"`
 	DenyRules   []string `toml:"deny_rules,omitempty"`
 	Environment []string `toml:"environment,omitempty"`
+}
+
+type FileVerifyConfig struct {
+	Commands     []string `toml:"commands,omitempty"`
+	Timeout      string   `toml:"timeout,omitempty"`
+	TestCommands []string `toml:"test_commands,omitempty"`
+	TestTimeout  string   `toml:"test_timeout,omitempty"`
+}
+
+type FileGateConfig struct {
+	ReadBeforeEdit *bool `toml:"read_before_edit,omitempty"`
 }
 
 type LoadedConfig struct {

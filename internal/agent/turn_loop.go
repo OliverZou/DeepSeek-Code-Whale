@@ -137,6 +137,12 @@ func (a *Agent) runStreamWithNewMessages(ctx context.Context, sessionID string, 
 		if a.classifier != nil {
 			a.classifier.ClearTurn(sessionID)
 		}
+		a.resetTurnState()
+		for _, msg := range newMessages {
+			if msg.Role == core.RoleUser && !msg.Hidden {
+				a.lastUserInput = msg.Text
+			}
+		}
 		emit := func(ev AgentEvent) bool {
 			return sendAgentEvent(ctx, out, ev)
 		}
@@ -445,6 +451,12 @@ func (a *Agent) runStreamWithNewMessages(ctx context.Context, sessionID string, 
 			// yields no plan — the user can simply ask again — matching reasonix.
 			if a.mode == session.ModePlan && strings.TrimSpace(assistant.Text) != "" {
 				emit(AgentEvent{Type: AgentEventTypePlanCompleted, Content: assistant.Text})
+			}
+			// P2: turn-level test + review agent. Runs once after the turn
+			// completes, not per dispatch batch (too expensive/slow).
+			if a.dirtySinceTurnTest {
+				a.runTurnLevelVerification(ctx, sessionID, emit)
+				a.dirtySinceTurnTest = false
 			}
 			emit(AgentEvent{Type: AgentEventTypeDone, Message: &assistant})
 			return

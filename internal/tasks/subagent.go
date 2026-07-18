@@ -321,6 +321,13 @@ func (r *Runner) SpawnSubagentWithProgress(ctx context.Context, req SpawnSubagen
 			agent.WithMaxToolCalls(maxToolCalls),
 			agent.WithMaxTurns(cfg.MaxTurns),
 			agent.WithExtraSystemBlocks(extraBlocks...),
+			agent.WithVerifyConfig(agent.VerifyConfig{
+				Commands:     r.verifyCommands,
+				Timeout:      r.verifyTimeout,
+				TestCommands: r.testCommands,
+				TestTimeout:  r.testTimeout,
+			}),
+			agent.WithGateConfig(r.gateReadBeforeEdit),
 		)
 	}
 	runChild := func(runCtx context.Context, progress func(core.ToolProgress)) (SpawnSubagentResponse, error) {

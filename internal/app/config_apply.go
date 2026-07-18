@@ -167,6 +167,10 @@ func ApplyFileConfig(cfg *Config, file FileConfig) error {
 	if len(file.AutoReview.Environment) > 0 {
 		cfg.AutoReviewEnvironment = append(cfg.AutoReviewEnvironment, file.AutoReview.Environment...)
 	}
+	if err := applyVerifyConfig(cfg, file.Verify); err != nil {
+		return err
+	}
+	applyGateConfig(cfg, file.Gate)
 	return nil
 }
 
@@ -477,4 +481,36 @@ func applyPermissionsConfig(cfg *Config, file FilePermissionsConfig) error {
 	}
 	cfg.PermissionRules = append(cfg.PermissionRules, rules...)
 	return nil
+}
+
+func applyVerifyConfig(cfg *Config, file FileVerifyConfig) error {
+	if len(file.Commands) > 0 {
+		cfg.VerifyCommands = append(cfg.VerifyCommands, file.Commands...)
+	}
+	if strings.TrimSpace(file.Timeout) != "" {
+		d, err := time.ParseDuration(strings.TrimSpace(file.Timeout))
+		if err != nil {
+			return fmt.Errorf("invalid verify.timeout: %w", err)
+		}
+		cfg.VerifyTimeout = d
+	}
+
+	if len(file.TestCommands) > 0 {
+		cfg.VerifyTestCommands = append(cfg.VerifyTestCommands, file.TestCommands...)
+	}
+	if strings.TrimSpace(file.TestTimeout) != "" {
+		d, err := time.ParseDuration(strings.TrimSpace(file.TestTimeout))
+		if err != nil {
+			return fmt.Errorf("invalid verify.test_timeout: %w", err)
+		}
+		cfg.VerifyTestTimeout = d
+	}
+	return nil
+}
+
+func applyGateConfig(cfg *Config, file FileGateConfig) {
+	if file.ReadBeforeEdit != nil {
+		cfg.GateReadBeforeEdit = *file.ReadBeforeEdit
+	}
+
 }

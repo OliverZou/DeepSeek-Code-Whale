@@ -5,6 +5,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
+
+	"runtime"
+	"sort"
 	"strings"
 
 	"github.com/usewhale/whale/internal/core"
@@ -164,6 +169,16 @@ func (a *Agent) dispatchToolCalls(ctx context.Context, sc streamDispatchContext,
 			continue
 		}
 
+		// P1: read-before-edit gate — mutation tools require the target file
+		// to have been read in this turn. New files (write to non-existent
+		// paths) are exempt. Disabled when workspaceRoot is empty or gate
+		// is explicitly turned off via [gate] config.
+		if isMutationTool(call.Name) && a.gateReadBeforeEdit {
+			if blocked := a.checkReadBeforeEditGate(ctx, &sc, call, &results); blocked {
+				continue
+			}
+		}
+
 		handled, err := a.dispatchPreApprovalSpecialTool(ctx, sc, call, &results)
 		if err != nil {
 			return nil, false, err
@@ -251,6 +266,69 @@ func (a *Agent) dispatchToolCalls(ctx context.Context, sc streamDispatchContext,
 	}
 	if err := flushPendingParallelBatches(); err != nil {
 		return nil, false, err
+	}
+
+	// P2: run auto-verify, auto-test, and review agent in parallel after all
+	// mutations in this dispatch batch. Append output to the last mutation
+	// tool's ModelText once all complete.
+	if a.dirtySinceVerify {
+		lastMutationIdx := -1
+		for i := range results {
+			if isMutationTool(results[i].Name) && results[i].Outcome == core.OutcomeSuccess {
+				lastMutationIdx = i
+			}
+		}
+
+		if lastMutationIdx >= 0 {
+			type verifyOut struct{ label, text string }
+			ch := make(chan verifyOut, 1)
+
+			go func() {
+				if r := a.runAutoVerify(ctx); r != "" {
+					ch <- verifyOut{"verify", r}
+				} else {
+					ch <- verifyOut{}
+				}
+			}()
+
+			var verifyText string
+			select {
+			case out := <-ch:
+				if out.label == "verify" {
+					verifyText = out.text
+				}
+			case <-ctx.Done():
+				return nil, false, ctx.Err()
+			}
+
+			if verifyText != "" {
+				results = append(results, core.ToolResult{
+					ToolCallID: results[lastMutationIdx].ToolCallID + "_verify",
+					Name:       results[lastMutationIdx].Name,
+					ModelText:  "--- Build/lint results ---\n" + verifyText,
+					Outcome:    core.OutcomeSuccess,
+					Code:       "auto_verify",
+				})
+			}
+
+			if len(a.sourceFilesThisTurn) > 0 && len(a.testFilesThisTurn) == 0 {
+				files := make([]string, 0, len(a.sourceFilesThisTurn))
+				for f := range a.sourceFilesThisTurn {
+					files = append(files, f)
+				}
+				sort.Strings(files)
+				results = append(results, core.ToolResult{
+					ToolCallID: results[lastMutationIdx].ToolCallID + "_reminder",
+					Name:       results[lastMutationIdx].Name,
+					ModelText:  fmt.Sprintf("--- Test reminder ---\nYou modified source files (%s) but did not write or update any tests this turn. Consider adding corresponding tests.", strings.Join(files, ", ")),
+					Outcome:    core.OutcomeSuccess,
+					Code:       "test_reminder",
+				})
+			}
+		}
+		if lastMutationIdx >= 0 {
+			a.dirtySinceVerify = false
+		}
 	}
 
 	toolMsg, err := a.createDispatchToolMessage(ctx, sc, results)
@@ -730,4 +808,225 @@ func toolResultRequestsTurnAbort(res core.ToolResult) bool {
 	default:
 		return false
 	}
+}
+
+// P1: read-before-edit gate helpers
+
+var mutationToolNames = map[string]bool{
+	"edit":       true,
+	"write":      true,
+	"multi_edit": true,
+}
+
+func isMutationTool(name string) bool {
+	return mutationToolNames[name]
+}
+
+func extractFilePathFromCall(call core.ToolCall) string {
+	var args struct {
+		FilePath string `json:"file_path"`
+	}
+	if err := json.Unmarshal([]byte(call.Input), &args); err != nil {
+		return ""
+	}
+	return args.FilePath
+}
+
+func (a *Agent) checkReadBeforeEditGate(ctx context.Context, sc *streamDispatchContext, call core.ToolCall, results *[]core.ToolResult) bool {
+
+	if a.workspaceRoot == "" {
+		return false
+	}
+	filePath := extractFilePathFromCall(call)
+	if filePath == "" {
+		return false
+	}
+	absPath := normalizeWorkspacePath(filePath, a.workspaceRoot)
+
+	if _, err := os.Stat(absPath); os.IsNotExist(err) {
+		return false
+	}
+
+	if a.filesReadThisTurn == nil {
+		return false
+	}
+	if a.filesReadThisTurn[absPath] {
+		return false
+	}
+
+	if err := appendToolResult(ctx, sc, results, core.ToolResult{
+		ToolCallID: call.ID,
+		Name:       call.Name,
+		ModelText:  fmt.Sprintf("File %q has not been read in this turn. Use read_file first to inspect the current content before editing.", filePath),
+		Outcome:    core.OutcomeFailure,
+		Code:       "read_before_edit_required",
+	}); err != nil {
+		return true
+	}
+	return true
+}
+
+// recordFileRead tracks that a file was read in this turn for the
+// read-before-edit gate (P1). Called after read_file succeeds.
+func (a *Agent) recordFileRead(call core.ToolCall) {
+	if a.filesReadThisTurn == nil {
+		a.filesReadThisTurn = make(map[string]bool)
+	}
+	filePath := extractFilePathFromCall(call)
+	if filePath == "" {
+		return
+	}
+	absPath := normalizeWorkspacePath(filePath, a.workspaceRoot)
+	a.filesReadThisTurn[absPath] = true
+}
+
+// normalizeWorkspacePath resolves a file path to an absolute path with
+// consistent casing on Windows (to avoid P1 gate false negatives).
+func normalizeWorkspacePath(filePath, workspaceRoot string) string {
+	absPath := filepath.Clean(filePath)
+	if !filepath.IsAbs(absPath) && workspaceRoot != "" {
+		absPath = filepath.Join(workspaceRoot, absPath)
+	}
+	// On Windows, normalize to lowercase to avoid case-sensitivity mismatches
+	// between read_file and edit tool call paths.
+	if runtime.GOOS == "windows" {
+		absPath = strings.ToLower(absPath)
+	}
+	return absPath
+}
+
+// diffCountsFromResult extracts additions/deletions counts from a mutation
+// tool result's file_diff metadata (P2).
+func diffCountsFromResult(res core.ToolResult) (int, int) {
+	if res.Metadata == nil {
+		return 0, 0
+	}
+	kind, _ := res.Metadata["kind"].(string)
+	if kind != "file_diff" {
+		return 0, 0
+	}
+	// files is []map[string]any as built by fileDiffMetadata (tools/diff_metadata.go).
+	files, ok := res.Metadata["files"].([]map[string]any)
+	if !ok {
+		return 0, 0
+	}
+	var totalAdd, totalDel int
+	for _, fm := range files {
+		totalAdd += numericAsInt(fm["additions"])
+		totalDel += numericAsInt(fm["deletions"])
+	}
+	return totalAdd, totalDel
+}
+
+// numericAsInt extracts an int from a value that may be float64 or int.
+func numericAsInt(v any) int {
+	if v == nil {
+		return 0
+	}
+	switch n := v.(type) {
+	case float64:
+		return int(n)
+	case int:
+		return n
+	case int64:
+		return int(n)
+	default:
+		return 0
+	}
+}
+
+// trackMutatedFiles extracts file paths from a mutation tool result's diff
+// metadata and classifies them as source or test files.
+func trackMutatedFiles(res core.ToolResult, sourceFiles, testFiles map[string]bool) {
+	if res.Metadata == nil {
+		return
+	}
+	kind, _ := res.Metadata["kind"].(string)
+	if kind != "file_diff" {
+		return
+	}
+	files, ok := res.Metadata["files"].([]map[string]any)
+	if !ok {
+		return
+	}
+	for _, fm := range files {
+		path, _ := fm["path"].(string)
+		if path == "" {
+			continue
+		}
+		if isTestFile(path) {
+			testFiles[path] = true
+		} else if !isExemptFile(path) {
+			sourceFiles[path] = true
+		}
+	}
+}
+
+// isTestFile returns true if the path looks like a test file.
+func isTestFile(path string) bool {
+	base := strings.ToLower(filepath.Base(path))
+	for _, suffix := range []string{
+		"_test.go", "_test.py", ".test.js", ".test.ts",
+		".spec.js", ".spec.ts", ".test.jsx", ".test.tsx",
+		".spec.jsx", ".spec.tsx",
+	} {
+		if strings.HasSuffix(base, suffix) {
+			return true
+		}
+	}
+	if strings.HasPrefix(base, "test_") && strings.HasSuffix(base, ".py") {
+		return true
+	}
+	for _, pattern := range []string{"tests.java", "test.java"} {
+		if strings.HasSuffix(base, pattern) {
+			return true
+		}
+	}
+	return false
+}
+
+// isExemptFile returns true for config/doc files that don't need test coverage.
+func isExemptFile(path string) bool {
+	base := strings.ToLower(filepath.Base(path))
+	for _, suffix := range []string{
+		".md", ".txt", ".toml", ".yaml", ".yml", ".json",
+		".ini", ".cfg", ".conf", ".lock", ".mod",
+	} {
+		if strings.HasSuffix(base, suffix) {
+			return true
+		}
+	}
+	for _, name := range []string{"makefile", "dockerfile", ".gitignore", ".env"} {
+		if base == name {
+			return true
+		}
+	}
+	return false
+}
+
+func collectDiffText(results []core.ToolResult) string {
+	var parts []string
+	for _, res := range results {
+		if !isMutationTool(res.Name) {
+			continue
+		}
+		if res.Metadata == nil {
+			continue
+		}
+		kind, _ := res.Metadata["kind"].(string)
+		if kind != "file_diff" {
+			continue
+		}
+		files, ok := res.Metadata["files"].([]map[string]any)
+		if !ok {
+			continue
+		}
+		for _, fm := range files {
+			diff, _ := fm["unified_diff"].(string)
+			if diff != "" {
+				parts = append(parts, diff)
+			}
+		}
+	}
+	return strings.Join(parts, "\n")
 }

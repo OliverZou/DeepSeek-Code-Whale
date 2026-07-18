@@ -118,6 +118,12 @@ func (a *App) rebuildTaskRuntimeLocked() error {
 		DefaultMaxToolIters:        tasks.DefaultMaxToolIters,
 		SummaryMaxChars:            tasks.DefaultSummaryMaxChar,
 		UsageLogPath:               filepath.Join(cfg.DataDir, "usage"),
+		VerifyCommands:             cfg.VerifyCommands,
+		VerifyTimeout:              cfg.VerifyTimeout,
+		VerifyTestCommands:         cfg.VerifyTestCommands,
+		VerifyTestTimeout:          cfg.VerifyTestTimeout,
+		GateReadBeforeEdit:         cfg.GateReadBeforeEdit,
+
 		ApprovalFunc: func(req policy.ApprovalRequest) policy.ApprovalDecision {
 			a.approvalMu.Lock()
 			defer a.approvalMu.Unlock()

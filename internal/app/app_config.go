@@ -35,6 +35,8 @@ func DefaultConfig() Config {
 		LSPEnabled:                   false,
 		WorkflowsEnabled:             false,
 		WorkflowKeywordTrigger:       true,
-		configDefaulted:              true,
+		GateReadBeforeEdit:           true,
+
+		configDefaulted: true,
 	}
 }
