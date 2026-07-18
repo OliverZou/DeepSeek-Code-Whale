@@ -108,12 +108,19 @@ type Runner struct {
 	testCommands               []string
 	testTimeout                time.Duration
 	gateReadBeforeEdit         bool
+	parentReadFilesFunc       func() map[string]bool
 
 	approvalFunc      policy.ApprovalFunc
 	subagentBudgetMu  sync.Mutex
 	subagentBudget    SubagentBudget
 	backgroundMu      sync.Mutex
 	backgroundCancels map[string]context.CancelFunc
+}
+
+// SetParentReadFilesSource sets a callback that the spawn_subagent tool
+// calls to get the parent agent's tracked read files for the current turn.
+func (r *Runner) SetParentReadFilesSource(fn func() map[string]bool) {
+	r.parentReadFilesFunc = fn
 }
 
 func NewRunner(cfg RunnerConfig) *Runner {

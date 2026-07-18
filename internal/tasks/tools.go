@@ -70,6 +70,12 @@ type spawnSubagentTool struct {
 	runner *Runner
 }
 
+// SetParentReadFilesSource implements the interface used by the agent to
+// propagate the parent agent's read-file tracker to the spawn_subagent tool.
+func (t spawnSubagentTool) SetParentReadFilesSource(fn func() map[string]bool) {
+	t.runner.SetParentReadFilesSource(fn)
+}
+
 func (t spawnSubagentTool) Name() string { return "spawn_subagent" }
 func (t spawnSubagentTool) Description() string {
 	return "Run one bounded child agent for independent exploration, research, or review. Prefer direct tools for small follow-ups; use a child agent mainly for parallel fan-out or when a task needs roughly 10+ read/search steps whose trail does not need to stay in the parent context. Each fresh child has its own provider request/prefix and may pay a prefix-cache miss plus a full child loop. Select a built-in role or named agent definition; advanced agent definitions are configured outside this tool schema. Omit tools to use the selected agent defaults, pass [] for model-only synthesis, or pass workspace.read or exact tool names for a custom allowlist. Use subagent_status or cancel_subagent for background lifecycle follow-up."
@@ -182,6 +188,9 @@ func (t spawnSubagentTool) RunWithProgress(ctx context.Context, call core.ToolCa
 	req.MaxToolCalls = 0
 	req.MaxToolIters = 0
 	req.ParentToolCallID = call.ID
+	if t.runner.parentReadFilesFunc != nil {
+		req.ParentReadFiles = t.runner.parentReadFilesFunc()
+	}
 	res, err := t.runner.SpawnSubagentWithProgress(ctx, req, func(p core.ToolProgress) {
 		if progress == nil {
 			return
