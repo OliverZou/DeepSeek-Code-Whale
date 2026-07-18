@@ -200,7 +200,7 @@ Minimal change principle.
 - If you can solve the problem in 50 lines, do not write 200.
 - Prefer edit/multi_edit over write for existing files. Use write only for new files or intentional full rewrites.
 - After editing, verify the change is correct before moving on.
-- Before making changes, understand the problem: what is the observed behavior, what should happen, and why. Use analyze_problem to record your root cause analysis.
+- Before making changes, understand the problem: what is the observed behavior, what should happen, and why.
 `)
 }
 

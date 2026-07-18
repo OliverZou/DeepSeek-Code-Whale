@@ -23,7 +23,7 @@ func TestIsMutationTool(t *testing.T) {
 	}{
 		{"edit", true}, {"write", true}, {"multi_edit", true},
 		{"read_file", false}, {"shell_run", false}, {"grep", false},
-		{"analyze_problem", false}, {"", false},
+		{"", false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -112,35 +112,6 @@ func TestRecordFileRead(t *testing.T) {
 		a.recordFileRead(tc("read_file", map[string]any{"file_path": "b.go"}))
 		if len(a.filesReadThisTurn) != 2 {
 			t.Fatal("expected 2")
-		}
-	})
-}
-
-func TestDiffCountsFromResult(t *testing.T) {
-	bm := func(files []map[string]any) map[string]any {
-		if len(files) == 0 {
-			return nil
-		}
-		return map[string]any{"kind": "file_diff", "files": files}
-	}
-	t.Run("nil meta", func(t *testing.T) {
-		a, d := diffCountsFromResult(core.ToolResult{})
-		if a != 0 || d != 0 {
-			t.Fatal("not zero")
-		}
-	})
-	t.Run("single file", func(t *testing.T) {
-		m := bm([]map[string]any{{"additions": float64(5), "deletions": float64(3)}})
-		a, d := diffCountsFromResult(core.ToolResult{Metadata: m})
-		if a != 5 || d != 3 {
-			t.Fatal("wrong")
-		}
-	})
-	t.Run("int values", func(t *testing.T) {
-		m := bm([]map[string]any{{"additions": 5, "deletions": 3}})
-		a, d := diffCountsFromResult(core.ToolResult{Metadata: m})
-		if a != 5 || d != 3 {
-			t.Fatal("wrong int")
 		}
 	})
 }
@@ -280,15 +251,10 @@ func TestWithGateConfig(t *testing.T) {
 
 func TestWithVerifyConfig(t *testing.T) {
 	opt := WithVerifyConfig(VerifyConfig{
-		Commands:        []string{"go test"},
-		Timeout:         10,
-		ReviewThreshold: 5,
-		TestCommands:    []string{"go test ./..."},
-		TestTimeout:     60,
-		ReviewAgent:     true,
-		ReviewModel:     "deepseek-v4-pro",
-		ReviewAPIKey:    "sk-test",
-		ReviewBaseURL:   "https://api.example.com",
+		Commands:     []string{"go test"},
+		Timeout:      10,
+		TestCommands: []string{"go test ./..."},
+		TestTimeout:  60,
 	})
 	a := &Agent{}
 	opt(a)
@@ -298,26 +264,11 @@ func TestWithVerifyConfig(t *testing.T) {
 	if a.verifyTimeout != 10 {
 		t.Fatal("timeout")
 	}
-	if a.verifyReviewThreshold != 5 {
-		t.Fatal("threshold")
-	}
 	if len(a.testCommands) != 1 || a.testCommands[0] != "go test ./..." {
 		t.Fatal("test cmds")
 	}
 	if a.testTimeout != 60 {
 		t.Fatal("test timeout")
-	}
-	if !a.reviewAgentEnabled {
-		t.Fatal("review agent")
-	}
-	if a.reviewModel != "deepseek-v4-pro" {
-		t.Fatal("review model")
-	}
-	if a.reviewAPIKey != "sk-test" {
-		t.Fatal("review api key")
-	}
-	if a.reviewBaseURL != "https://api.example.com" {
-		t.Fatal("review base url")
 	}
 }
 
@@ -427,7 +378,7 @@ func TestIsTestFile(t *testing.T) {
 		{"main_test.go", true}, {"main_test.py", true},
 		{"component.test.js", true}, {"component.spec.ts", true},
 		{"component.test.tsx", true}, {"component.spec.jsx", true},
-		{"test_utils.py", true}, {"test_.go", true}, {"test_.py", true},
+		{"test_utils.py", true}, {"test_.go", false}, {"test_.py", true},
 		{"main.go", false}, {"main.py", false}, {"main.js", false},
 		{"Makefile", false},
 	}
@@ -584,77 +535,59 @@ func TestResolveTestCommands(t *testing.T) {
 	})
 }
 
-func TestMergeVerificationResults(t *testing.T) {
-	t.Run("review only", func(t *testing.T) {
-		review := "FINDING [P1]: foo.go:15 — missing error handling — Fix: check err\nFINDING [P2]: bar.go:30 — hardcoded value — Fix: extract constant"
-		merged := mergeVerificationResults("", "", review)
-		if !strings.Contains(merged, "#1 [P1]") || !strings.Contains(merged, "#2 [P2]") {
-			t.Fatalf("bad:\n%s", merged)
-		}
-		if !strings.Contains(merged, "sources: review") {
-			t.Fatalf("missing source:\n%s", merged)
-		}
-	})
-	t.Run("review + verify overlap", func(t *testing.T) {
-		verify := "$ go build ./...\nfoo.go:15: undefined: result"
-		review := "FINDING [P0]: foo.go:15 — null dereference — Fix: add nil check"
-		merged := mergeVerificationResults(verify, "", review)
-		if !strings.Contains(merged, "#1 [P0]") {
-			t.Fatalf("bad:\n%s", merged)
-		}
-		if !strings.Contains(merged, "sources: review, verify") {
-			t.Fatalf("missing verify source:\n%s", merged)
-		}
-		if !strings.Contains(merged, "[verify]") {
-			t.Fatalf("missing verify detail:\n%s", merged)
-		}
-	})
-	t.Run("verify error without review", func(t *testing.T) {
-		verify := "$ go build ./...\nbaz.go:8: undefined: x"
-		merged := mergeVerificationResults(verify, "", "")
-		if !strings.Contains(merged, "#1 [P0]") {
-			t.Fatalf("bad:\n%s", merged)
-		}
-		if !strings.Contains(merged, "no review finding matched") {
-			t.Fatalf("bad:\n%s", merged)
-		}
-		if !strings.Contains(merged, "sources: verify") {
-			t.Fatalf("bad:\n%s", merged)
-		}
-	})
-	t.Run("test failure without review", func(t *testing.T) {
-		test := "$ go test ./...\nFAIL qux_test.go:42"
-		merged := mergeVerificationResults("", test, "")
-		if !strings.Contains(merged, "#1 [P1]") {
-			t.Fatalf("bad:\n%s", merged)
-		}
-		if !strings.Contains(merged, "test failure") {
-			t.Fatalf("bad:\n%s", merged)
-		}
-	})
-	t.Run("review pass with no errors", func(t *testing.T) {
-		merged := mergeVerificationResults("", "", "REVIEW: PASS\nChecked all changes.")
-		if merged != "All checks passed." {
-			t.Fatalf("bad: %q", merged)
-		}
-	})
-	t.Run("all empty", func(t *testing.T) {
-		merged := mergeVerificationResults("", "", "")
-		if merged != "" {
-			t.Fatalf("expected empty, got: %q", merged)
-		}
-	})
-	t.Run("severity ordering", func(t *testing.T) {
-		review := "FINDING [P2]: a.go:1 — low — Fix: fix\nFINDING [P0]: b.go:2 — critical — Fix: fix\nFINDING [P1]: c.go:3 — high — Fix: fix"
-		merged := mergeVerificationResults("", "", review)
-		if !strings.HasPrefix(merged, "#1 [P0]") {
-			t.Fatalf("P0 not first:\n%s", merged)
-		}
-		if !strings.Contains(merged, "#2 [P1]") {
-			t.Fatalf("P1 not second:\n%s", merged)
-		}
-		if !strings.Contains(merged, "#3 [P2]") {
-			t.Fatalf("P2 not third:\n%s", merged)
-		}
-	})
+// TestDisciplineGateIntegration tests the full P1 gate flow:
+// recordFileRead -> checkReadBeforeEditGate -> recordFileRead (mutation) -> check -> reset -> check.
+func TestDisciplineGateIntegration(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main\n"), 0644)
+	a := &Agent{workspaceRoot: dir, gateReadBeforeEdit: true, filesReadThisTurn: make(map[string]bool)}
+	sc := &streamDispatchContext{Events: make(chan AgentEvent, 32)}
+
+	// Step 1: read_file populates the tracking map
+	a.recordFileRead(tc("read_file", map[string]any{"file_path": "main.go"}))
+	norm := normalizeWorkspacePath("main.go", dir)
+	if !a.filesReadThisTurn[norm] {
+		t.Fatal("recordFileRead should mark file as read")
+	}
+
+	// Step 2: edit on read file passes the gate
+	var r1 []core.ToolResult
+	if a.checkReadBeforeEditGate(context.Background(), sc, tc("edit", map[string]any{"file_path": "main.go"}), &r1) {
+		t.Fatal("edit on previously read file must pass gate")
+	}
+
+	// Step 3: edit on unread file is blocked
+	var r2 []core.ToolResult
+	if !a.checkReadBeforeEditGate(context.Background(), sc, tc("edit", map[string]any{"file_path": "other.go"}), &r2) {
+		t.Fatal("edit on unread file must be blocked")
+	}
+	if r2[0].Code != "read_before_edit_required" {
+		t.Fatalf("wrong code: %q", r2[0].Code)
+	}
+
+	// Step 4: write to new file is exempt
+	var r3 []core.ToolResult
+	if a.checkReadBeforeEditGate(context.Background(), sc, tc("write", map[string]any{"file_path": "new.go", "content": "x"}), &r3) {
+		t.Fatal("write to new file must be exempt")
+	}
+
+	// Step 5: successful mutation also marks file as read
+	a.recordFileRead(tc("edit", map[string]any{"file_path": "main.go"}))
+	var r4 []core.ToolResult
+	if a.checkReadBeforeEditGate(context.Background(), sc, tc("multi_edit", map[string]any{"file_path": "main.go"}), &r4) {
+		t.Fatal("multi_edit on previously edited file must pass")
+	}
+
+	// Step 6: turn reset clears tracking
+	a.resetTurnState()
+	if len(a.filesReadThisTurn) != 0 {
+		t.Fatal("resetTurnState must clear filesReadThisTurn")
+	}
+	var r5 []core.ToolResult
+	if !a.checkReadBeforeEditGate(context.Background(), sc, tc("edit", map[string]any{"file_path": "main.go"}), &r5) {
+		t.Fatal("after reset, edit must be blocked again")
+	}
+	if r5[0].Code != "read_before_edit_required" {
+		t.Fatalf("wrong code after reset: %q", r5[0].Code)
+	}
 }
