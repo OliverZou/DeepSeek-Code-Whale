@@ -6,6 +6,8 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -54,6 +56,7 @@ type SpawnSubagentResponse struct {
 	StructuredResult any            `json:"structured_result,omitempty"`
 	Error            string         `json:"error,omitempty"`
 	Truncated        bool           `json:"truncated"`
+	ReportFile       string         `json:"report_file,omitempty"`
 	ToolCalls        []string       `json:"tool_calls,omitempty"`
 	RequestedTools   []string       `json:"requested_tools,omitempty"`
 	ResolvedTools    []string       `json:"resolved_tools,omitempty"`
@@ -334,6 +337,7 @@ func (r *Runner) SpawnSubagentWithProgress(ctx context.Context, req SpawnSubagen
 			return SpawnSubagentResponse{}, &SpawnSubagentError{SessionID: sessionID, Code: "spawn_subagent_failed", Message: err.Error(), Err: err}
 		}
 		var report string
+		var reportFile string
 		var usage llm.Usage
 		var truncated bool
 		var toolCalls []string
@@ -418,7 +422,8 @@ func (r *Runner) SpawnSubagentWithProgress(ctx context.Context, req SpawnSubagen
 					}
 				case agent.AgentEventTypeDone:
 					if ev.Message != nil {
-						report, truncated = truncateString(strings.TrimSpace(ev.Message.Text), r.summaryMaxChars)
+						fullText := strings.TrimSpace(ev.Message.Text)
+						report, reportFile, truncated = saveSubagentReport(r.sessionsDir, sessionID, fullText, r.summaryMaxChars)
 						progressSummary := subagentSummaryLine(report)
 						if progressSummary == "" {
 							progressSummary = "child completed"
@@ -509,7 +514,8 @@ func (r *Runner) SpawnSubagentWithProgress(ctx context.Context, req SpawnSubagen
 			structuredResult = value
 			if strings.TrimSpace(report) == "" {
 				if b, err := core.MarshalToolJSON(value); err == nil {
-					report, truncated = truncateString(string(b), r.summaryMaxChars)
+					fullText := string(b)
+					report, reportFile, truncated = saveSubagentReport(r.sessionsDir, sessionID, fullText, r.summaryMaxChars)
 				}
 			}
 		}
@@ -529,6 +535,7 @@ func (r *Runner) SpawnSubagentWithProgress(ctx context.Context, req SpawnSubagen
 			Summary:           summary,
 			StructuredResult:  structuredResult,
 			Truncated:         truncated,
+			ReportFile:        reportFile,
 			ToolCalls:         toolCalls,
 			RequestedTools:    cloneStrings(cfg.ToolSelectors),
 			ResolvedTools:     cloneStrings(resolvedToolNames),
@@ -819,4 +826,44 @@ func (r *Runner) unregisterBackgroundSubagent(sessionID string) {
 	r.backgroundMu.Lock()
 	defer r.backgroundMu.Unlock()
 	delete(r.backgroundCancels, strings.TrimSpace(sessionID))
+}
+
+// saveSubagentReport saves the full report to a file when it exceeds the cap.
+// Returns a short preview + file link, the absolute file path, and true.
+// Falls back to plain truncation when the session directory is unavailable.
+func saveSubagentReport(sessionsDir, sessionID, fullText string, cap int) (report, reportFile string, truncated bool) {
+	if cap <= 0 || len(fullText) <= cap {
+		return fullText, "", false
+	}
+	// Save full report to session directory.
+	if sessionsDir != "" && sessionID != "" {
+		dir := filepath.Join(sessionsDir, sessionID)
+		filePath := filepath.Join(dir, "report.md")
+		if err := os.MkdirAll(dir, 0700); err == nil {
+			if err := os.WriteFile(filePath, []byte(fullText), 0600); err == nil {
+				absPath, _ := filepath.Abs(filePath)
+				if absPath == "" {
+					absPath = filePath
+				}
+				preview := reportPreview(fullText)
+				link := fmt.Sprintf("file:///%s", filepath.ToSlash(absPath))
+				report = fmt.Sprintf("%s\n\n---\nReport too long (%d chars, cap %d). Full report: %s",
+					preview, len(fullText), cap, link)
+				return report, absPath, true
+			}
+		}
+	}
+	// Fallback: plain truncation when session dir is unavailable.
+	report, _ = truncateString(fullText, cap)
+	return report, "", true
+}
+
+// reportPreview returns the first few lines of a report for preview.
+func reportPreview(text string) string {
+	lines := strings.Split(text, "\n")
+	limit := 3
+	if len(lines) < limit {
+		limit = len(lines)
+	}
+	return strings.Join(lines[:limit], "\n")
 }
