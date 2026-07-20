@@ -517,6 +517,12 @@ func (t agentSearchTool) renderResults(call core.ToolCall, query string, builtin
 	var matches []agentMatch
 	seen := map[string]bool{}
 
+	// Linear token-match scoring: each query token independently scored
+	// against name/description/whenToUse. Multi-token queries naturally
+	// favour agents that match all tokens (summed scores) over partial
+	// matches — no explicit AND/OR needed. Fixed weights are calibrated
+	// for ~500 agents with short descriptions; TF-IDF would add complexity
+	// without improving result quality at this scale.
 	scoreFn := func(def AgentDefinition) int {
 		name := strings.ToLower(def.Name)
 		desc := strings.ToLower(def.Description)
