@@ -546,7 +546,8 @@ func (t agentSearchTool) renderResults(call core.ToolCall, query string, builtin
 		return score
 	}
 
-	for _, def := range builtins {
+	// Customs first: if a custom agent shadows a builtin name, the custom wins.
+	for _, def := range customs {
 		if seen[def.Name] {
 			continue
 		}
@@ -555,7 +556,7 @@ func (t agentSearchTool) renderResults(call core.ToolCall, query string, builtin
 			matches = append(matches, agentMatch{AgentDefinition: def, score: s})
 		}
 	}
-	for _, def := range customs {
+	for _, def := range builtins {
 		if seen[def.Name] {
 			continue
 		}
