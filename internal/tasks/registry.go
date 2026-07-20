@@ -35,6 +35,7 @@ var knownSubagentCapabilities = map[string]bool{
 var excludedChildTools = map[string]bool{
 	"parallel_reason":    true,
 	"spawn_subagent":     true,
+	"agent_search":       true,
 	"request_user_input": true,
 	"update_plan":        true,
 	"todo_add":           true,

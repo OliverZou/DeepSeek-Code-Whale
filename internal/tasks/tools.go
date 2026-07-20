@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/usewhale/whale/internal/core"
@@ -14,6 +15,7 @@ func NewTools(r *Runner) []core.Tool {
 	return []core.Tool{
 		parallelReasonTool{runner: r},
 		spawnSubagentTool{runner: r},
+		agentSearchTool{runner: r},
 		subagentStatusTool{runner: r},
 		cancelSubagentTool{runner: r},
 	}
@@ -373,4 +375,240 @@ func encodeInput(v any) string {
 
 func errorContent(code, message string) string {
 	return fmt.Sprintf(`{"ok":false,"code":%q,"message":%q}`, code, message)
+}
+
+// --- agent_search ---
+
+// builtinAgentDefs returns Name/Description/WhenToUse for the three built-in
+// roles. The canonical (full) definitions live in builtinAgentDefinition.
+func builtinAgentDefs() []AgentDefinition {
+	names := []string{"explore", "research", "review"}
+	out := make([]AgentDefinition, 0, len(names))
+	for _, name := range names {
+		if def, ok := builtinAgentDefinition(name); ok {
+			out = append(out, AgentDefinition{
+				Name:        def.Name,
+				Description: def.Description,
+				WhenToUse:   def.WhenToUse,
+			})
+		}
+	}
+	return out
+}
+
+type agentSearchTool struct {
+	runner *Runner
+}
+
+func (t agentSearchTool) Name() string { return "agent_search" }
+
+func (t agentSearchTool) Description() string {
+	return "Search custom subagent definitions by keyword. Use when the task domain goes beyond generic exploration/research/review — for example, security auditing, database operations, trading, or deployment. Matching agents are spawned by name via spawn_subagent. Built-in roles (explore, research, review) are always available."
+}
+
+func (t agentSearchTool) Parameters() map[string]any {
+	return map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties": map[string]any{
+			"query": map[string]any{
+				"type":        "string",
+				"description": "Search query: keyword phrase to match against agent name, description, and whenToUse. Case-insensitive substring matching. Returns up to 5 best matches. Use select:Name1,Name2 for exact name lookup. Combine multiple terms (e.g. 'security database') to search across domains in one call.",
+			},
+		},
+		"required": []string{"query"},
+	}
+}
+
+func (t agentSearchTool) ReadOnly() bool     { return true }
+func (t agentSearchTool) Capabilities() []string { return nil }
+
+func (t agentSearchTool) Run(ctx context.Context, call core.ToolCall) (core.ToolResult, error) {
+	if t.runner == nil {
+		return marshalError(call, "not_configured", "task runner is not configured")
+	}
+
+	type searchArgs struct {
+		Query string `json:"query"`
+	}
+	args, err := decodeInput[searchArgs](call)
+	if err != nil {
+		return marshalError(call, "invalid_input", err.Error())
+	}
+
+	query := strings.TrimSpace(args.Query)
+	if query == "" {
+		return marshalError(call, "invalid_input", "query is required")
+	}
+
+	// select:Name1,Name2 — exact name lookup
+	if strings.HasPrefix(query, "select:") {
+		return t.selectByName(ctx, call, strings.TrimPrefix(query, "select:"))
+	}
+
+	builtins := builtinAgentDefs()
+
+	// Load custom agent definitions from library
+	customDefs, err := t.runner.agentDefinitions.List(ctx)
+	if err != nil {
+		// Non-fatal: return builtins + error note
+		return t.renderResults(call, query, builtins, nil, fmt.Errorf("scan custom agents: %w", err))
+	}
+
+	return t.renderResults(call, query, builtins, customDefs, nil)
+}
+
+func (t agentSearchTool) selectByName(ctx context.Context, call core.ToolCall, names string) (core.ToolResult, error) {
+	wanted := make(map[string]bool)
+	for _, n := range strings.Split(names, ",") {
+		if trimmed := strings.TrimSpace(n); trimmed != "" {
+			wanted[trimmed] = true
+		}
+	}
+	if len(wanted) == 0 {
+		return marshalError(call, "invalid_input", "no names provided in select: query")
+	}
+
+	library := t.runner.agentDefinitions
+	if library == nil {
+		return marshalError(call, "not_found", "no agent definitions available")
+	}
+
+	allDefs, err := library.List(ctx)
+	if err != nil {
+		return marshalError(call, "lookup_failed", fmt.Sprintf("scan agents: %v", err))
+	}
+
+	var found []AgentDefinition
+	for _, def := range allDefs {
+		if wanted[def.Name] {
+			found = append(found, def)
+		}
+	}
+	// Also check built-in roles
+	for _, def := range builtinAgentDefs() {
+		if wanted[def.Name] {
+			found = append(found, def)
+		}
+	}
+
+	if len(found) == 0 {
+		text := "No agents found with the requested names. Use agent_search with a keyword to discover available agents."
+		return core.ToolResult{
+			ToolCallID: call.ID,
+			Name:       call.Name,
+			ModelText:  text,
+		}, nil
+	}
+
+	// Pass names (without "select:" prefix) as query so scoring works correctly.
+	return t.renderResults(call, names, nil, found, nil)
+}
+
+type agentMatch struct {
+	AgentDefinition
+	score int
+}
+
+func (t agentSearchTool) renderResults(call core.ToolCall, query string, builtins, customs []AgentDefinition, scanErr error) (core.ToolResult, error) {
+	query = strings.ToLower(strings.TrimSpace(query))
+	tokens := strings.Fields(query)
+
+	var matches []agentMatch
+	seen := map[string]bool{}
+
+	scoreFn := func(def AgentDefinition) int {
+		name := strings.ToLower(def.Name)
+		desc := strings.ToLower(def.Description)
+		when := strings.ToLower(def.WhenToUse)
+		score := 0
+		for _, tok := range tokens {
+			if name == tok {
+				score += 20
+			} else if strings.HasPrefix(name, tok) {
+				score += 12
+			} else if strings.Contains(name, tok) {
+				score += 8
+			}
+			if strings.Contains(desc, tok) {
+				score += 4
+			}
+			if strings.Contains(when, tok) {
+				score += 5
+			}
+		}
+		return score
+	}
+
+	for _, def := range builtins {
+		if seen[def.Name] {
+			continue
+		}
+		seen[def.Name] = true
+		if s := scoreFn(def); s > 0 {
+			matches = append(matches, agentMatch{AgentDefinition: def, score: s})
+		}
+	}
+	for _, def := range customs {
+		if seen[def.Name] {
+			continue
+		}
+		seen[def.Name] = true
+		if s := scoreFn(def); s > 0 {
+			matches = append(matches, agentMatch{AgentDefinition: def, score: s})
+		}
+	}
+
+	sort.SliceStable(matches, func(i, j int) bool {
+		if matches[i].score != matches[j].score {
+			return matches[i].score > matches[j].score
+		}
+		return matches[i].Name < matches[j].Name
+	})
+
+	const maxResults = 5
+	totalCustom := len(customs)
+	if len(matches) > maxResults {
+		matches = matches[:maxResults]
+	}
+
+	// All builtins are always available — note this only when no custom agents matched
+	if len(matches) == 0 && totalCustom == 0 && scanErr == nil {
+		return core.ToolResult{
+			ToolCallID: call.ID,
+			Name:       call.Name,
+			ModelText:  fmt.Sprintf("No custom agents matched %q. Built-in roles (explore, research, review) are always available — pass them directly to spawn_subagent. Try a different keyword or use select:Name to look up a specific custom agent.", query),
+		}, nil
+	}
+	if len(matches) == 0 && scanErr == nil {
+		return core.ToolResult{
+			ToolCallID: call.ID,
+			Name:       call.Name,
+			ModelText:  fmt.Sprintf("No agents matched %q. Built-in roles (explore, research, review) are always available. Try a different keyword.", query),
+		}, nil
+	}
+
+	var b strings.Builder
+	if scanErr != nil {
+		fmt.Fprintf(&b, "Note: could not scan custom agents (%v).\n\n", scanErr)
+	}
+	fmt.Fprintf(&b, "Matched %d agent(s) for %q:\n\n", len(matches), query)
+	for _, m := range matches {
+		fmt.Fprintf(&b, "- **%s**: %s\n", m.Name, m.Description)
+		if m.WhenToUse != "" {
+			fmt.Fprintf(&b, "  When to use: %s\n", m.WhenToUse)
+		}
+	}
+	if totalCustom > maxResults {
+		b.WriteString(fmt.Sprintf("\nShowing top %d of %d custom agents. Refine your query for more specific results. Built-in roles (explore, research, review) are always available.\n", maxResults, totalCustom))
+	} else {
+		b.WriteString("\nBuilt-in roles (explore, research, review) are always available.\n")
+	}
+	b.WriteString("\nIf an agent's \"When to use\" matches your task, spawn it — do not replicate its work with built-in tools.")
+
+	return core.ToolResult{
+		ToolCallID: call.ID,
+		Name:       call.Name,
+		ModelText:  b.String(),
+	}, nil
 }
