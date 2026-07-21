@@ -233,6 +233,9 @@ func (t spawnSubagentTool) RunWithProgress(ctx context.Context, call core.ToolCa
 		"duration_ms":        res.DurationMS,
 		"completed_at":       res.CompletedAt,
 	}
+	if res.ReportFile != "" {
+		data["report_file"] = res.ReportFile
+	}
 	if res.SubagentBudget.SpawnCount > 0 {
 		budget := map[string]any{
 			"spawn_count":  res.SubagentBudget.SpawnCount,
