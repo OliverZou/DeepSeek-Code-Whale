@@ -1,9 +1,7 @@
-package tools
-
+﻿package tools
 import (
 	"github.com/usewhale/whale/internal/core"
 )
-
 func (b *Toolset) Tools() []core.Tool {
 	tools := []core.Tool{}
 	tools = append(tools, b.fileDiscoveryTools()...)

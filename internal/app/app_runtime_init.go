@@ -130,7 +130,13 @@ func initAppRuntime(cfg Config, sessionInit appSessionInit, toolInit appToolInit
 		DefaultMaxToolIters:        tasks.DefaultMaxToolIters,
 		SummaryMaxChars:            tasks.DefaultSummaryMaxChar,
 		UsageLogPath:               filepath.Join(cfg.DataDir, "usage"),
-		ApprovalFunc:               approvalFunc,
+		VerifyCommands:             cfg.VerifyCommands,
+		VerifyTimeout:              cfg.VerifyTimeout,
+		VerifyTestCommands:         cfg.VerifyTestCommands,
+		VerifyTestTimeout:          cfg.VerifyTestTimeout,
+		GateReadBeforeEdit:         cfg.GateReadBeforeEdit,
+
+		ApprovalFunc: approvalFunc,
 	})
 	taskTools := tasks.NewTools(taskRunner)
 	goalTools := newGoalTools(cfg.DataDir, sessionInit.sessionsDir, parentSessionIDFunc)

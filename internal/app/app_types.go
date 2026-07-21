@@ -68,7 +68,13 @@ type Config struct {
 	AutoReviewAllowRules           []string
 	AutoReviewDenyRules            []string
 	AutoReviewEnvironment          []string
-	configDefaulted                bool
+	VerifyCommands                 []string
+	VerifyTimeout                  time.Duration
+	VerifyTestCommands             []string
+	VerifyTestTimeout              time.Duration
+	GateReadBeforeEdit             bool
+
+	configDefaulted bool
 }
 
 type MultimodalProviderConfig struct {

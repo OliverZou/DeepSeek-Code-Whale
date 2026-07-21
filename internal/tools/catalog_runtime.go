@@ -1,4 +1,4 @@
-package tools
+﻿package tools
 
 import (
 	"context"
@@ -10,7 +10,7 @@ func (b *Toolset) requestInputTools() []core.Tool {
 	return []core.Tool{
 		toolFn{
 			name:        "request_user_input",
-			description: "Request user input for one to three short questions and wait for the response. Use this for branch decisions and key assumptions. The UI will add a free-form \"None of the above\" option automatically — do not include an \"Other\" option in your list.",
+			description: "Request user input for one to three short questions and wait for the response. Use this for branch decisions and key assumptions. The UI will add a free-form \"None of the above\" option automatically 鈥?do not include an \"Other\" option in your list.",
 			parameters: map[string]any{
 				"type":                 "object",
 				"additionalProperties": false,

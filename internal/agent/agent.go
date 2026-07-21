@@ -1,12 +1,20 @@
 package agent
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/usewhale/whale/internal/core"
 	"github.com/usewhale/whale/internal/defaults"
@@ -57,6 +65,7 @@ const (
 	AgentEventTypePrefixCacheMetrics     AgentEventType = "prefix_cache_metrics"
 	AgentEventTypeUsage                  AgentEventType = "usage"
 	AgentEventTypeBudgetWarning          AgentEventType = "budget_warning"
+	AgentEventTypeTurnVerification       AgentEventType = "turn_verification"
 	AgentEventTypeTurnCancelled          AgentEventType = "turn_cancelled"
 	AgentEventTypeForcedSummaryStarted   AgentEventType = "forced_summary_started"
 	AgentEventTypeForcedSummaryDone      AgentEventType = "forced_summary_done"
@@ -130,33 +139,34 @@ type ToolPolicyDecision struct {
 }
 
 type AgentEvent struct {
-	Type           AgentEventType
-	Content        string
-	ReasoningDelta string
-	ToolArgs       *ToolArgsProgress
-	ToolArgsRepair *ToolArgsRepair
-	ToolBlocked    *ToolCallBlocked
-	Approval       *ToolApprovalRequired
-	ApprovalGrant  *ToolApprovalGranted
-	Scavenged      *ToolCallScavenged
-	Policy         *ToolPolicyDecision
-	Recovery       *ToolRecoveryInfo
-	ProviderRetry  *llmretry.Info
-	Compact        *CompactInfo
-	PrefixDrift    *PrefixDriftInfo
-	CacheMetrics   *PrefixCacheMetricsInfo
-	Usage          *UsageInfo
-	Budget         *BudgetWarningInfo
-	Hook           *HookEventInfo
-	Task           *TaskActivityInfo
-	PlanUpdate     *PlanUpdateInfo
-	Classifier     *ClassifierReviewEvent
-	ToolCall       *core.ToolCall
-	UserInputReq   *core.UserInputRequest
-	UserInputResp  *core.UserInputResponse
-	Result         *core.ToolResult
-	Message        *core.Message
-	Err            error
+	Type             AgentEventType
+	Content          string
+	ReasoningDelta   string
+	ToolArgs         *ToolArgsProgress
+	ToolArgsRepair   *ToolArgsRepair
+	ToolBlocked      *ToolCallBlocked
+	Approval         *ToolApprovalRequired
+	ApprovalGrant    *ToolApprovalGranted
+	Scavenged        *ToolCallScavenged
+	Policy           *ToolPolicyDecision
+	Recovery         *ToolRecoveryInfo
+	ProviderRetry    *llmretry.Info
+	Compact          *CompactInfo
+	PrefixDrift      *PrefixDriftInfo
+	CacheMetrics     *PrefixCacheMetricsInfo
+	Usage            *UsageInfo
+	Budget           *BudgetWarningInfo
+	Hook             *HookEventInfo
+	Task             *TaskActivityInfo
+	PlanUpdate       *PlanUpdateInfo
+	Classifier       *ClassifierReviewEvent
+	ToolCall         *core.ToolCall
+	UserInputReq     *core.UserInputRequest
+	UserInputResp    *core.UserInputResponse
+	Result           *core.ToolResult
+	Message          *core.Message
+	TurnVerification *string
+	Err              error
 }
 
 type PlanUpdateStep struct {
@@ -291,6 +301,141 @@ type Agent struct {
 	maxTurns               int
 	maxParallelSubagents   int
 	active                 sync.Map
+
+	// Turn-level state (P1/P2 discipline). Reset by resetTurnState at the
+	// start of every user turn. Agent is per-session; no sync needed.
+	filesReadThisTurn   map[string]bool // P1: read-before-edit gate tracking
+	dirtySinceVerify    bool            // P2: debounce flag for auto-verify (build/lint)
+	dirtySinceTurnTest  bool            // P2: turn-level test+review debounce
+	sourceFilesThisTurn map[string]bool // P2: source files mutated this turn (for test reminder)
+	testFilesThisTurn   map[string]bool // P2: test files mutated this turn (for test reminder)
+
+	// Agent-level configuration (set once, read-only after construction).
+	verifyCommands        []string      // P2: post-edit auto-verify commands (build+lint)
+	verifyTimeout         time.Duration // P2: auto-verify timeout
+	verifyReviewThreshold int           // P2: diff review prompt threshold
+	testCommands          []string      // P2: post-edit test commands
+	testTimeout           time.Duration // P2: test commands timeout
+	reviewAgentEnabled    bool          // P2: third-party review agent switch
+	reviewModel           string        // P2: review agent model (e.g. deepseek-v4-pro)
+	reviewAPIKey          string        // P2: review agent API key
+	reviewBaseURL         string        // P2: review agent API base URL
+	reviewClient          *http.Client  // P2: review agent HTTP client (lazy init)
+	reviewClientOnce      sync.Once     // P2: guards reviewClient initialization
+	gateReadBeforeEdit    bool          // P1: configurable gate switch
+
+	// Turn-level state for review agent.
+	lastUserInput string // P2: last user message text, for review agent context
+}
+
+// runTurnLevelVerification runs test and review agent once per turn,
+// after the LLM has finished responding. Results are persisted as a
+// tool message in the session history so the model sees them next turn.
+func (a *Agent) runTurnLevelVerification(ctx context.Context, sessionID string, emit func(AgentEvent) bool) {
+	type turnVerifyOut struct{ label, text string }
+	ch := make(chan turnVerifyOut, 2)
+
+	go func() {
+		if r := a.runAutoTest(ctx); r != "" {
+			ch <- turnVerifyOut{"test", r}
+		} else {
+			ch <- turnVerifyOut{}
+		}
+	}()
+	go func() {
+		if a.reviewAgentEnabled {
+			if diffText := a.collectTurnDiffText(sessionID); diffText != "" {
+				if r := a.runReviewAgent(ctx, diffText, a.lastUserInput); r != "" {
+					ch <- turnVerifyOut{"review", r}
+					return
+				}
+			}
+		}
+		ch <- turnVerifyOut{}
+	}()
+
+	var testText, reviewText string
+	for i := 0; i < 2; i++ {
+		select {
+		case out := <-ch:
+			switch out.label {
+			case "test":
+				testText = out.text
+			case "review":
+				reviewText = out.text
+			}
+		case <-ctx.Done():
+			return
+		}
+	}
+
+	merged := mergeVerificationResults("", testText, reviewText)
+	if merged == "" {
+		return
+	}
+
+	msg := core.TextMessage(sessionID, core.RoleTool, "--- Turn verification ---\n"+merged, false)
+	if _, err := a.store.Create(ctx, msg); err != nil {
+		return
+	}
+	emit(AgentEvent{Type: AgentEventTypeTurnVerification, TurnVerification: &merged})
+}
+
+// collectTurnDiffText gathers diff text from all mutation tool results
+// in the current turn's session history.
+func (a *Agent) collectTurnDiffText(sessionID string) string {
+	msgs, err := a.store.List(context.Background(), sessionID)
+	if err != nil {
+		return ""
+	}
+	var parts []string
+	for _, msg := range msgs {
+		if msg.Role != core.RoleTool {
+			continue
+		}
+		for _, tr := range msg.ToolResults {
+			if !isMutationTool(tr.Name) || tr.Outcome != core.OutcomeSuccess {
+				continue
+			}
+			if tr.Metadata == nil {
+				continue
+			}
+			kind, _ := tr.Metadata["kind"].(string)
+			if kind != "file_diff" {
+				continue
+			}
+			files, ok := tr.Metadata["files"].([]map[string]any)
+			if !ok {
+				continue
+			}
+			for _, fm := range files {
+				diff, _ := fm["unified_diff"].(string)
+				if diff != "" {
+					parts = append(parts, diff)
+				}
+			}
+		}
+	}
+	return strings.Join(parts, "\n")
+}
+
+// resetTurnState clears turn-level discipline state (except lastUserInput,
+// which is set separately from the user message). Called from the turn loop;
+// not safe for concurrent use across sessions (Agent is per-session).
+func (a *Agent) resetTurnState() {
+	if a.filesReadThisTurn == nil {
+		a.filesReadThisTurn = make(map[string]bool)
+	} else {
+		clear(a.filesReadThisTurn)
+	}
+	a.dirtySinceVerify = false
+	a.dirtySinceTurnTest = false
+	if a.sourceFilesThisTurn == nil {
+		a.sourceFilesThisTurn = make(map[string]bool)
+	} else {
+		clear(a.sourceFilesThisTurn)
+	}
+	a.testFilesThisTurn = make(map[string]bool)
 }
 
 type activeTurnState struct {
@@ -403,6 +548,9 @@ func NewAgentWithRegistry(provider llm.Provider, store store.MessageStore, tools
 		lifecycleCancel:        lifecycleCancel,
 		maxToolIters:           0, // 0 = unlimited: the interactive main agent is bounded by user cancellation, compaction, and the storm loop-guard (see maxConsecutiveStormRounds) — not by a round count. Subagents override via WithMaxToolIters.
 		maxParallelSubagents:   defaultMaxParallelSubagents(),
+		filesReadThisTurn:      make(map[string]bool),
+		sourceFilesThisTurn:    make(map[string]bool),
+		testFilesThisTurn:      make(map[string]bool),
 	}
 	for _, opt := range opts {
 		if opt != nil {
@@ -659,6 +807,344 @@ func WithClassifierConfig(cfg ClassifierConfig) AgentOption {
 	return func(a *Agent) {
 		a.classifier = NewClassifier(cfg)
 	}
+}
+
+type VerifyConfig struct {
+	Commands        []string
+	Timeout         time.Duration
+	ReviewThreshold int
+	TestCommands    []string
+	TestTimeout     time.Duration
+	ReviewAgent     bool
+	ReviewModel     string
+	ReviewAPIKey    string
+	ReviewBaseURL   string
+}
+
+func WithVerifyConfig(cfg VerifyConfig) AgentOption {
+	return func(a *Agent) {
+		a.verifyCommands = cfg.Commands
+		a.verifyTimeout = cfg.Timeout
+		a.verifyReviewThreshold = cfg.ReviewThreshold
+		a.testCommands = cfg.TestCommands
+		a.testTimeout = cfg.TestTimeout
+		a.reviewAgentEnabled = cfg.ReviewAgent
+		a.reviewModel = cfg.ReviewModel
+		a.reviewAPIKey = cfg.ReviewAPIKey
+		a.reviewBaseURL = cfg.ReviewBaseURL
+	}
+}
+
+// WithGateConfig sets the P1 read-before-edit gate configuration.
+// Defaults to true; set to false to disable.
+func WithGateConfig(readBeforeEdit bool) AgentOption {
+	return func(a *Agent) {
+		a.gateReadBeforeEdit = readBeforeEdit
+	}
+}
+
+const defaultVerifyTimeout = 30 * time.Second
+const defaultTestTimeout = 60 * time.Second
+const defaultVerifyReviewThreshold = 20
+const maxVerifyOutputBytes = 4096
+
+// runAutoVerify executes configured verification commands after file mutations.
+// Uses os/exec directly (no approval flow) with timeout and output truncation.
+// Auto-detected commands are skipped when their config files were modified
+// this turn to prevent privilege escalation (see autoDetectedConfigDirty).
+func (a *Agent) runAutoVerify(ctx context.Context) string {
+	return a.runCommands(ctx, a.resolveVerifyCommands(), a.verifyTimeout, defaultVerifyTimeout)
+}
+
+func (a *Agent) runAutoTest(ctx context.Context) string {
+	return a.runCommands(ctx, a.resolveTestCommands(), a.testTimeout, defaultTestTimeout)
+}
+
+func (a *Agent) runCommands(ctx context.Context, commands []string, timeout, defaultTimeout time.Duration) string {
+	if len(commands) == 0 {
+		return ""
+	}
+	if timeout == 0 {
+		timeout = defaultTimeout
+	}
+
+	var results []string
+	for _, cmd := range commands {
+		ctx, cancel := context.WithTimeout(ctx, timeout)
+		out, err := a.execVerifyCommand(ctx, cmd)
+		cancel()
+		if err != nil {
+			detail := strings.TrimSpace(out)
+			if detail != "" {
+				results = append(results, fmt.Sprintf("$ %s\n[error: %s]\n%s", cmd, err.Error(), truncateVerifyOutput(detail, maxVerifyOutputBytes)))
+			} else {
+				results = append(results, fmt.Sprintf("$ %s\n[error: %s]", cmd, err.Error()))
+			}
+		} else {
+			results = append(results, fmt.Sprintf("$ %s\n%s", cmd, truncateVerifyOutput(out, maxVerifyOutputBytes)))
+		}
+	}
+	return strings.Join(results, "\n\n")
+}
+
+func (a *Agent) execVerifyCommand(ctx context.Context, command string) (string, error) {
+	var cmd *exec.Cmd
+	if runtime.GOOS == "windows" {
+		cmd = exec.CommandContext(ctx, "cmd", "/d", "/c", command)
+	} else {
+		cmd = exec.CommandContext(ctx, "sh", "-c", command)
+	}
+	cmd.Dir = a.workspaceRoot
+	cmd.WaitDelay = 5 * time.Second
+	out, err := cmd.CombinedOutput()
+	return string(out), err
+}
+
+func truncateVerifyOutput(s string, maxBytes int) string {
+	if len(s) <= maxBytes {
+		return strings.TrimRight(s, " \t\r\n")
+	}
+	return strings.TrimRight(s[:maxBytes], " \t\r\n") + "\n... (output truncated)"
+}
+
+// resolveVerifyCommands returns configured verify commands, or auto-detected
+// commands if none are configured.
+func (a *Agent) resolveVerifyCommands() []string {
+	if len(a.verifyCommands) > 0 {
+		return a.verifyCommands
+	}
+	if a.workspaceRoot == "" {
+		return nil
+	}
+	if a.autoDetectedConfigDirty() {
+		return nil
+	}
+	return autoDetectVerifyCommands(a.workspaceRoot)
+}
+
+func (a *Agent) resolveTestCommands() []string {
+	if len(a.testCommands) > 0 {
+		return a.testCommands
+	}
+	return nil
+}
+
+// autoDetectedConfigDirty returns true if any file that auto-detection
+// reads (package.json, Makefile, go.mod, etc.) was modified in this turn.
+// This prevents a privilege escalation where the model writes a malicious
+// script into package.json and auto-verify executes it without approval.
+func (a *Agent) autoDetectedConfigDirty() bool {
+	configFiles := []string{
+		"package.json", "Makefile", "go.mod", "pyproject.toml",
+		"pytest.ini", "Cargo.toml",
+	}
+	for _, f := range configFiles {
+		absPath := normalizeWorkspacePath(f, a.workspaceRoot)
+		if a.filesReadThisTurn[absPath] {
+			return true
+		}
+	}
+	return false
+}
+
+func autoDetectTestCommands(workspaceRoot string) []string {
+	if fileExists(filepath.Join(workspaceRoot, "go.mod")) {
+		return []string{"go test ./... -count=1"}
+	}
+	pkgJSON := filepath.Join(workspaceRoot, "package.json")
+	if fileExists(pkgJSON) {
+		if hasNPMScript(pkgJSON, "test") {
+			return []string{"npm test"}
+		}
+	}
+	if fileExists(filepath.Join(workspaceRoot, "pyproject.toml")) || fileExists(filepath.Join(workspaceRoot, "pytest.ini")) {
+		return []string{"pytest -x -q"}
+	}
+	if fileExists(filepath.Join(workspaceRoot, "Cargo.toml")) {
+		return []string{"cargo test"}
+	}
+	if fileExists(filepath.Join(workspaceRoot, "Makefile")) {
+		if hasMakeTarget(workspaceRoot, "test") {
+			return []string{"make test"}
+		}
+	}
+	return nil
+}
+
+const reviewAgentMaxTokens = 4096
+const reviewAgentDefaultTimeout = 30 * time.Second
+
+func (a *Agent) runReviewAgent(ctx context.Context, diffText, userRequest string) string {
+	if !a.reviewAgentEnabled || strings.TrimSpace(diffText) == "" {
+		return ""
+	}
+	apiKey := strings.TrimSpace(os.Getenv("DEEPSEEK_API_KEY"))
+	if apiKey == "" {
+		apiKey = strings.TrimSpace(a.reviewAPIKey)
+	}
+	if apiKey == "" {
+		return ""
+	}
+	baseURL := strings.TrimSpace(os.Getenv("DEEPSEEK_BASE_URL"))
+	if baseURL == "" {
+		baseURL = strings.TrimSpace(a.reviewBaseURL)
+	}
+	if baseURL == "" {
+		baseURL = "https://api.deepseek.com"
+	}
+	model := strings.TrimSpace(a.reviewModel)
+	if model == "" {
+		model = defaults.DefaultModel
+	}
+
+	timeout := reviewAgentDefaultTimeout
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	userPrompt := buildReviewerPrompt(userRequest, diffText)
+	payload := map[string]any{
+		"model": model,
+		"messages": []map[string]string{
+			{"role": "system", "content": reviewerSystemPrompt},
+			{"role": "user", "content": userPrompt},
+		},
+		"max_tokens":  reviewAgentMaxTokens,
+		"temperature": 0,
+		"stream":      false,
+	}
+
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Sprintf("[review agent error: %s]", err.Error())
+	}
+
+	url := baseURL + "/chat/completions"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return fmt.Sprintf("[review agent error: %s]", err.Error())
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+
+	a.reviewClientOnce.Do(func() {
+		a.reviewClient = &http.Client{
+			Timeout: timeout + 5*time.Second,
+		}
+	})
+
+	resp, err := a.reviewClient.Do(req)
+	if err != nil {
+		return fmt.Sprintf("[review agent error: %s]", err.Error())
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Sprintf("[review agent error: %s]", err.Error())
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Sprintf("[review agent error: API returned %d]", resp.StatusCode)
+	}
+
+	var chatResp struct {
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal(respBody, &chatResp); err != nil {
+		return fmt.Sprintf("[review agent error: %s]", err.Error())
+	}
+	if len(chatResp.Choices) == 0 {
+		return "[review agent error: empty response]"
+	}
+
+	content := strings.TrimSpace(chatResp.Choices[0].Message.Content)
+	if content == "" {
+		return ""
+	}
+	return content
+}
+
+func autoDetectVerifyCommands(workspaceRoot string) []string {
+	if fileExists(filepath.Join(workspaceRoot, "go.mod")) {
+		return []string{"go build ./...", "go vet ./..."}
+	}
+	pkgJSON := filepath.Join(workspaceRoot, "package.json")
+	if fileExists(pkgJSON) {
+		var cmds []string
+		if hasNPMScript(pkgJSON, "build") {
+			cmds = append(cmds, "npm run build")
+		}
+		if hasNPMScript(pkgJSON, "lint") {
+			cmds = append(cmds, "npm run lint")
+		}
+		if len(cmds) > 0 {
+			return cmds
+		}
+	}
+	if fileExists(filepath.Join(workspaceRoot, "Cargo.toml")) {
+		return []string{"cargo check"}
+	}
+	if fileExists(filepath.Join(workspaceRoot, "pyproject.toml")) {
+		return []string{"ruff check ."}
+	}
+	if fileExists(filepath.Join(workspaceRoot, "pom.xml")) {
+		return []string{"mvn compile -q"}
+	}
+	if fileExists(filepath.Join(workspaceRoot, "build.gradle")) || fileExists(filepath.Join(workspaceRoot, "build.gradle.kts")) {
+		return []string{"gradle build -q"}
+	}
+	if fileExists(filepath.Join(workspaceRoot, "Makefile")) {
+		var cmds []string
+		if hasMakeTarget(workspaceRoot, "check") {
+			cmds = append(cmds, "make check")
+		}
+		if hasMakeTarget(workspaceRoot, "lint") {
+			cmds = append(cmds, "make lint")
+		}
+		if len(cmds) > 0 {
+			return cmds
+		}
+	}
+	return nil
+}
+
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}
+
+func hasNPMScript(pkgJSON, script string) bool {
+	data, err := os.ReadFile(pkgJSON)
+	if err != nil {
+		return false
+	}
+	var pkg struct {
+		Scripts map[string]string `json:"scripts"`
+	}
+	if err := json.Unmarshal(data, &pkg); err != nil {
+		return false
+	}
+	_, ok := pkg.Scripts[script]
+	return ok
+}
+
+func hasMakeTarget(workspaceRoot, target string) bool {
+	makefilePath := filepath.Join(workspaceRoot, "Makefile")
+	data, err := os.ReadFile(makefilePath)
+	if err != nil {
+		return false
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, target+":") || strings.HasPrefix(trimmed, target+" :") {
+			return true
+		}
+	}
+	return false
 }
 
 // Classifier returns the auto-review classifier for runtime toggle.

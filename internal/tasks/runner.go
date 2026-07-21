@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/usewhale/whale/internal/core"
 	"github.com/usewhale/whale/internal/defaults"
@@ -71,6 +72,11 @@ type RunnerConfig struct {
 	SummaryMaxChars            int
 	UsageLogPath               string
 	ApprovalFunc               policy.ApprovalFunc
+	VerifyCommands             []string
+	VerifyTimeout              time.Duration
+	VerifyTestCommands         []string
+	VerifyTestTimeout          time.Duration
+	GateReadBeforeEdit         bool
 }
 
 type Runner struct {
@@ -97,11 +103,17 @@ type Runner struct {
 	defaultMaxToolIters        int
 	summaryMaxChars            int
 	usageLogPath               string
-	approvalFunc               policy.ApprovalFunc
-	subagentBudgetMu           sync.Mutex
-	subagentBudget             SubagentBudget
-	backgroundMu               sync.Mutex
-	backgroundCancels          map[string]context.CancelFunc
+	verifyCommands             []string
+	verifyTimeout              time.Duration
+	testCommands               []string
+	testTimeout                time.Duration
+	gateReadBeforeEdit         bool
+
+	approvalFunc      policy.ApprovalFunc
+	subagentBudgetMu  sync.Mutex
+	subagentBudget    SubagentBudget
+	backgroundMu      sync.Mutex
+	backgroundCancels map[string]context.CancelFunc
 }
 
 func NewRunner(cfg RunnerConfig) *Runner {
@@ -146,7 +158,13 @@ func NewRunner(cfg RunnerConfig) *Runner {
 		summaryMaxChars:            summaryMaxChars,
 		usageLogPath:               strings.TrimSpace(cfg.UsageLogPath),
 		approvalFunc:               cfg.ApprovalFunc,
-		backgroundCancels:          map[string]context.CancelFunc{},
+		verifyCommands:    append([]string(nil), cfg.VerifyCommands...),
+		verifyTimeout:     cfg.VerifyTimeout,
+		testCommands:      append([]string(nil), cfg.VerifyTestCommands...),
+		testTimeout:       cfg.VerifyTestTimeout,
+		gateReadBeforeEdit: cfg.GateReadBeforeEdit,
+
+		backgroundCancels: map[string]context.CancelFunc{},
 	}
 }
 

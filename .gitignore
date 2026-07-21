@@ -68,6 +68,7 @@ promo/
 # --- Tool Artifacts ---
 .omx/
 LSP_REVIEW.md
-build_whale.bat
+/build_whale.bat
 bin/
 opencode.json
+/plan-agent-discipline.md

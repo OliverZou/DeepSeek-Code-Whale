@@ -139,6 +139,13 @@ func (a *App) ensureAgent() (*agent.Agent, error) {
 				return a.approvalFn(req)
 			}),
 			agent.WithUserInputFunc(a.userInput),
+			agent.WithVerifyConfig(agent.VerifyConfig{
+				Commands:     a.cfg.VerifyCommands,
+				Timeout:      a.cfg.VerifyTimeout,
+				TestCommands: a.cfg.VerifyTestCommands,
+				TestTimeout:  a.cfg.VerifyTestTimeout,
+			}),
+			agent.WithGateConfig(a.cfg.GateReadBeforeEdit),
 		)
 	}
 	return a.a, nil
