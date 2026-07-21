@@ -7,34 +7,45 @@ import (
 	"strings"
 )
 
-type verificationFinding struct {
-	severity  string
-	file      string
-	line      string
-	problem   string
-	fix       string
-	sources   []string
-	rawVerify string
-	rawTest   string
+// MergedVerification is the structured result of running verify + test + review.
+// RawText is the human-readable formatted output for injection into history.
+// Findings are parsed for programmatic decisions (P0/P1 check, flaky detection).
+type MergedVerification struct {
+	Passed   bool                  // true when no P0/P1 findings from own mutations
+	Findings []VerificationFinding // all findings, sorted by severity
+	RawText  string                // formatted text for history injection
+}
+
+// VerificationFinding represents one issue found by verify/test/review.
+type VerificationFinding struct {
+	Severity  string   // P0, P1, P2, P3
+	File      string   // affected file path
+	Line      string   // line number (may be "")
+	Problem   string   // one-line problem description
+	Fix       string   // suggested fix
+	Sources   []string // which sources found this: verify, test, review
+	Origin    string   // "own" for direct mutations, "subagent" for child agent mutations
+	rawVerify string   // raw verify output lines for this finding
+	rawTest   string   // raw test output lines for this finding
 }
 
 var findingRe = regexp.MustCompile(`FINDING \[(P[0-3])\]:\s*(\S+?)(?::(\d+))?\s*[—\-]+\s*(.+?)\s*[—\-]+\s*Fix:\s*(.+)`)
 
-func parseReviewFindings(reviewText string) []verificationFinding {
-	var findings []verificationFinding
+func parseReviewFindings(reviewText string) []VerificationFinding {
+	var findings []VerificationFinding
 	for _, line := range strings.Split(reviewText, "\n") {
 		line = strings.TrimSpace(line)
 		m := findingRe.FindStringSubmatch(line)
 		if m == nil {
 			continue
 		}
-		findings = append(findings, verificationFinding{
-			severity: m[1],
-			file:     m[2],
-			line:     m[3],
-			problem:  m[4],
-			fix:      m[5],
-			sources:  []string{"review"},
+		findings = append(findings, VerificationFinding{
+			Severity: m[1],
+			File:     m[2],
+			Line:     m[3],
+			Problem:  m[4],
+			Fix:      m[5],
+			Sources:  []string{"review"},
 		})
 	}
 	return findings
@@ -68,7 +79,10 @@ func extractFileRefs(text string) map[string]bool {
 	return refs
 }
 
-func mergeVerificationResults(verifyText, testText, reviewText string) string {
+// mergeVerificationResults parses verify/test/review outputs and merges them
+// into a structured MergedVerification. originFileMap maps file paths to their
+// mutation origin ("own" or "subagent"); files not in the map default to "own".
+func mergeVerificationResults(verifyText, testText, reviewText string, originFileMap map[string]bool) MergedVerification {
 	findings := parseReviewFindings(reviewText)
 
 	verifyRefs := extractFileRefs(verifyText)
@@ -76,26 +90,33 @@ func mergeVerificationResults(verifyText, testText, reviewText string) string {
 
 	for i := range findings {
 		f := &findings[i]
-		lowerFile := strings.ToLower(strings.ReplaceAll(f.file, `\`, "/"))
+		lowerFile := strings.ToLower(strings.ReplaceAll(f.File, `\`, "/"))
 		if verifyRefs[lowerFile] {
-			f.sources = append(f.sources, "verify")
-			f.rawVerify = extractLinesForFile(verifyText, f.file)
+			f.Sources = append(f.Sources, "verify")
+			f.rawVerify = extractLinesForFile(verifyText, f.File)
 		}
 		if testRefs[lowerFile] {
-			f.sources = append(f.sources, "test")
-			f.rawTest = extractLinesForFile(testText, f.file)
+			f.Sources = append(f.Sources, "test")
+			f.rawTest = extractLinesForFile(testText, f.File)
+		}
+		// Set origin: if file is in subagent map, mark as subagent
+		if originFileMap[lowerFile] {
+			f.Origin = "subagent"
+		} else {
+			f.Origin = "own"
 		}
 		delete(verifyRefs, lowerFile)
 		delete(testRefs, lowerFile)
 	}
 
 	for file := range verifyRefs {
-		findings = append(findings, verificationFinding{
-			severity:  "P0",
-			file:      file,
-			problem:   "build/lint error (no review finding matched)",
-			fix:       "see verify output below",
-			sources:   []string{"verify"},
+		findings = append(findings, VerificationFinding{
+			Severity:  "P0",
+			File:      file,
+			Problem:   "build/lint error (no review finding matched)",
+			Fix:       "see verify output below",
+			Sources:   []string{"verify"},
+			Origin:    "own",
 			rawVerify: extractLinesForFile(verifyText, file),
 		})
 	}
@@ -103,19 +124,20 @@ func mergeVerificationResults(verifyText, testText, reviewText string) string {
 		if verifyRefs[file] {
 			continue
 		}
-		findings = append(findings, verificationFinding{
-			severity: "P1",
-			file:     file,
-			problem:  "test failure (no review finding matched)",
-			fix:      "see test output below",
-			sources:  []string{"test"},
+		findings = append(findings, VerificationFinding{
+			Severity: "P1",
+			File:     file,
+			Problem:  "test failure (no review finding matched)",
+			Fix:      "see test output below",
+			Sources:  []string{"test"},
+			Origin:   "own",
 			rawTest:  extractLinesForFile(testText, file),
 		})
 	}
 
 	if len(findings) == 0 {
 		if strings.Contains(reviewText, "REVIEW: PASS") {
-			return "All checks passed."
+			return MergedVerification{Passed: true, RawText: "All checks passed."}
 		}
 		// Fallback: if verify or test produced output but no findings were
 		// extracted, return the raw output so the model can see failures.
@@ -129,21 +151,21 @@ func mergeVerificationResults(verifyText, testText, reviewText string) string {
 		if reviewText != "" {
 			parts = append(parts, "--- review output ---\n"+reviewText)
 		}
-		return strings.Join(parts, "\n\n")
+		return MergedVerification{Passed: true, RawText: strings.Join(parts, "\n\n")}
 	}
 
 	sort.Slice(findings, func(i, j int) bool {
-		return severityOrder(findings[i].severity) < severityOrder(findings[j].severity)
+		return severityOrder(findings[i].Severity) < severityOrder(findings[j].Severity)
 	})
 
 	var b strings.Builder
 	for i, f := range findings {
-		b.WriteString(fmt.Sprintf("#%d [%s] %s", i+1, f.severity, f.file))
-		if f.line != "" {
-			b.WriteString(fmt.Sprintf(":%s", f.line))
+		b.WriteString(fmt.Sprintf("#%d [%s] %s", i+1, f.Severity, f.File))
+		if f.Line != "" {
+			b.WriteString(fmt.Sprintf(":%s", f.Line))
 		}
-		b.WriteString(fmt.Sprintf(" — %s — Fix: %s\n", f.problem, f.fix))
-		b.WriteString(fmt.Sprintf("     sources: %s\n", strings.Join(f.sources, ", ")))
+		b.WriteString(fmt.Sprintf(" — %s — Fix: %s\n", f.Problem, f.Fix))
+		b.WriteString(fmt.Sprintf("     sources: %s\n", strings.Join(f.Sources, ", ")))
 		if f.rawVerify != "" {
 			for _, l := range strings.Split(f.rawVerify, "\n") {
 				if strings.TrimSpace(l) != "" {
@@ -159,7 +181,52 @@ func mergeVerificationResults(verifyText, testText, reviewText string) string {
 			}
 		}
 	}
-	return strings.TrimRight(b.String(), "\n")
+
+	passed := !hasP0P1FromOwn(findings)
+	return MergedVerification{Passed: passed, Findings: findings, RawText: strings.TrimRight(b.String(), "\n")}
+}
+
+// hasP0P1FromOwn reports whether findings include any P0 or P1 issues
+// that originate from the main agent's own mutations (not subagent).
+func hasP0P1FromOwn(findings []VerificationFinding) bool {
+	for _, f := range findings {
+		if f.Origin == "subagent" {
+			continue
+		}
+		if f.Severity == "P0" || f.Severity == "P1" {
+			return true
+		}
+	}
+	return false
+}
+
+// findingFingerprint returns a stable key for flaky-test detection.
+// Uses file + first 80 chars of problem text.
+func findingFingerprint(f VerificationFinding) string {
+	p := f.Problem
+	if len(p) > 80 {
+		p = p[:80]
+	}
+	return f.File + "\x00" + p
+}
+
+// fingerprintFindings returns a set of fingerprints for a slice of findings.
+func fingerprintFindings(findings []VerificationFinding) map[string]bool {
+	m := make(map[string]bool, len(findings))
+	for _, f := range findings {
+		m[findingFingerprint(f)] = true
+	}
+	return m
+}
+
+// anyRepeatedFindings reports whether any finding in current also appears in prev.
+func anyRepeatedFindings(current []VerificationFinding, prev map[string]bool) bool {
+	for _, f := range current {
+		if prev[findingFingerprint(f)] {
+			return true
+		}
+	}
+	return false
 }
 
 // TODO: Consider splitting on delimiter blocks instead of substring

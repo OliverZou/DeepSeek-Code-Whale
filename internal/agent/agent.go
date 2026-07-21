@@ -394,7 +394,7 @@ func DefaultVerifyLoopConfig() VerifyLoopConfig {
 // runTurnLevelVerification runs test and review agent once per turn,
 // after the LLM has finished responding. Results are persisted as a
 // tool message in the session history so the model sees them next turn.
-func (a *Agent) runTurnLevelVerification(ctx context.Context, sessionID string, emit func(AgentEvent) bool) {
+func (a *Agent) runTurnLevelVerification(ctx context.Context, sessionID string, emit func(AgentEvent) bool) MergedVerification {
 	type turnVerifyOut struct{ label, text string }
 	ch := make(chan turnVerifyOut, 2)
 
@@ -428,21 +428,23 @@ func (a *Agent) runTurnLevelVerification(ctx context.Context, sessionID string, 
 				reviewText = out.text
 			}
 		case <-ctx.Done():
-			return
+			return MergedVerification{}
 		}
 	}
 
-	merged := mergeVerificationResults("", testText, reviewText)
-	if merged == "" {
-		return
+	mv := mergeVerificationResults("", testText, reviewText, a.mutationsFromSubagent)
+	if mv.RawText == "" {
+		return mv
 	}
 
-	msg := core.TextMessage(sessionID, core.RoleTool, "--- Turn verification ---\n"+merged, false)
+	msg := core.TextMessage(sessionID, core.RoleTool, "--- Turn verification ---\n"+mv.RawText, false)
 	if _, err := a.store.Create(ctx, msg); err != nil {
-		return
+		return mv
 	}
-	emit(AgentEvent{Type: AgentEventTypeTurnVerification, TurnVerification: &merged})
+	emit(AgentEvent{Type: AgentEventTypeTurnVerification, TurnVerification: &mv.RawText})
+	return mv
 }
+
 
 // collectTurnDiffText gathers diff text from all mutation tool results
 // in the current turn's session history.
