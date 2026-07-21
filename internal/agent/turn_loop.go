@@ -284,23 +284,29 @@ func (a *Agent) runStreamWithNewMessages(ctx context.Context, sessionID string, 
 				// and a "redundant" round flagged by the progress guard (same
 				// target, varying args — e.g. re-reading one file with a stepping
 				// offset, which the storm breaker never sees).
-				stormRound := isAllStormBlocked(*toolMsg)
-				if stormRound {
-					consecutiveStormRounds++
-				} else {
-					consecutiveStormRounds = 0
-				}
-				readOnly := func(c core.ToolCall) bool {
-					spec, ok := toolSnapshot.Spec(c.Name)
-					if !ok {
-						return false
+				// Only track storm/redundant rounds outside verify-fix iterations.
+				// During verify-fix, the model legitimately re-reads and re-edits
+				// files in response to verification findings, which would trigger
+				// false positives on both detectors.
+				if !a.verifyFixIteration {
+					stormRound := isAllStormBlocked(*toolMsg)
+					if stormRound {
+						consecutiveStormRounds++
+					} else {
+						consecutiveStormRounds = 0
 					}
-					return core.IsReadOnlyToolCall(spec, c)
-				}
-				if progress.observe(assistant.ToolCalls, toolMsg.ToolResults, readOnly) {
-					consecutiveRedundantRounds++
-				} else {
-					consecutiveRedundantRounds = 0
+					readOnly := func(c core.ToolCall) bool {
+						spec, ok := toolSnapshot.Spec(c.Name)
+						if !ok {
+							return false
+						}
+						return core.IsReadOnlyToolCall(spec, c)
+					}
+					if progress.observe(assistant.ToolCalls, toolMsg.ToolResults, readOnly) {
+						consecutiveRedundantRounds++
+					} else {
+						consecutiveRedundantRounds = 0
+					}
 				}
 				loopDetected := consecutiveStormRounds >= maxConsecutiveStormRounds ||
 					consecutiveRedundantRounds >= maxConsecutiveRedundantRounds
@@ -467,7 +473,7 @@ func (a *Agent) runStreamWithNewMessages(ctx context.Context, sessionID string, 
 			// mutations. Runs verification, injects results, and re-enters the
 			// main loop so the model can respond to findings.
 			if a.verifyLoopConfig.Enabled && a.dirtySinceTurnTest && !a.verifyFixIteration {
-				headroom := a.estimateContextHeadroom(history, rt)
+				headroom := a.estimateContextHeadroom(rt)
 				maxRounds := a.verifyLoopConfig.MaxRounds
 				if headroom < maxRounds*2000 {
 					if headroom < 2000 {
@@ -617,7 +623,7 @@ func (a *Agent) runStreamWithNewMessages(ctx context.Context, sessionID string, 
 // the context window is full, used by the verify-fix loop to decide
 // whether there is space to inject verification results and re-enter the
 // main loop.
-func (a *Agent) estimateContextHeadroom(history []core.Message, rt *memory.RuntimeState) int {
+func (a *Agent) estimateContextHeadroom(rt *memory.RuntimeState) int {
 	current := compact.EstimateMessagesTokens(rt.BuildProviderHistory())
 	headroom := a.contextWindow - current
 	if headroom < 0 {
