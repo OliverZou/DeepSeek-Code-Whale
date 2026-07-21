@@ -66,6 +66,14 @@ const (
 	AgentEventTypeUsage                  AgentEventType = "usage"
 	AgentEventTypeBudgetWarning          AgentEventType = "budget_warning"
 	AgentEventTypeTurnVerification       AgentEventType = "turn_verification"
+
+	// Verify-feedback loop events (Feature A).
+	AgentEventTypeVerifyFixStarted     AgentEventType = "verify_fix_started"
+	AgentEventTypeVerifyFixRoundStart  AgentEventType = "verify_fix_round_start"
+	AgentEventTypeVerifyFixRoundResult AgentEventType = "verify_fix_round_result"
+	AgentEventTypeVerifyFixPassed      AgentEventType = "verify_fix_passed"
+	AgentEventTypeVerifyFixFailed      AgentEventType = "verify_fix_failed"
+	AgentEventTypeVerifyFixSkipped     AgentEventType = "verify_fix_skipped"
 	AgentEventTypeTurnCancelled          AgentEventType = "turn_cancelled"
 	AgentEventTypeForcedSummaryStarted   AgentEventType = "forced_summary_started"
 	AgentEventTypeForcedSummaryDone      AgentEventType = "forced_summary_done"
@@ -138,6 +146,15 @@ type ToolPolicyDecision struct {
 	MatchedRule   string
 }
 
+type VerifyFixInfo struct {
+	Round    int      // current round number (1-based)
+	MaxRound int      // configured max rounds
+	Passed   bool     // true when verification passes
+	Findings []string // finding summaries (one per P0/P1 finding)
+	Skipped  bool     // true when skipped (flaky, context, force summary)
+	Reason   string   // skip reason or "" if not skipped
+}
+
 type AgentEvent struct {
 	Type             AgentEventType
 	Content          string
@@ -166,6 +183,7 @@ type AgentEvent struct {
 	Result           *core.ToolResult
 	Message          *core.Message
 	TurnVerification *string
+	VerifyFix        *VerifyFixInfo
 	Err              error
 }
 
@@ -327,6 +345,50 @@ type Agent struct {
 	// Turn-level state for review agent.
 	lastUserInput string // P2: last user message text, for review agent context
 	lastAssistantText string // P4: last assistant reasoning text, for root cause cross-check
+
+	// Verify-feedback loop state (Feature A). Reset per turn.
+	verifyLoopConfig       VerifyLoopConfig // set once at construction, read-only
+	mutationsFromSubagent  map[string]bool  // file paths mutated by subagents (skip auto-fix)
+	verifyFixRound         int              // current verify-fix round (0 = not in loop)
+	verifyFixIteration     bool             // true when current main-loop iteration is a fix attempt
+	prevRoundFindings      map[string]bool  // fingerprint of previous round's findings (flaky detection)
+}
+
+// VerifyLoopConfig controls the verify-feedback loop (Feature A of
+// the agent-verify-feedback-loop design). Verification runs after the
+// model finishes its work but before the turn is declared Done, giving
+// the model a chance to fix issues in the same turn.
+type VerifyLoopConfig struct {
+	// Enabled toggles the verify-feedback loop. Default false — opt in.
+	Enabled bool
+	// MaxRounds caps verify-fix iterations. Default 1, max 3.
+	MaxRounds int
+	// SelfCheck enables the Pre-Done self-check nudge (Feature B).
+	SelfCheck bool
+	// PerRoundTimeout is the max time for one verification round (test + review agent).
+	// Default 120s.
+	PerRoundTimeout time.Duration
+	// TotalTimeout is the max time for the entire verify loop across all rounds.
+	// Default 300s.
+	TotalTimeout time.Duration
+	// DegradeOnFailure skips remaining rounds on review agent failure.
+	DegradeOnFailure bool
+	// IgnoreFlakyFindings skips repeated findings across consecutive rounds.
+	IgnoreFlakyFindings bool
+}
+
+// DefaultVerifyLoopConfig returns the default configuration: verify-feedback
+// loop is disabled (opt-in), max 1 round, self-check enabled.
+func DefaultVerifyLoopConfig() VerifyLoopConfig {
+	return VerifyLoopConfig{
+		Enabled:             false,
+		MaxRounds:           1,
+		SelfCheck:           true,
+		PerRoundTimeout:     120 * time.Second,
+		TotalTimeout:        300 * time.Second,
+		DegradeOnFailure:    true,
+		IgnoreFlakyFindings: true,
+	}
 }
 
 // runTurnLevelVerification runs test and review agent once per turn,
@@ -438,6 +500,10 @@ func (a *Agent) resetTurnState() {
 	}
 	a.testFilesThisTurn = make(map[string]bool)
 	a.lastAssistantText = ""
+	a.mutationsFromSubagent = make(map[string]bool)
+	a.verifyFixRound = 0
+	a.verifyFixIteration = false
+	a.prevRoundFindings = make(map[string]bool)
 }
 
 type activeTurnState struct {
@@ -553,6 +619,8 @@ func NewAgentWithRegistry(provider llm.Provider, store store.MessageStore, tools
 		filesReadThisTurn:      make(map[string]bool),
 		sourceFilesThisTurn:    make(map[string]bool),
 		testFilesThisTurn:      make(map[string]bool),
+		mutationsFromSubagent:  make(map[string]bool),
+		prevRoundFindings:      make(map[string]bool),
 	}
 	for _, opt := range opts {
 		if opt != nil {
@@ -808,6 +876,19 @@ func WithMaxParallelSubagents(maxParallel int) AgentOption {
 func WithClassifierConfig(cfg ClassifierConfig) AgentOption {
 	return func(a *Agent) {
 		a.classifier = NewClassifier(cfg)
+	}
+}
+
+// WithVerifyLoopConfig sets the verify-feedback loop configuration.
+func WithVerifyLoopConfig(cfg VerifyLoopConfig) AgentOption {
+	return func(a *Agent) {
+		if cfg.MaxRounds < 1 {
+			cfg.MaxRounds = 1
+		}
+		if cfg.MaxRounds > 3 {
+			cfg.MaxRounds = 3
+		}
+		a.verifyLoopConfig = cfg
 	}
 }
 
