@@ -2548,3 +2548,241 @@ func tc(name string, args map[string]any) core.ToolCall {
 	b, _ := json.Marshal(args)
 	return core.ToolCall{ID: name + "-" + time.Now().Format("150405.000000"), Name: name, Input: string(b)}
 }
+
+// --- agent_search tests ---
+
+func TestAgentSearchReturnsBuiltinRolesForKeyword(t *testing.T) {
+	library := NewAgentDefinitionLibraryWithRoots(nil)
+	r := NewRunner(RunnerConfig{AgentDefinitions: library})
+	tool := agentSearchTool{runner: r}
+
+	call := tc("agent_search", map[string]any{"query": "explore"})
+	res, err := tool.Run(context.Background(), call)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	// "explore" should match the explore builtin by exact name
+	if !strings.Contains(res.ModelText, "explore") {
+		t.Fatalf("expected 'explore' in results, got: %s", res.ModelText)
+	}
+}
+
+func TestAgentSearchKeywordReturnsTopMatches(t *testing.T) {
+	library := NewAgentDefinitionLibraryWithRoots(nil)
+	library.Definitions = []AgentDefinition{
+		{Name: "code-reviewer", Description: "Reviews code for bugs and style", WhenToUse: "Use for code review tasks"},
+		{Name: "security-auditor", Description: "Security audit specialist", WhenToUse: "Use for security audits"},
+		{Name: "test-writer", Description: "Writes unit tests", WhenToUse: "Use for writing Go tests"},
+	}
+	r := NewRunner(RunnerConfig{AgentDefinitions: library})
+	tool := agentSearchTool{runner: r}
+
+	call := tc("agent_search", map[string]any{"query": "review"})
+	res, err := tool.Run(context.Background(), call)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !strings.Contains(res.ModelText, "code-reviewer") {
+		t.Fatalf("expected 'code-reviewer' in results, got: %s", res.ModelText)
+	}
+}
+
+func TestAgentSearchSelectBuiltinRole(t *testing.T) {
+	library := NewAgentDefinitionLibraryWithRoots(nil)
+	r := NewRunner(RunnerConfig{AgentDefinitions: library})
+	tool := agentSearchTool{runner: r}
+
+	call := tc("agent_search", map[string]any{"query": "select:explore"})
+	res, err := tool.Run(context.Background(), call)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !strings.Contains(res.ModelText, "explore") {
+		t.Fatalf("expected 'explore' in select results, got: %s", res.ModelText)
+	}
+	if strings.Contains(res.ModelText, "No agents found") {
+		t.Fatalf("select:explore should match builtin, got error: %s", res.ModelText)
+	}
+}
+
+func TestAgentSearchSelectByName(t *testing.T) {
+	// Use a rootless library so we don't pick up user's home agents.
+	library := NewAgentDefinitionLibraryWithRoots(nil)
+	library.Definitions = []AgentDefinition{
+		{Name: "code-reviewer", Description: "Reviews code for bugs", WhenToUse: "Use for code review"},
+		{Name: "security-auditor", Description: "Security audit specialist", WhenToUse: "Use for security audits"},
+	}
+	r := NewRunner(RunnerConfig{AgentDefinitions: library})
+	tool := agentSearchTool{runner: r}
+
+	call := tc("agent_search", map[string]any{"query": "select:security-auditor"})
+	res, err := tool.Run(context.Background(), call)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !strings.Contains(res.ModelText, "security-auditor") {
+		t.Fatalf("expected 'security-auditor' in results, got: %s", res.ModelText)
+	}
+	if strings.Contains(res.ModelText, "code-reviewer") {
+		t.Fatalf("select should only return requested agent, got: %s", res.ModelText)
+	}
+	// Verify it's a real match, not a "no match" error that happens to echo the query
+	if strings.Contains(res.ModelText, "No agents matched") || strings.Contains(res.ModelText, "No custom agents matched") {
+		t.Fatalf("select should return actual match, got error: %s", res.ModelText)
+	}
+}
+
+func TestAgentSearchNoMatchSuggestsBuiltins(t *testing.T) {
+	// Use a rootless library so we don't pick up user's home agents.
+	library := NewAgentDefinitionLibraryWithRoots(nil)
+	r := NewRunner(RunnerConfig{AgentDefinitions: library})
+	tool := agentSearchTool{runner: r}
+
+	call := tc("agent_search", map[string]any{"query": "zzz_nonexistent_zzz"})
+	res, err := tool.Run(context.Background(), call)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !strings.Contains(res.ModelText, "No custom agents matched") {
+		t.Fatalf("expected 'No custom agents matched', got: %s", res.ModelText)
+	}
+	if !strings.Contains(res.ModelText, "explore") {
+		t.Fatalf("expected builtins mention, got: %s", res.ModelText)
+	}
+}
+
+func TestAgentSearchEmptyQuery(t *testing.T) {
+	library := NewAgentDefinitionLibraryWithRoots(nil)
+	r := NewRunner(RunnerConfig{AgentDefinitions: library})
+	tool := agentSearchTool{runner: r}
+
+	call := tc("agent_search", map[string]any{"query": ""})
+	_, err := tool.Run(context.Background(), call)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+}
+
+func TestAgentSearchToolSchema(t *testing.T) {
+	spec := core.DescribeTool(agentSearchTool{})
+	if spec.Name != "agent_search" {
+		t.Fatalf("expected agent_search, got %s", spec.Name)
+	}
+	props := spec.Parameters["properties"].(map[string]any)
+	if _, ok := props["query"]; !ok {
+		t.Fatalf("schema missing 'query' parameter")
+	}
+	if spec.Parameters["required"].([]string)[0] != "query" {
+		t.Fatalf("schema missing required 'query'")
+	}
+	if !spec.ReadOnly {
+		t.Fatalf("agent_search should be read-only")
+	}
+}
+
+func TestAgentSearchDescriptionMentionsBuiltins(t *testing.T) {
+	desc := agentSearchTool{}.Description()
+	if !strings.Contains(desc, "explore") || !strings.Contains(desc, "research") || !strings.Contains(desc, "review") {
+		t.Fatalf("description should mention built-in roles: %s", desc)
+	}
+	if !strings.Contains(desc, "spawn_subagent") {
+		t.Fatalf("description should mention spawn_subagent: %s", desc)
+	}
+}
+
+func TestAgentSearchMultiKeywordScoringOrder(t *testing.T) {
+	library := NewAgentDefinitionLibraryWithRoots(nil)
+	library.Definitions = []AgentDefinition{
+		{Name: "code-reviewer", Description: "Reviews code for bugs", WhenToUse: "Use for code review"},
+		{Name: "security-auditor", Description: "Security audit specialist", WhenToUse: "Use for security and code audits"},
+	}
+	r := NewRunner(RunnerConfig{AgentDefinitions: library})
+	tool := agentSearchTool{runner: r}
+
+	// "security review": security-auditor matches both tokens (name=security, desc/when=review),
+	// code-reviewer matches only "review". security-auditor should rank first.
+	call := tc("agent_search", map[string]any{"query": "security review"})
+	res, err := tool.Run(context.Background(), call)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	secIdx := strings.Index(res.ModelText, "security-auditor")
+	codeIdx := strings.Index(res.ModelText, "code-reviewer")
+	if secIdx < 0 || codeIdx < 0 {
+		t.Fatalf("expected both agents in results, got: %s", res.ModelText)
+	}
+	if secIdx > codeIdx {
+		t.Fatalf("security-auditor should rank before code-reviewer for 'security review', got: %s", res.ModelText)
+	}
+}
+
+func TestAgentSearchTop5Truncation(t *testing.T) {
+	library := NewAgentDefinitionLibraryWithRoots(nil)
+	defs := make([]AgentDefinition, 10)
+	for i := 0; i < 10; i++ {
+		defs[i] = AgentDefinition{
+			Name:        fmt.Sprintf("agent-%d", i),
+			Description: "test truncation agent",
+			WhenToUse:   "test use case",
+		}
+	}
+	library.Definitions = defs
+	r := NewRunner(RunnerConfig{AgentDefinitions: library})
+	tool := agentSearchTool{runner: r}
+
+	call := tc("agent_search", map[string]any{"query": "test"})
+	res, err := tool.Run(context.Background(), call)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !strings.Contains(res.ModelText, "Showing top 5 of 10") {
+		t.Fatalf("expected truncation hint, got: %s", res.ModelText)
+	}
+}
+
+func TestAgentSearchSelectMultiName(t *testing.T) {
+	library := NewAgentDefinitionLibraryWithRoots(nil)
+	library.Definitions = []AgentDefinition{
+		{Name: "code-reviewer", Description: "Reviews code for bugs", WhenToUse: "Use for code review"},
+		{Name: "security-auditor", Description: "Security audit specialist", WhenToUse: "Use for security audits"},
+		{Name: "test-writer", Description: "Writes unit tests", WhenToUse: "Use for writing Go tests"},
+	}
+	r := NewRunner(RunnerConfig{AgentDefinitions: library})
+	tool := agentSearchTool{runner: r}
+
+	call := tc("agent_search", map[string]any{"query": "select:security-auditor,code-reviewer"})
+	res, err := tool.Run(context.Background(), call)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !strings.Contains(res.ModelText, "security-auditor") {
+		t.Fatalf("expected security-auditor in results, got: %s", res.ModelText)
+	}
+	if !strings.Contains(res.ModelText, "code-reviewer") {
+		t.Fatalf("expected code-reviewer in results, got: %s", res.ModelText)
+	}
+	if strings.Contains(res.ModelText, "test-writer") {
+		t.Fatalf("test-writer should not be in results, got: %s", res.ModelText)
+	}
+}
+
+func TestAgentSearchCustomShadowsBuiltin(t *testing.T) {
+	library := NewAgentDefinitionLibraryWithRoots(nil)
+	library.Definitions = []AgentDefinition{
+		{Name: "review", Description: "Custom code review agent with extra rules", WhenToUse: "Use for custom code review with project-specific rules"},
+	}
+	r := NewRunner(RunnerConfig{AgentDefinitions: library})
+	tool := agentSearchTool{runner: r}
+
+	call := tc("agent_search", map[string]any{"query": "review"})
+	res, err := tool.Run(context.Background(), call)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !strings.Contains(res.ModelText, "Custom code review agent") {
+		t.Fatalf("custom review should shadow builtin, got: %s", res.ModelText)
+	}
+	if strings.Contains(res.ModelText, "Read-only review child agent") {
+		t.Fatalf("builtin review description should not appear when custom shadows it, got: %s", res.ModelText)
+	}
+}
