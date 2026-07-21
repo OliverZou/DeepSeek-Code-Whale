@@ -326,6 +326,7 @@ type Agent struct {
 
 	// Turn-level state for review agent.
 	lastUserInput string // P2: last user message text, for review agent context
+	lastAssistantText string // P4: last assistant reasoning text, for root cause cross-check
 }
 
 // runTurnLevelVerification runs test and review agent once per turn,
@@ -436,6 +437,7 @@ func (a *Agent) resetTurnState() {
 		clear(a.sourceFilesThisTurn)
 	}
 	a.testFilesThisTurn = make(map[string]bool)
+	a.lastAssistantText = ""
 }
 
 type activeTurnState struct {
@@ -843,6 +845,19 @@ func WithGateConfig(readBeforeEdit bool) AgentOption {
 	}
 }
 
+// WithReadFiles seeds the P1 read-before-edit file tracker with files
+// that were already read by a parent context (e.g. a parent agent).
+func WithReadFiles(files map[string]bool) AgentOption {
+	return func(a *Agent) {
+		if a.filesReadThisTurn == nil {
+			a.filesReadThisTurn = make(map[string]bool)
+		}
+		for f := range files {
+			a.filesReadThisTurn[f] = true
+		}
+	}
+}
+
 const defaultVerifyTimeout = 30 * time.Second
 const defaultTestTimeout = 60 * time.Second
 const defaultVerifyReviewThreshold = 20
@@ -851,7 +866,8 @@ const maxVerifyOutputBytes = 4096
 // runAutoVerify executes configured verification commands after file mutations.
 // Uses os/exec directly (no approval flow) with timeout and output truncation.
 // Auto-detected commands are skipped when their config files were modified
-// this turn to prevent privilege escalation (see autoDetectedConfigDirty).
+// this turn. Commands that depend on modified config files are
+// skipped individually (see cmdDependsOnDirtyConfig).
 func (a *Agent) runAutoVerify(ctx context.Context) string {
 	return a.runCommands(ctx, a.resolveVerifyCommands(), a.verifyTimeout, defaultVerifyTimeout)
 }
@@ -908,7 +924,8 @@ func truncateVerifyOutput(s string, maxBytes int) string {
 }
 
 // resolveVerifyCommands returns configured verify commands, or auto-detected
-// commands if none are configured.
+// commands if none are configured. Commands that depend on a config file
+// modified this turn are skipped individually.
 func (a *Agent) resolveVerifyCommands() []string {
 	if len(a.verifyCommands) > 0 {
 		return a.verifyCommands
@@ -916,10 +933,18 @@ func (a *Agent) resolveVerifyCommands() []string {
 	if a.workspaceRoot == "" {
 		return nil
 	}
-	if a.autoDetectedConfigDirty() {
+	cmds := autoDetectVerifyCommands(a.workspaceRoot)
+	if cmds == nil {
 		return nil
 	}
-	return autoDetectVerifyCommands(a.workspaceRoot)
+	dirty := a.dirtyConfigFiles()
+	var safe []string
+	for _, cmd := range cmds {
+		if !cmdDependsOnDirtyConfig(cmd, dirty) {
+			safe = append(safe, cmd)
+		}
+	}
+	return safe
 }
 
 func (a *Agent) resolveTestCommands() []string {
@@ -929,20 +954,35 @@ func (a *Agent) resolveTestCommands() []string {
 	return nil
 }
 
-// autoDetectedConfigDirty returns true if any file that auto-detection
-// reads (package.json, Makefile, go.mod, etc.) was modified in this turn.
-// This prevents a privilege escalation where the model writes a malicious
-// script into package.json and auto-verify executes it without approval.
-func (a *Agent) autoDetectedConfigDirty() bool {
-	configFiles := []string{
-		"package.json", "Makefile", "go.mod", "pyproject.toml",
-		"pytest.ini", "Cargo.toml",
-	}
+// dirtyConfigFiles returns which auto-detection config files were modified this turn.
+func (a *Agent) dirtyConfigFiles() map[string]bool {
+	configFiles := []string{"package.json", "Makefile", "go.mod", "pyproject.toml",
+		"pytest.ini", "Cargo.toml"}
+	dirty := make(map[string]bool)
 	for _, f := range configFiles {
-		absPath := normalizeWorkspacePath(f, a.workspaceRoot)
-		if a.filesReadThisTurn[absPath] {
-			return true
+		if a.filesReadThisTurn[normalizeWorkspacePath(f, a.workspaceRoot)] {
+			dirty[f] = true
 		}
+	}
+	return dirty
+}
+
+// cmdDependsOnDirtyConfig returns true when cmd uses a config file that was modified.
+func cmdDependsOnDirtyConfig(cmd string, dirty map[string]bool) bool {
+	if dirty["go.mod"] && (strings.Contains(cmd, "go build") || strings.Contains(cmd, "go vet") || strings.Contains(cmd, "go test")) {
+		return true
+	}
+	if dirty["package.json"] && strings.Contains(cmd, "npm run") {
+		return true
+	}
+	if dirty["Cargo.toml"] && strings.Contains(cmd, "cargo") {
+		return true
+	}
+	if dirty["pyproject.toml"] && strings.Contains(cmd, "ruff") {
+		return true
+	}
+	if dirty["Makefile"] && strings.Contains(cmd, "make ") {
+		return true
 	}
 	return false
 }

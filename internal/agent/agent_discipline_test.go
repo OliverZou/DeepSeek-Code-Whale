@@ -274,7 +274,7 @@ func TestWithVerifyConfig(t *testing.T) {
 
 func TestRenderMinimalChangeBlock(t *testing.T) {
 	b := renderMinimalChangeBlock()
-	for _, w := range []string{"Minimal change", "traceable", "Do not refactor", "50 lines"} {
+	for _, w := range []string{"Minimal change", "traceable", "Do not refactor", "50 lines", "root cause", "cross-check the files"} {
 		if !strings.Contains(b, w) {
 			t.Errorf("missing: %q", w)
 		}
@@ -557,6 +557,7 @@ func TestDisciplineGateIntegration(t *testing.T) {
 	}
 
 	// Step 3: edit on unread file is blocked
+	os.WriteFile(filepath.Join(dir, "other.go"), []byte("package other\n"), 0644)
 	var r2 []core.ToolResult
 	if !a.checkReadBeforeEditGate(context.Background(), sc, tc("edit", map[string]any{"file_path": "other.go"}), &r2) {
 		t.Fatal("edit on unread file must be blocked")
@@ -591,3 +592,81 @@ func TestDisciplineGateIntegration(t *testing.T) {
 		t.Fatalf("wrong code after reset: %q", r5[0].Code)
 	}
 }
+
+// --- Enhanced P4: parseBuildErrors ---
+
+func TestParseBuildErrors(t *testing.T) {
+	input := "foo.go:15:2: undefined: result\nbar.go:42:1: cannot use x as string\nregular output line"
+	result := parseBuildErrors(input)
+	if !strings.Contains(result, "#1 [P0] foo.go:15") || !strings.Contains(result, "undefined: result") {
+		t.Fatalf("missing parsed error #1:\n%s", result)
+	}
+	if !strings.Contains(result, "#2 [P0] bar.go:42") || !strings.Contains(result, "cannot use x as string") {
+		t.Fatalf("missing parsed error #2:\n%s", result)
+	}
+	if !strings.Contains(result, "regular output line") {
+		t.Fatalf("missing unparsed line:\n%s", result)
+	}
+}
+
+// --- Enhanced P2: cmdDependsOnDirtyConfig ---
+
+func TestCmdDependsOnDirtyConfig(t *testing.T) {
+	tests := []struct {
+		cmd   string
+		dirty map[string]bool
+		want  bool
+	}{
+		{"go build ./...", map[string]bool{"go.mod": true}, true},
+		{"go vet ./...", map[string]bool{"go.mod": true}, true},
+		{"go test ./...", map[string]bool{"go.mod": true}, true},
+		{"go build ./...", map[string]bool{"package.json": true}, false},
+		{"npm run build", map[string]bool{"package.json": true}, true},
+		{"npm run lint", map[string]bool{"go.mod": true}, false},
+		{"cargo check", map[string]bool{"Cargo.toml": true}, true},
+		{"cargo test", map[string]bool{"Cargo.toml": true}, true},
+		{"ruff check .", map[string]bool{"pyproject.toml": true}, true},
+		{"make check", map[string]bool{"Makefile": true}, true},
+		{"pytest -x -q", map[string]bool{"pytest.ini": true}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.cmd, func(t *testing.T) {
+			if got := cmdDependsOnDirtyConfig(tt.cmd, tt.dirty); got != tt.want {
+				t.Errorf("%q with dirty=%v = %v, want %v", tt.cmd, tt.dirty, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestDirtyConfigFiles(t *testing.T) {
+	dir := t.TempDir()
+	a := &Agent{workspaceRoot: dir, filesReadThisTurn: map[string]bool{
+		normalizeWorkspacePath("go.mod", dir): true,
+	}}
+	dirty := a.dirtyConfigFiles()
+	if !dirty["go.mod"] {
+		t.Fatal("go.mod should be dirty")
+	}
+	if dirty["package.json"] {
+		t.Fatal("package.json should not be dirty")
+	}
+}
+
+// --- Enhanced P1: WithReadFiles ---
+
+func TestWithReadFiles(t *testing.T) {
+	dir := t.TempDir()
+	opt := WithReadFiles(map[string]bool{
+		normalizeWorkspacePath("a.go", dir): true,
+		normalizeWorkspacePath("b.go", dir): true,
+	})
+	a := &Agent{workspaceRoot: dir}
+	opt(a)
+	if len(a.filesReadThisTurn) != 2 {
+		t.Fatalf("expected 2 files, got %d", len(a.filesReadThisTurn))
+	}
+	if !a.filesReadThisTurn[normalizeWorkspacePath("a.go", dir)] {
+		t.Fatal("a.go not tracked")
+	}
+}
+

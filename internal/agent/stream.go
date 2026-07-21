@@ -2,6 +2,8 @@ package agent
 
 import (
 	"context"
+	"path/filepath"
+	"regexp"
 	"encoding/json"
 	"fmt"
 	"sort"
@@ -225,6 +227,86 @@ func (a *Agent) dispatchParallelToolCallsWithRecovery(ctx context.Context, sessi
 	return outcomes, nil
 }
 
+// extractAnalysisFiles parses the model's <analysis> block to find
+// file names mentioned in the root_cause field.
+func extractAnalysisFiles(assistantText string) map[string]bool {
+	const openTag = "<analysis>"
+	const closeTag = "</analysis>"
+	start := strings.Index(assistantText, openTag)
+	if start == -1 {
+		return nil
+	}
+	end := strings.Index(assistantText[start:], closeTag)
+	if end == -1 {
+		return nil
+	}
+	block := assistantText[start+len(openTag) : start+end]
+	files := make(map[string]bool)
+	// Match file-like patterns: *.go, *.rs, *.py, etc.
+	re := regexp.MustCompile(`[\w./-]+\.(go|rs|py|ts|js|tsx|jsx|toml|json|yaml|yml|mod|sum)`)
+	for _, m := range re.FindAllString(block, -1) {
+		base := filepath.Base(m)
+		if base != "." && base != ".." {
+			files[strings.ToLower(base)] = true
+		}
+	}
+	return files
+}
+
+// extractDiffFiles extracts the set of files touched in a tool result's diff.
+func extractDiffFiles(res core.ToolResult) map[string]bool {
+	if res.Metadata == nil {
+		return nil
+	}
+	kind, _ := res.Metadata["kind"].(string)
+	if kind != "file_diff" {
+		return nil
+	}
+	files, ok := res.Metadata["files"].([]map[string]any)
+	if !ok {
+		return nil
+	}
+	result := make(map[string]bool)
+	for _, fm := range files {
+		if f, ok := fm["file"].(string); ok && f != "" {
+			result[strings.ToLower(filepath.Base(f))] = true
+		}
+	}
+	return result
+}
+
+// analysisDiffMismatch checks whether files mentioned in the model's root
+// cause analysis overlap with files actually changed in the diff. Returns
+// a warning message if there is no overlap.
+func analysisDiffMismatch(assistantText string, res core.ToolResult) string {
+	analysisFiles := extractAnalysisFiles(assistantText)
+	if len(analysisFiles) == 0 {
+		return ""
+	}
+	diffFiles := extractDiffFiles(res)
+	if len(diffFiles) == 0 {
+		return ""
+	}
+	// Check for any overlap
+	for f := range analysisFiles {
+		if diffFiles[f] {
+			return "" // match found
+		}
+	}
+	// No overlap - construct warning
+	var af, df []string
+	for f := range analysisFiles {
+		af = append(af, f)
+	}
+	for f := range diffFiles {
+		df = append(df, f)
+	}
+	sort.Strings(af)
+	sort.Strings(df)
+	return fmt.Sprintf("\n\n⚠ Analysis-diff mismatch: your analysis mentions %s, but your changes are in %s. Does the change still address the root cause?", strings.Join(af, ", "), strings.Join(df, ", "))
+}
+
+
 func (a *Agent) appendDispatchedToolResult(ctx context.Context, sessionID string, prepared preparedToolDispatch, finalRes core.ToolResult, primarySucceeded bool, events chan<- AgentEvent, results *[]core.ToolResult, requireEventDelivery bool) bool {
 	emit := func(ev AgentEvent) bool {
 		return sendAgentEvent(ctx, events, ev)
@@ -271,11 +353,19 @@ func (a *Agent) appendDispatchedToolResult(ctx context.Context, sessionID string
 				"\n\n--- Change summary ---\n%d additions, %d deletions. Verify: (1) every change traces to the user's request, (2) no unrelated refactoring, (3) no missing error handling for new paths.",
 				additions, deletions,
 			)
+			// P4: cross-check root cause analysis against actual diff
+			if mismatch := analysisDiffMismatch(a.lastAssistantText, finalRes); mismatch != "" {
+				finalRes.ModelText += mismatch
+			}
 		} else if additions+deletions > 0 {
 			finalRes.ModelText += fmt.Sprintf(
 				"\n\n--- Self-review ---\n%d additions, %d deletions. Confirm every change traces to the user's request.",
 				additions, deletions,
 			)
+			// P4: cross-check root cause analysis against actual diff
+			if mismatch := analysisDiffMismatch(a.lastAssistantText, finalRes); mismatch != "" {
+				finalRes.ModelText += mismatch
+			}
 		}
 	}
 	// Parallel spawn_subagent batches run post hooks only after the whole batch
