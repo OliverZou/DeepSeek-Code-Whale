@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/usewhale/whale/internal/compact"
@@ -444,24 +445,183 @@ func (a *Agent) runStreamWithNewMessages(ctx context.Context, sessionID string, 
 				}
 				continue
 			}
-			// Plan-as-reply finalization: in Plan mode the assistant's final
-			// answer IS the plan. A turn that ends with text (rather than a tool
-			// call such as request_user_input) is an approvable plan, so emit
-			// PlanCompleted to open the implementation gate. An empty final turn
-			// yields no plan — the user can simply ask again — matching reasonix.
-			if a.mode == session.ModePlan && strings.TrimSpace(assistant.Text) != "" {
-				emit(AgentEvent{Type: AgentEventTypePlanCompleted, Content: assistant.Text})
+			// === Turn finalization with verify-feedback loop (Feature A+B) ===
+
+			// Feature B: Pre-Done self-check nudge.
+			if a.verifyLoopConfig.SelfCheck && strings.TrimSpace(assistant.Text) != "" {
+				nudge := a.buildSelfCheckNudge()
+				assistant.Text = strings.TrimSpace(assistant.Text) + "\n\n" + nudge
 			}
-			// P2: turn-level test + review agent. Runs once after the turn
-			// completes, not per dispatch batch (too expensive/slow).
-			if a.dirtySinceTurnTest {
-				a.runTurnLevelVerification(ctx, sessionID, emit)
-				a.dirtySinceTurnTest = false
+
+			// finalizeAndDone emits the PlanCompleted (if applicable) and Done events.
+			// All verify-fix exit paths call this before returning.
+			finalizeAndDone := func() {
+				if a.mode == session.ModePlan && strings.TrimSpace(assistant.Text) != "" {
+					emit(AgentEvent{Type: AgentEventTypePlanCompleted, Content: assistant.Text})
+				}
+				emit(AgentEvent{Type: AgentEventTypeDone, Message: &assistant})
 			}
-			emit(AgentEvent{Type: AgentEventTypeDone, Message: &assistant})
+
+			// Feature A: Verify-feedback loop entry point.
+			// Triggered when the model produces text (not tool calls) after
+			// mutations. Runs verification, injects results, and re-enters the
+			// main loop so the model can respond to findings.
+			if a.verifyLoopConfig.Enabled && a.dirtySinceTurnTest && !a.verifyFixIteration {
+				headroom := a.estimateContextHeadroom(history, rt)
+				maxRounds := a.verifyLoopConfig.MaxRounds
+				if headroom < maxRounds*2000 {
+					if headroom < 2000 {
+						// Not enough for even 1 round; skip verification.
+						emit(AgentEvent{
+							Type: AgentEventTypeVerifyFixSkipped,
+							VerifyFix: &VerifyFixInfo{Skipped: true, Reason: "insufficient context headroom"},
+						})
+						finalizeAndDone()
+						return
+					}
+					maxRounds = headroom / 2000
+				}
+
+				// Run verification.
+				emit(AgentEvent{Type: AgentEventTypeVerifyFixStarted})
+				mv := a.runTurnLevelVerification(ctx, sessionID, emit)
+				if mv.RawText != "" {
+					emit(AgentEvent{Type: AgentEventTypeTurnVerification, TurnVerification: &mv.RawText})
+				}
+
+				if mv.Passed || !hasP0P1FromOwn(mv.Findings) {
+					// All clear.
+					emit(AgentEvent{Type: AgentEventTypeVerifyFixPassed})
+					if mv.RawText != "" && mv.RawText != "All checks passed." {
+						msg := core.TextMessage(sessionID, core.RoleTool, "--- Turn verification ---\n"+mv.RawText, false)
+						a.store.Create(ctx, msg)
+					}
+					finalizeAndDone()
+					return
+				}
+
+				// Check for flaky findings.
+				if a.verifyLoopConfig.IgnoreFlakyFindings && anyRepeatedFindings(mv.Findings, a.prevRoundFindings) {
+					emit(AgentEvent{
+						Type: AgentEventTypeVerifyFixSkipped,
+						VerifyFix: &VerifyFixInfo{Skipped: true, Reason: "repeated findings — possible flaky test or pre-existing issue"},
+					})
+					// Still persist results so the user sees them.
+					msg := core.TextMessage(sessionID, core.RoleTool, "--- Turn verification (skipped auto-fix) ---\n"+mv.RawText, false)
+					a.store.Create(ctx, msg)
+					finalizeAndDone()
+					return
+				}
+				a.prevRoundFindings = fingerprintFindings(mv.Findings)
+
+				// Inject verification results and re-enter the main loop.
+				msg := core.TextMessage(sessionID, core.RoleTool, "--- Turn verification ---\n"+mv.RawText, false)
+				created, err := a.store.Create(ctx, msg)
+				if err != nil {
+					emit(AgentEvent{Type: AgentEventTypeError, Err: err})
+					return
+				}
+				rt.Log.Append(created)
+				history = append(history, created)
+				rt.Log.Append(assistant)
+				history = append(history, assistant)
+
+				a.verifyFixIteration = true
+				a.verifyFixRound = 1
+				emit(AgentEvent{
+					Type: AgentEventTypeVerifyFixRoundStart,
+					VerifyFix: &VerifyFixInfo{Round: 1, MaxRound: maxRounds},
+				})
+
+				if !emit(AgentEvent{Type: AgentEventTypeResponseReset}) {
+					return
+				}
+				continue
+			}
+
+			// Handle verify-fix iteration: model responded to verification results.
+			// The tool-use branch above handles tool dispatch and continues the
+			// loop. This block is reached when the model produces text, signaling
+			// completion of its fix attempts. Re-run verification to check if the
+			// fixes resolved the issues.
+			if a.verifyFixIteration {
+				mv := a.runTurnLevelVerification(ctx, sessionID, emit)
+				if mv.RawText != "" {
+					emit(AgentEvent{Type: AgentEventTypeTurnVerification, TurnVerification: &mv.RawText})
+				}
+
+				if mv.Passed || !hasP0P1FromOwn(mv.Findings) {
+					// Fixes succeeded.
+					emit(AgentEvent{Type: AgentEventTypeVerifyFixPassed})
+					if mv.RawText != "" && mv.RawText != "All checks passed." {
+						msg := core.TextMessage(sessionID, core.RoleTool, "--- Turn verification ---\n"+mv.RawText, false)
+						a.store.Create(ctx, msg)
+					}
+					finalizeAndDone()
+					return
+				}
+
+				// Still failing after this round. Check round cap.
+				if a.verifyFixRound >= a.verifyLoopConfig.MaxRounds {
+					emit(AgentEvent{
+						Type: AgentEventTypeVerifyFixFailed,
+						VerifyFix: &VerifyFixInfo{Round: a.verifyFixRound, MaxRound: a.verifyLoopConfig.MaxRounds},
+					})
+					finalizeAndDone()
+					return
+				}
+
+				// Flaky check.
+				if a.verifyLoopConfig.IgnoreFlakyFindings && anyRepeatedFindings(mv.Findings, a.prevRoundFindings) {
+					emit(AgentEvent{
+						Type: AgentEventTypeVerifyFixSkipped,
+						VerifyFix: &VerifyFixInfo{Skipped: true, Reason: "repeated findings"},
+					})
+					finalizeAndDone()
+					return
+				}
+				a.prevRoundFindings = fingerprintFindings(mv.Findings)
+
+				// Prepare for the next round.
+				a.verifyFixRound++
+				roundLabel := "--- Turn verification (round " + strconv.Itoa(a.verifyFixRound) + ") ---\n"
+				msg := core.TextMessage(sessionID, core.RoleTool, roundLabel+mv.RawText, false)
+				created, err := a.store.Create(ctx, msg)
+				if err != nil {
+					emit(AgentEvent{Type: AgentEventTypeError, Err: err})
+					return
+				}
+				rt.Log.Append(created)
+				history = append(history, created)
+
+				emit(AgentEvent{
+					Type: AgentEventTypeVerifyFixRoundStart,
+					VerifyFix: &VerifyFixInfo{Round: a.verifyFixRound, MaxRound: a.verifyLoopConfig.MaxRounds},
+				})
+				if !emit(AgentEvent{Type: AgentEventTypeResponseReset}) {
+					return
+				}
+				continue
+			}
+
+			// Normal completion path — no verify-fix loop or loop is disabled.
+			finalizeAndDone()
 			return
 		}
 	}()
 
 	return out, nil
+}
+
+// estimateContextHeadroom returns the number of tokens available before
+// the context window is full, used by the verify-fix loop to decide
+// whether there is space to inject verification results and re-enter the
+// main loop.
+func (a *Agent) estimateContextHeadroom(history []core.Message, rt *memory.RuntimeState) int {
+	current := compact.EstimateMessagesTokens(rt.BuildProviderHistory())
+	headroom := a.contextWindow - current
+	if headroom < 0 {
+		return 0
+	}
+	return headroom
 }

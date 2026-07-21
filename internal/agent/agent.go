@@ -433,18 +433,17 @@ func (a *Agent) runTurnLevelVerification(ctx context.Context, sessionID string, 
 	}
 
 	mv := mergeVerificationResults("", testText, reviewText, a.mutationsFromSubagent)
-	if mv.RawText == "" {
-		return mv
-	}
-
-	msg := core.TextMessage(sessionID, core.RoleTool, "--- Turn verification ---\n"+mv.RawText, false)
-	if _, err := a.store.Create(ctx, msg); err != nil {
-		return mv
-	}
-	emit(AgentEvent{Type: AgentEventTypeTurnVerification, TurnVerification: &mv.RawText})
 	return mv
 }
 
+// buildSelfCheckNudge returns a message appended to the assistant's reply
+// before the turn finalizes, reminding the model to self-review its output.
+func (a *Agent) buildSelfCheckNudge() string {
+	if a.mode == session.ModePlan {
+		return "Before finalizing the plan, verify: (1) all user requirements addressed? (2) each step is concrete and actionable? (3) dependencies between steps noted?"
+	}
+	return "Before finalizing, verify: (1) all parts of the user's request addressed? (2) tests pass? (3) output complete and correct?"
+}
 
 // collectTurnDiffText gathers diff text from all mutation tool results
 // in the current turn's session history.
