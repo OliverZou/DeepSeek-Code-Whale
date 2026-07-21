@@ -25,7 +25,9 @@ type preparedToolDispatch struct {
 	GrantKey          string
 	GrantKeys         []string
 	ExternalReadRoots []string
+	FromSubagent      bool // true when this dispatch is from a child agent
 }
+
 
 type toolDispatchOutcome struct {
 	Prepared         preparedToolDispatch
@@ -110,6 +112,11 @@ func toolCallCapBlockedResult(call core.ToolCall) core.ToolResult {
 }
 
 func (a *Agent) flushPendingParallelSubagents(ctx context.Context, sessionID, assistantMessageID, model string, pending []preparedToolDispatch, events chan<- AgentEvent, results *[]core.ToolResult, tools *core.ToolRegistry) error {
+	// Mark all pending dispatches as originating from a subagent so that
+	// appendDispatchedToolResult can track their file mutations separately.
+	for i := range pending {
+		pending[i].FromSubagent = true
+	}
 	ready := make([]readyParallelSubagentCall, 0, len(pending))
 	for _, prepared := range pending {
 		ready = append(ready, readyParallelSubagentCall{Index: prepared.Index, Call: prepared.Call})
@@ -341,6 +348,11 @@ func (a *Agent) appendDispatchedToolResult(ctx context.Context, sessionID string
 	// P2: track source/test files for test reminder
 	if isMutationTool(call.Name) && primarySucceeded {
 		trackMutatedFiles(finalRes, a.sourceFilesThisTurn, a.testFilesThisTurn)
+	}
+	// P3: track subagent mutations so verify-feedback auto-fix loop
+	// skips files changed by child agents (main model lacks context to fix them).
+	if isMutationTool(call.Name) && primarySucceeded && prepared.FromSubagent {
+		a.trackSubagentMutation(call)
 	}
 	// P2: diff self-review prompt after every successful mutation
 	if isMutationTool(call.Name) && primarySucceeded {
@@ -614,3 +626,22 @@ func addPolicyApprovalMetadata(metadata map[string]any, decision policy.PolicyDe
 	}
 	return metadata
 }
+
+// trackSubagentMutation records that a file was mutated by a subagent.
+// These files are skipped by the verify-feedback auto-fix loop because
+// the main model lacks context to fix subagent-introduced issues.
+func (a *Agent) trackSubagentMutation(call core.ToolCall) {
+	if !isMutationTool(call.Name) {
+		return
+	}
+	filePath := extractFilePathFromCall(call)
+	if filePath == "" {
+		return
+	}
+	absPath := normalizeWorkspacePath(filePath, a.workspaceRoot)
+	if a.mutationsFromSubagent == nil {
+		a.mutationsFromSubagent = make(map[string]bool)
+	}
+	a.mutationsFromSubagent[strings.ToLower(absPath)] = true
+}
+

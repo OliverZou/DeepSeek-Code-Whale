@@ -502,7 +502,11 @@ func (a *Agent) resetTurnState() {
 	}
 	a.testFilesThisTurn = make(map[string]bool)
 	a.lastAssistantText = ""
-	a.mutationsFromSubagent = make(map[string]bool)
+	if a.mutationsFromSubagent == nil {
+		a.mutationsFromSubagent = make(map[string]bool)
+	} else {
+		clear(a.mutationsFromSubagent)
+	}
 	a.verifyFixRound = 0
 	a.verifyFixIteration = false
 	a.prevRoundFindings = make(map[string]bool)
