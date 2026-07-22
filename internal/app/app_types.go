@@ -73,6 +73,7 @@ type Config struct {
 	VerifyTestCommands             []string
 	VerifyTestTimeout              time.Duration
 	GateReadBeforeEdit             bool
+	GateVerifyLoopConfig           VerifyLoopConfigTOML
 
 	configDefaulted bool
 }
@@ -85,6 +86,14 @@ type MultimodalProviderConfig struct {
 	APIKeyEnv string
 	Model     string
 }
+
+// VerifyLoopConfigTOML is the TOML representation of verify-feedback loop config.
+type VerifyLoopConfigTOML struct {
+	Enabled   bool `toml:"enabled"`
+	MaxRounds int  `toml:"max_rounds"`
+	SelfCheck bool `toml:"self_check"`
+}
+
 
 type StartOptions struct {
 	SessionID     string

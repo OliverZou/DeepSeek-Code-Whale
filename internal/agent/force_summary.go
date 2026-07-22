@@ -69,9 +69,19 @@ func forcedSummaryBanner(reason string) string {
 	if reason == "" {
 		reason = "execution limit reached"
 	}
-	return fmt.Sprintf("⚠️ This turn was auto-interrupted after reaching an execution limit (%s). "+
-		"The summary below is PROGRESS, not a completed task — work may remain. "+
-		"Send another message or use /retry to continue from the current context.", reason)
+	return fmt.Sprintf(`⚠️ This turn was auto-interrupted: %s
+
+## Completed
+- (see summary below)
+
+## Remaining
+- (see summary below)
+
+## Next Step
+- Send another message or use /retry to continue from the current context.
+
+## Summary
+`, reason)
 }
 
 func (a *Agent) forceSummary(ctx context.Context, sessionID string, history []core.Message, reason string, reqCtx summaryRequestContext) (core.Message, error) {
@@ -79,7 +89,14 @@ func (a *Agent) forceSummary(ctx context.Context, sessionID string, history []co
 	if err != nil {
 		return core.Message{}, fmt.Errorf("create forced summary assistant: %w", err)
 	}
-	prompt := fmt.Sprintf("The run stopped: %s. Summarize completed work, findings, and remaining next steps concisely. Do not call tools.", strings.TrimSpace(reason))
+	prompt := fmt.Sprintf("The run stopped: %s. Summarize concisely in this format:\n"+
+			"## Completed\n- [specific completed items]\n"+
+			"## Remaining\n- [what still needs to be done]\n"+
+			"## Next Step\n- [concrete next action]\n"+
+			"## Key Findings\n- [important discoveries]\n\n"+
+			"Do not call tools.",
+			strings.TrimSpace(reason),
+		)
 	tmpHistory := buildSummaryProviderHistory(sessionID, reqCtx, history, prompt)
 	ch := a.provider.StreamResponse(ctx, tmpHistory, nil)
 	lastUsage := llm.Usage{}

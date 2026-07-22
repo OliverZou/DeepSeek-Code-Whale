@@ -512,5 +512,9 @@ func applyGateConfig(cfg *Config, file FileGateConfig) {
 	if file.ReadBeforeEdit != nil {
 		cfg.GateReadBeforeEdit = *file.ReadBeforeEdit
 	}
-
+	if file.VerifyLoop != nil {
+		cfg.GateVerifyLoopConfig = *file.VerifyLoop
+	}
 }
+
+
