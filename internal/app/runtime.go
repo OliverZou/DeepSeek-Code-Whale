@@ -146,6 +146,11 @@ func (a *App) ensureAgent() (*agent.Agent, error) {
 				TestTimeout:  a.cfg.VerifyTestTimeout,
 			}),
 			agent.WithGateConfig(a.cfg.GateReadBeforeEdit),
+			agent.WithVerifyLoopConfig(agent.VerifyLoopConfig{
+				Enabled:    a.cfg.GateVerifyLoopConfig.Enabled,
+				MaxRounds:  a.cfg.GateVerifyLoopConfig.MaxRounds,
+				SelfCheck:  a.cfg.GateVerifyLoopConfig.SelfCheck,
+			}),
 		)
 	}
 	return a.a, nil
