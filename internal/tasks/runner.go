@@ -108,7 +108,7 @@ type Runner struct {
 	testCommands               []string
 	testTimeout                time.Duration
 	gateReadBeforeEdit         bool
-	parentReadFilesFunc       func() map[string]bool
+	parentReadFilesFunc        func() map[string]bool
 
 	approvalFunc      policy.ApprovalFunc
 	subagentBudgetMu  sync.Mutex
@@ -165,11 +165,11 @@ func NewRunner(cfg RunnerConfig) *Runner {
 		summaryMaxChars:            summaryMaxChars,
 		usageLogPath:               strings.TrimSpace(cfg.UsageLogPath),
 		approvalFunc:               cfg.ApprovalFunc,
-		verifyCommands:    append([]string(nil), cfg.VerifyCommands...),
-		verifyTimeout:     cfg.VerifyTimeout,
-		testCommands:      append([]string(nil), cfg.VerifyTestCommands...),
-		testTimeout:       cfg.VerifyTestTimeout,
-		gateReadBeforeEdit: cfg.GateReadBeforeEdit,
+		verifyCommands:             append([]string(nil), cfg.VerifyCommands...),
+		verifyTimeout:              cfg.VerifyTimeout,
+		testCommands:               append([]string(nil), cfg.VerifyTestCommands...),
+		testTimeout:                cfg.VerifyTestTimeout,
+		gateReadBeforeEdit:         cfg.GateReadBeforeEdit,
 
 		backgroundCancels: map[string]context.CancelFunc{},
 	}

@@ -94,7 +94,6 @@ type VerifyLoopConfigTOML struct {
 	SelfCheck bool `toml:"self_check"`
 }
 
-
 type StartOptions struct {
 	SessionID     string
 	ModeOverride  string

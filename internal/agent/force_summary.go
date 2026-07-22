@@ -90,13 +90,13 @@ func (a *Agent) forceSummary(ctx context.Context, sessionID string, history []co
 		return core.Message{}, fmt.Errorf("create forced summary assistant: %w", err)
 	}
 	prompt := fmt.Sprintf("The run stopped: %s. Summarize concisely in this format:\n"+
-			"## Completed\n- [specific completed items]\n"+
-			"## Remaining\n- [what still needs to be done]\n"+
-			"## Next Step\n- [concrete next action]\n"+
-			"## Key Findings\n- [important discoveries]\n\n"+
-			"Do not call tools.",
-			strings.TrimSpace(reason),
-		)
+		"## Completed\n- [specific completed items]\n"+
+		"## Remaining\n- [what still needs to be done]\n"+
+		"## Next Step\n- [concrete next action]\n"+
+		"## Key Findings\n- [important discoveries]\n\n"+
+		"Do not call tools.",
+		strings.TrimSpace(reason),
+	)
 	tmpHistory := buildSummaryProviderHistory(sessionID, reqCtx, history, prompt)
 	ch := a.provider.StreamResponse(ctx, tmpHistory, nil)
 	lastUsage := llm.Usage{}

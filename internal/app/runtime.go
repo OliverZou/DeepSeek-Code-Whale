@@ -148,9 +148,9 @@ func (a *App) ensureAgent() (*agent.Agent, error) {
 			}),
 			agent.WithGateConfig(a.cfg.GateReadBeforeEdit),
 			agent.WithVerifyLoopConfig(agent.VerifyLoopConfig{
-				Enabled:    a.cfg.GateVerifyLoopConfig.Enabled,
-				MaxRounds:  a.cfg.GateVerifyLoopConfig.MaxRounds,
-				SelfCheck:  a.cfg.GateVerifyLoopConfig.SelfCheck,
+				Enabled:   a.cfg.GateVerifyLoopConfig.Enabled,
+				MaxRounds: a.cfg.GateVerifyLoopConfig.MaxRounds,
+				SelfCheck: a.cfg.GateVerifyLoopConfig.SelfCheck,
 			}),
 		)
 	}

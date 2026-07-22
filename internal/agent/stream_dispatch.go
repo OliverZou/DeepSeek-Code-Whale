@@ -1,13 +1,13 @@
 package agent
 
 import (
-	"regexp"
 	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 
 	"runtime"
 	"sort"
@@ -1044,7 +1044,6 @@ func collectDiffText(results []core.ToolResult) string {
 	return strings.Join(parts, "\n")
 }
 
-
 var buildErrorRe = regexp.MustCompile(`(\S+\.\w+):(\d+):\d*:\s*(.+)`)
 
 func parseBuildErrors(output string) string {
@@ -1066,4 +1065,3 @@ func parseBuildErrors(output string) string {
 	}
 	return strings.Join(lines, "\n")
 }
-

@@ -516,5 +516,3 @@ func applyGateConfig(cfg *Config, file FileGateConfig) {
 		cfg.GateVerifyLoopConfig = *file.VerifyLoop
 	}
 }
-
-

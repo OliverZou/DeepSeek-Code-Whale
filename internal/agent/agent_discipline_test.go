@@ -669,4 +669,3 @@ func TestWithReadFiles(t *testing.T) {
 		t.Fatal("a.go not tracked")
 	}
 }
-

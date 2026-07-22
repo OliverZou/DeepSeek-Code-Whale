@@ -2,10 +2,10 @@ package agent
 
 import (
 	"context"
-	"path/filepath"
-	"regexp"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -27,7 +27,6 @@ type preparedToolDispatch struct {
 	ExternalReadRoots []string
 	FromSubagent      bool // true when this dispatch is from a child agent
 }
-
 
 type toolDispatchOutcome struct {
 	Prepared         preparedToolDispatch
@@ -312,7 +311,6 @@ func analysisDiffMismatch(assistantText string, res core.ToolResult) string {
 	sort.Strings(df)
 	return fmt.Sprintf("\n\n⚠ Analysis-diff mismatch: your analysis mentions %s, but your changes are in %s. Does the change still address the root cause?", strings.Join(af, ", "), strings.Join(df, ", "))
 }
-
 
 func (a *Agent) appendDispatchedToolResult(ctx context.Context, sessionID string, prepared preparedToolDispatch, finalRes core.ToolResult, primarySucceeded bool, events chan<- AgentEvent, results *[]core.ToolResult, requireEventDelivery bool) bool {
 	emit := func(ev AgentEvent) bool {
@@ -644,4 +642,3 @@ func (a *Agent) trackSubagentMutation(call core.ToolCall) {
 	}
 	a.mutationsFromSubagent[strings.ToLower(absPath)] = true
 }
-

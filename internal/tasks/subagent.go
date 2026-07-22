@@ -36,7 +36,7 @@ type SpawnSubagentRequest struct {
 	WorkflowPhase     string          `json:"-"`
 	WorkflowTaskID    string          `json:"-"`
 	WorkflowTaskLabel string          `json:"-"`
-	ParentReadFiles   map[string]bool   `json:"-"`
+	ParentReadFiles   map[string]bool `json:"-"`
 }
 
 type SpawnSubagentResponse struct {
