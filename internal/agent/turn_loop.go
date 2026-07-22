@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
@@ -462,6 +463,12 @@ func (a *Agent) runStreamWithNewMessages(ctx context.Context, sessionID string, 
 			// finalizeAndDone emits the PlanCompleted (if applicable) and Done events.
 			// All verify-fix exit paths call this before returning.
 			finalizeAndDone := func() {
+				// Feature B2: task-driven termination guard.
+				if reminder := a.checkIncompleteTodos(ctx, sessionID); reminder != "" {
+					if strings.TrimSpace(assistant.Text) != "" {
+						assistant.Text = strings.TrimSpace(assistant.Text) + "\n\n" + reminder
+					}
+				}
 				if a.mode == session.ModePlan && strings.TrimSpace(assistant.Text) != "" {
 					emit(AgentEvent{Type: AgentEventTypePlanCompleted, Content: assistant.Text})
 				}
@@ -631,3 +638,77 @@ func (a *Agent) estimateContextHeadroom(rt *memory.RuntimeState) int {
 	}
 	return headroom
 }
+
+// checkIncompleteTodos scans the session history for incomplete todo items
+// and returns a reminder message if any are found. Returns "" if all todos
+// are complete or no todos exist.
+func (a *Agent) checkIncompleteTodos(ctx context.Context, sessionID string) string {
+	msgs, err := a.store.List(ctx, sessionID)
+	if err != nil {
+		return ""
+	}
+	var lastTodoMsg *core.Message
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if msgs[i].Role == core.RoleTool {
+			for _, tr := range msgs[i].ToolResults {
+				if strings.HasPrefix(tr.Name, "todo_") {
+					lastTodoMsg = &msgs[i]
+					break
+				}
+			}
+			if lastTodoMsg != nil {
+				break
+			}
+		}
+	}
+	if lastTodoMsg == nil {
+		return "" // no todos in this session
+	}
+	// Parse the most recent todo_list result for incomplete items.
+	for _, tr := range lastTodoMsg.ToolResults {
+		if tr.Name == "todo_list" {
+			incomplete := countIncompleteTodos(tr)
+			if incomplete > 0 {
+				return fmt.Sprintf("You have %d incomplete task(s). Are you sure you're done?", incomplete)
+			}
+			return ""
+		}
+	}
+	return ""
+}
+
+// countIncompleteTodos counts todo items with status != "completed" in a
+// todo_list tool result. The result contains a JSON array of {status: ...} objects.
+func countIncompleteTodos(tr core.ToolResult) int {
+	payload, ok := tr.Payload.(map[string]any)
+	if !ok {
+		return 0
+	}
+	items, ok := payload["items"].([]any)
+	if !ok {
+		// Try the model-visible text as a fallback.
+		var parsed []struct {
+			Status string `json:"status"`
+		}
+		if err := json.Unmarshal([]byte(core.ToolResultModelText(tr)), &parsed); err != nil {
+			return 0
+		}
+		count := 0
+		for _, item := range parsed {
+			if item.Status != "completed" {
+				count++
+			}
+		}
+		return count
+	}
+	count := 0
+	for _, item := range items {
+		if m, ok := item.(map[string]any); ok {
+			if status, ok := m["status"].(string); ok && status != "completed" {
+				count++
+			}
+		}
+	}
+	return count
+}
+
