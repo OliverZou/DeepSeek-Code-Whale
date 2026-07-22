@@ -68,29 +68,29 @@ const (
 	AgentEventTypeTurnVerification       AgentEventType = "turn_verification"
 
 	// Verify-feedback loop events (Feature A).
-	AgentEventTypeVerifyFixStarted     AgentEventType = "verify_fix_started"
-	AgentEventTypeVerifyFixRoundStart  AgentEventType = "verify_fix_round_start"
-	AgentEventTypeVerifyFixRoundResult AgentEventType = "verify_fix_round_result"
-	AgentEventTypeVerifyFixPassed      AgentEventType = "verify_fix_passed"
-	AgentEventTypeVerifyFixFailed      AgentEventType = "verify_fix_failed"
-	AgentEventTypeVerifyFixSkipped     AgentEventType = "verify_fix_skipped"
-	AgentEventTypeTurnCancelled          AgentEventType = "turn_cancelled"
-	AgentEventTypeForcedSummaryStarted   AgentEventType = "forced_summary_started"
-	AgentEventTypeForcedSummaryDone      AgentEventType = "forced_summary_done"
-	AgentEventTypeForcedSummaryFailed    AgentEventType = "forced_summary_failed"
-	AgentEventTypeHookStarted            AgentEventType = "hook_started"
-	AgentEventTypeHookBlocked            AgentEventType = "hook_blocked"
-	AgentEventTypeHookWarned             AgentEventType = "hook_warned"
-	AgentEventTypeHookFailed             AgentEventType = "hook_failed"
-	AgentEventTypeHookCompleted          AgentEventType = "hook_completed"
-	AgentEventTypeParallelReasonStarted  AgentEventType = "parallel_reason_started"
-	AgentEventTypeParallelReasonDone     AgentEventType = "parallel_reason_completed"
-	AgentEventTypeSubagentStarted        AgentEventType = "subagent_started"
-	AgentEventTypeTaskProgress           AgentEventType = "task_progress"
-	AgentEventTypeSubagentDone           AgentEventType = "subagent_completed"
-	AgentEventTypeClassifierReview       AgentEventType = "classifier_review"
-	AgentEventTypeDone                   AgentEventType = "done"
-	AgentEventTypeError                  AgentEventType = "error"
+	AgentEventTypeVerifyFixStarted      AgentEventType = "verify_fix_started"
+	AgentEventTypeVerifyFixRoundStart   AgentEventType = "verify_fix_round_start"
+	AgentEventTypeVerifyFixRoundResult  AgentEventType = "verify_fix_round_result"
+	AgentEventTypeVerifyFixPassed       AgentEventType = "verify_fix_passed"
+	AgentEventTypeVerifyFixFailed       AgentEventType = "verify_fix_failed"
+	AgentEventTypeVerifyFixSkipped      AgentEventType = "verify_fix_skipped"
+	AgentEventTypeTurnCancelled         AgentEventType = "turn_cancelled"
+	AgentEventTypeForcedSummaryStarted  AgentEventType = "forced_summary_started"
+	AgentEventTypeForcedSummaryDone     AgentEventType = "forced_summary_done"
+	AgentEventTypeForcedSummaryFailed   AgentEventType = "forced_summary_failed"
+	AgentEventTypeHookStarted           AgentEventType = "hook_started"
+	AgentEventTypeHookBlocked           AgentEventType = "hook_blocked"
+	AgentEventTypeHookWarned            AgentEventType = "hook_warned"
+	AgentEventTypeHookFailed            AgentEventType = "hook_failed"
+	AgentEventTypeHookCompleted         AgentEventType = "hook_completed"
+	AgentEventTypeParallelReasonStarted AgentEventType = "parallel_reason_started"
+	AgentEventTypeParallelReasonDone    AgentEventType = "parallel_reason_completed"
+	AgentEventTypeSubagentStarted       AgentEventType = "subagent_started"
+	AgentEventTypeTaskProgress          AgentEventType = "task_progress"
+	AgentEventTypeSubagentDone          AgentEventType = "subagent_completed"
+	AgentEventTypeClassifierReview      AgentEventType = "classifier_review"
+	AgentEventTypeDone                  AgentEventType = "done"
+	AgentEventTypeError                 AgentEventType = "error"
 )
 
 type ToolArgsProgress struct {
@@ -343,15 +343,15 @@ type Agent struct {
 	gateReadBeforeEdit    bool          // P1: configurable gate switch
 
 	// Turn-level state for review agent.
-	lastUserInput string // P2: last user message text, for review agent context
+	lastUserInput     string // P2: last user message text, for review agent context
 	lastAssistantText string // P4: last assistant reasoning text, for root cause cross-check
 
 	// Verify-feedback loop state (Feature A). Reset per turn.
-	verifyLoopConfig       VerifyLoopConfig // set once at construction, read-only
-	mutationsFromSubagent  map[string]bool  // file paths mutated by subagents (skip auto-fix)
-	verifyFixRound         int              // current verify-fix round (0 = not in loop)
-	verifyFixIteration     bool             // true when current main-loop iteration is a fix attempt
-	prevRoundFindings      map[string]bool  // fingerprint of previous round's findings (flaky detection)
+	verifyLoopConfig      VerifyLoopConfig // set once at construction, read-only
+	mutationsFromSubagent map[string]bool  // file paths mutated by subagents (skip auto-fix)
+	verifyFixRound        int              // current verify-fix round (0 = not in loop)
+	verifyFixIteration    bool             // true when current main-loop iteration is a fix attempt
+	prevRoundFindings     map[string]bool  // fingerprint of previous round's findings (flaky detection)
 }
 
 // VerifyLoopConfig controls the verify-feedback loop (Feature A of

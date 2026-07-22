@@ -486,7 +486,7 @@ func (a *Agent) runStreamWithNewMessages(ctx context.Context, sessionID string, 
 					if headroom < 2000 {
 						// Not enough for even 1 round; skip verification.
 						emit(AgentEvent{
-							Type: AgentEventTypeVerifyFixSkipped,
+							Type:      AgentEventTypeVerifyFixSkipped,
 							VerifyFix: &VerifyFixInfo{Skipped: true, Reason: "insufficient context headroom"},
 						})
 						finalizeAndDone()
@@ -516,7 +516,7 @@ func (a *Agent) runStreamWithNewMessages(ctx context.Context, sessionID string, 
 				// Check for flaky findings.
 				if a.verifyLoopConfig.IgnoreFlakyFindings && anyRepeatedFindings(mv.Findings, a.prevRoundFindings) {
 					emit(AgentEvent{
-						Type: AgentEventTypeVerifyFixSkipped,
+						Type:      AgentEventTypeVerifyFixSkipped,
 						VerifyFix: &VerifyFixInfo{Skipped: true, Reason: "repeated findings — possible flaky test or pre-existing issue"},
 					})
 					// Still persist results so the user sees them.
@@ -542,7 +542,7 @@ func (a *Agent) runStreamWithNewMessages(ctx context.Context, sessionID string, 
 				a.verifyFixIteration = true
 				a.verifyFixRound = 1
 				emit(AgentEvent{
-					Type: AgentEventTypeVerifyFixRoundStart,
+					Type:      AgentEventTypeVerifyFixRoundStart,
 					VerifyFix: &VerifyFixInfo{Round: 1, MaxRound: maxRounds},
 				})
 
@@ -577,7 +577,7 @@ func (a *Agent) runStreamWithNewMessages(ctx context.Context, sessionID string, 
 				// Still failing after this round. Check round cap.
 				if a.verifyFixRound >= a.verifyLoopConfig.MaxRounds {
 					emit(AgentEvent{
-						Type: AgentEventTypeVerifyFixFailed,
+						Type:      AgentEventTypeVerifyFixFailed,
 						VerifyFix: &VerifyFixInfo{Round: a.verifyFixRound, MaxRound: a.verifyLoopConfig.MaxRounds},
 					})
 					finalizeAndDone()
@@ -587,7 +587,7 @@ func (a *Agent) runStreamWithNewMessages(ctx context.Context, sessionID string, 
 				// Flaky check.
 				if a.verifyLoopConfig.IgnoreFlakyFindings && anyRepeatedFindings(mv.Findings, a.prevRoundFindings) {
 					emit(AgentEvent{
-						Type: AgentEventTypeVerifyFixSkipped,
+						Type:      AgentEventTypeVerifyFixSkipped,
 						VerifyFix: &VerifyFixInfo{Skipped: true, Reason: "repeated findings"},
 					})
 					finalizeAndDone()
@@ -608,7 +608,7 @@ func (a *Agent) runStreamWithNewMessages(ctx context.Context, sessionID string, 
 				history = append(history, created)
 
 				emit(AgentEvent{
-					Type: AgentEventTypeVerifyFixRoundStart,
+					Type:      AgentEventTypeVerifyFixRoundStart,
 					VerifyFix: &VerifyFixInfo{Round: a.verifyFixRound, MaxRound: a.verifyLoopConfig.MaxRounds},
 				})
 				if !emit(AgentEvent{Type: AgentEventTypeResponseReset}) {
@@ -711,4 +711,3 @@ func countIncompleteTodos(tr core.ToolResult) int {
 	}
 	return count
 }
-

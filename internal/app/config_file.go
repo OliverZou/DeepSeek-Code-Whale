@@ -224,7 +224,7 @@ type FileVerifyConfig struct {
 }
 
 type FileGateConfig struct {
-	ReadBeforeEdit *bool               `toml:"read_before_edit,omitempty"`
+	ReadBeforeEdit *bool                 `toml:"read_before_edit,omitempty"`
 	VerifyLoop     *VerifyLoopConfigTOML `toml:"verify_loop,omitempty"`
 }
 

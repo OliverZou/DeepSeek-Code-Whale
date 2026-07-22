@@ -429,7 +429,7 @@ func (t agentSearchTool) Parameters() map[string]any {
 	}
 }
 
-func (t agentSearchTool) ReadOnly() bool     { return true }
+func (t agentSearchTool) ReadOnly() bool         { return true }
 func (t agentSearchTool) Capabilities() []string { return nil }
 
 func (t agentSearchTool) Run(ctx context.Context, call core.ToolCall) (core.ToolResult, error) {
