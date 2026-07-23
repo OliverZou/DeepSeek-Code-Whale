@@ -301,3 +301,11 @@ func outcomeForMCPFlag(isError bool) core.ToolOutcome {
 	}
 	return core.OutcomeSuccess
 }
+
+// CallToolResultText extracts the text content from an MCP CallToolResult.
+// Non-text content (images, audio) is discarded — callers that need media
+// should use the full result or a richer bridge type.
+func CallToolResultText(result *sdk.CallToolResult) string {
+	text, _ := flattenContent(result.Content)
+	return text
+}

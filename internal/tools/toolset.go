@@ -47,7 +47,14 @@ type Toolset struct {
 	deferredCatalog     DeferredToolCatalog
 	deferredPromote     DeferredToolPromoter
 	deferredRenderer    DeferredToolRenderer
+	codeGraphCaller     MCPBridge
+	astEditCaller       MCPBridge
 }
+
+// MCPBridge calls a code-graph MCP tool by name and returns raw result text.
+// The returned string is the text content from the MCP result; isError indicates
+// whether the MCP server reported an error.
+type MCPBridge func(ctx context.Context, toolName string, args map[string]any) (text string, isError bool, err error)
 
 type externalReadRootsKey struct{}
 type toolResultReadRootsKey struct{}
@@ -189,6 +196,18 @@ func (b *Toolset) SetDeferredToolSearch(catalog DeferredToolCatalog, promote Def
 	b.deferredCatalog = catalog
 	b.deferredPromote = promote
 	b.deferredRenderer = render
+}
+
+// SetASTEditCaller sets the function used to call ast-edit MCP tools.
+// Pass nil to disable ast-edit tools.
+func (b *Toolset) SetASTEditCaller(caller MCPBridge) {
+	b.astEditCaller = caller
+}
+
+// SetMCPBridge sets the function used to call code-graph MCP tools.
+// Pass nil to disable code-graph tools.
+func (b *Toolset) SetMCPBridge(caller MCPBridge) {
+	b.codeGraphCaller = caller
 }
 
 func cleanOptionalAbsPath(path string) string {
