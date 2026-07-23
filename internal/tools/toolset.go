@@ -48,6 +48,7 @@ type Toolset struct {
 	deferredPromote     DeferredToolPromoter
 	deferredRenderer    DeferredToolRenderer
 	codeGraphCaller     MCPBridge
+	codeGraphProject    string
 	astEditCaller       MCPBridge
 }
 
@@ -196,6 +197,13 @@ func (b *Toolset) SetDeferredToolSearch(catalog DeferredToolCatalog, promote Def
 	b.deferredCatalog = catalog
 	b.deferredPromote = promote
 	b.deferredRenderer = render
+}
+
+// SetCodeGraphProject sets the codebase-memory project name to use as
+// default in code graph tools. Call set at MCP wiring time after detecting
+// the codebase-memory server.
+func (b *Toolset) SetCodeGraphProject(project string) {
+	b.codeGraphProject = project
 }
 
 // SetASTEditCaller sets the function used to call ast-edit MCP tools.
