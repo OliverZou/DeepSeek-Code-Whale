@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	"github.com/usewhale/whale/internal/core"
@@ -20,6 +21,13 @@ func (b *Toolset) codeGraphTools() []core.Tool {
 	}
 }
 
+// codeGraphProject returns the project name for the current workspace.
+// Defaults to the workspace root's base directory name, which matches the
+// convention used by codebase-memory-mcp (e.g. "whale" from "/src/whale").
+func (b *Toolset) codeGraphProject() string {
+	return filepath.Base(b.root)
+}
+
 func (b *Toolset) codebaseSearchTool() core.Tool {
 	return toolFn{
 		name:        "codebase_search",
@@ -32,6 +40,10 @@ func (b *Toolset) codebaseSearchTool() core.Tool {
 					"type":        "string",
 					"description": "Natural-language or keyword query describing what to find. E.g., \"authentication handler\", \"user login function\", \"database connection pool\".",
 				},
+				"project": map[string]any{
+					"type":        "string",
+					"description": "Codebase-memory project name. Defaults to the current workspace name if omitted.",
+				},
 			},
 			"required": []string{"query"},
 		},
@@ -39,7 +51,8 @@ func (b *Toolset) codebaseSearchTool() core.Tool {
 		capabilities: []string{"workspace.read"},
 		fn: func(ctx context.Context, call core.ToolCall) (core.ToolResult, error) {
 			var in struct {
-				Query string `json:"query"`
+				Query   string `json:"query"`
+				Project string `json:"project"`
 			}
 			if err := json.Unmarshal([]byte(call.Input), &in); err != nil {
 				return marshalToolError(call, "invalid_args", fmt.Sprintf("invalid codebase_search input: %v", err)), nil
@@ -47,9 +60,13 @@ func (b *Toolset) codebaseSearchTool() core.Tool {
 			if strings.TrimSpace(in.Query) == "" {
 				return marshalToolError(call, "invalid_args", "query is required"), nil
 			}
+			if in.Project == "" {
+				in.Project = b.codeGraphProject()
+			}
 
 			text, isError, err := b.codeGraphCaller(ctx, "search_graph", map[string]any{
-				"query": in.Query,
+				"query":   in.Query,
+				"project": in.Project,
 			})
 			if err != nil {
 				return marshalToolError(call, "code_graph_error", fmt.Sprintf("code graph search failed: %v", err)), nil
@@ -91,6 +108,10 @@ func (b *Toolset) codebaseTraceTool() core.Tool {
 					"enum":        []string{"inbound", "outbound", "both"},
 					"description": "Trace direction: \"inbound\" for callers, \"outbound\" for callees, \"both\" for full context. Defaults to \"both\" if omitted.",
 				},
+				"project": map[string]any{
+					"type":        "string",
+					"description": "Codebase-memory project name. Defaults to the current workspace name if omitted.",
+				},
 			},
 			"required": []string{"symbol_name"},
 		},
@@ -100,6 +121,7 @@ func (b *Toolset) codebaseTraceTool() core.Tool {
 			var in struct {
 				SymbolName string `json:"symbol_name"`
 				Direction  string `json:"direction"`
+				Project    string `json:"project"`
 			}
 			if err := json.Unmarshal([]byte(call.Input), &in); err != nil {
 				return marshalToolError(call, "invalid_args", fmt.Sprintf("invalid codebase_trace input: %v", err)), nil
@@ -110,10 +132,14 @@ func (b *Toolset) codebaseTraceTool() core.Tool {
 			if in.Direction == "" {
 				in.Direction = "both"
 			}
+			if in.Project == "" {
+				in.Project = b.codeGraphProject()
+			}
 
 			text, isError, err := b.codeGraphCaller(ctx, "trace_path", map[string]any{
 				"function_name": in.SymbolName,
 				"direction":     in.Direction,
+				"project":       in.Project,
 			})
 			if err != nil {
 				return marshalToolError(call, "code_graph_error", fmt.Sprintf("code graph trace failed: %v", err)), nil
@@ -150,6 +176,10 @@ func (b *Toolset) codebaseImpactTool() core.Tool {
 					"type":        "string",
 					"description": "Qualified name of the symbol to analyze, as returned by codebase_search (e.g., \"whale.internal.agent.RunStream\").",
 				},
+				"project": map[string]any{
+					"type":        "string",
+					"description": "Codebase-memory project name. Defaults to the current workspace name if omitted.",
+				},
 			},
 			"required": []string{"symbol_name"},
 		},
@@ -158,6 +188,7 @@ func (b *Toolset) codebaseImpactTool() core.Tool {
 		fn: func(ctx context.Context, call core.ToolCall) (core.ToolResult, error) {
 			var in struct {
 				SymbolName string `json:"symbol_name"`
+				Project    string `json:"project"`
 			}
 			if err := json.Unmarshal([]byte(call.Input), &in); err != nil {
 				return marshalToolError(call, "invalid_args", fmt.Sprintf("invalid codebase_impact input: %v", err)), nil
@@ -165,12 +196,16 @@ func (b *Toolset) codebaseImpactTool() core.Tool {
 			if strings.TrimSpace(in.SymbolName) == "" {
 				return marshalToolError(call, "invalid_args", "symbol_name is required"), nil
 			}
+			if in.Project == "" {
+				in.Project = b.codeGraphProject()
+			}
 
 			text, isError, err := b.codeGraphCaller(ctx, "trace_path", map[string]any{
 				"function_name": in.SymbolName,
 				"direction":     "both",
 				"include_tests": true,
 				"depth":         2,
+				"project":       in.Project,
 			})
 			if err != nil {
 				return marshalToolError(call, "code_graph_error", fmt.Sprintf("code graph impact analysis failed: %v", err)), nil
