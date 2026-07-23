@@ -115,9 +115,13 @@ func (a *App) ensureAgent() (*agent.Agent, error) {
 			}),
 			agent.WithHookRunner(a.hookRunner),
 			agent.WithExtraSystemBlocks(pluginBlocks...),
-			agent.WithDynamicSystemBlocksForTurn(a.workflowDynamicSystemBlock),
-			agent.WithDynamicSystemBlocks(func() string { return a.renderDeferredToolsBlock() }),
-			agent.WithProjectMemory(a.cfg.MemoryEnabled, a.cfg.MemoryMaxChars, parseCSVList(a.cfg.MemoryFileOrder), a.workspaceRoot),
+			agent.WithDynamicSystemBlocksForTurn(
+				a.workflowDynamicSystemBlock,
+				a.codeGraphDynamicSystemBlock,
+				a.astEditDynamicSystemBlock,
+			),
+							agent.WithDynamicSystemBlocks(func() string { return a.renderDeferredToolsBlock() }),
+				agent.WithProjectMemory(a.cfg.MemoryEnabled, a.cfg.MemoryMaxChars, parseCSVList(a.cfg.MemoryFileOrder), a.workspaceRoot),
 			agent.WithWorktreeContext(a.worktree.Path, a.worktree.OriginalWorkspace),
 			agent.WithMaxParallelSubagents(a.cfg.MaxParallelSubagents),
 			agent.WithClassifierConfig(agent.ClassifierConfig{
@@ -243,6 +247,105 @@ func (a *App) InjectTurnInputWithHidden(ctx context.Context, visibleInput, hidde
 
 func (a *App) applyRunOptionsDefaults(opts agent.RunOptions) agent.RunOptions {
 	return opts
+}
+
+// codeGraphKeywords are lower-case patterns matched against MCP tool names and
+// descriptions to detect codebase-memory / code-graph tools.
+var codeGraphKeywords = []string{
+	"search graph",
+	"trace path",
+	"code graph",
+	"codebase memory",
+	"semantic search",
+	"call graph",
+	"get code snippet",
+	"get architecture",
+	"query graph",
+	"symbol search",
+	"dependency graph",
+	"code structure",
+}
+
+// hasCodeGraphTools returns true when the deferred MCP catalog contains at
+// least one tool whose name or description matches a code-graph keyword.
+func (a *App) hasCodeGraphTools() bool {
+	catalog := a.deferredMCPCatalog
+	if catalog == nil {
+		return false
+	}
+	for _, t := range catalog.Tools() {
+		if matchCodeGraphTool(t.Name, t.Description) {
+			return true
+		}
+	}
+	return false
+}
+
+// codeGraphDynamicSystemBlock injects a code-discovery instruction block into
+// the system prompt when codebase-memory MCP tools are detected. Returns an
+// empty string otherwise (zero overhead when tools are absent).
+func (a *App) codeGraphDynamicSystemBlock(opts agent.RunOptions) string {
+	if !a.hasCodeGraphTools() {
+		return ""
+	}
+	return strings.TrimSpace(`
+Code discovery.
+
+- Three code-graph tools are available: codebase_search, codebase_trace, and codebase_impact.
+- Use codebase_search to find symbols (functions, classes, methods) by name, purpose, or natural-language description. Returns matching symbols with their qualified names and file locations.
+- Use codebase_trace to trace call chains and data flow from a symbol. Accepts a qualified name from codebase_search results. Supports "inbound" (callers), "outbound" (callees), or "both" directions.
+- Use codebase_impact to analyze the impact of a change AFTER editing a symbol — returns callers, callees, and related tests. Tells you what might break and which tests to run.
+- Prefer codebase_search over grep when looking for code structure — "where is X defined", "which function handles Y", "who calls Z". Use grep for text patterns, error messages, and string literals.
+- Use glob and read for file discovery and reading file contents.`)
+}
+
+// astEditKeywords are lower-case patterns matched against MCP tool names and
+// descriptions to detect ast-edit MCP tools.
+var astEditKeywords = []string{
+	"ast edit",
+	"ast write",
+	"ast patch",
+	"ast read",
+	"ast symbols",
+	"ast find",
+	"ast delete",
+	"ast insert",
+	"ast rename",
+	"abstract syntax tree",
+	"syntax tree edit",
+	"tree sitter",
+}
+
+// hasASTEditTools returns true when the deferred MCP catalog contains at
+// least one tool whose name or description matches an ast-edit keyword.
+func (a *App) hasASTEditTools() bool {
+	catalog := a.deferredMCPCatalog
+	if catalog == nil {
+		return false
+	}
+	for _, t := range catalog.Tools() {
+		if matchASTEditTool(t.Name, t.Description) {
+			return true
+		}
+	}
+	return false
+}
+
+// astEditDynamicSystemBlock injects an AST-editing instruction block into
+// the system prompt when ast-edit MCP tools are detected. Returns an empty
+// string otherwise (zero overhead when tools are absent).
+func (a *App) astEditDynamicSystemBlock(opts agent.RunOptions) string {
+	if !a.hasASTEditTools() {
+		return ""
+	}
+	return strings.TrimSpace(`
+AST editing.
+
+- Three AST-level editing tools are available: ast_edit, ast_patch, and ast_symbols.
+- Prefer ast_edit over edit when rewriting an entire function, method, or class. It locates by symbol name via the syntax tree — no fragile old_string copy-paste. The file is verified to still parse after replacement.
+- Use ast_patch for targeted changes inside a function body (changing a few lines, adding a guard clause). Searches only within the named symbol, not the whole file.
+- Use ast_symbols to list all symbols in a file before editing — replaces the "read file and mentally parse structure" step.
+- edit and multi_edit remain available for text-level changes (fixing string literals, comments, config values, imports) where AST tools do not apply.`)
 }
 
 func (a *App) workflowDynamicSystemBlock(opts agent.RunOptions) string {

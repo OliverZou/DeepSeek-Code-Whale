@@ -13,6 +13,7 @@ import (
 	"github.com/usewhale/whale/internal/session"
 	"github.com/usewhale/whale/internal/store"
 	"github.com/usewhale/whale/internal/telemetry"
+	whalemcp "github.com/usewhale/whale/internal/mcp"
 )
 
 func TestHandleLocalCommandCompactUsageError(t *testing.T) {
@@ -696,5 +697,58 @@ func TestFinalizeTurnDoesNotCompletePendingWorkflowGoalTurn(t *testing.T) {
 	}
 	if st.Status != session.GoalStatusActive {
 		t.Fatalf("goal status = %q, want active", st.Status)
+	}
+}
+
+func TestCodeGraphDynamicSystemBlock_Detection(t *testing.T) {
+	catalog := whalemcp.NewDeferredToolCatalog([]whalemcp.DeferredToolMeta{
+		{Name: "mcp__codebase-memory__search_graph", Server: "codebase-memory", Description: "Search the code knowledge graph for functions and classes"},
+	})
+	a := &App{deferredMCPCatalog: catalog}
+	result := a.codeGraphDynamicSystemBlock(agent.RunOptions{})
+	if result == "" {
+		t.Fatal("expected non-empty prompt when code-graph tools are present")
+	}
+}
+
+func TestCodeGraphDynamicSystemBlock_NoMatch(t *testing.T) {
+	catalog := whalemcp.NewDeferredToolCatalog([]whalemcp.DeferredToolMeta{
+		{Name: "mcp__github__list_prs", Server: "github", Description: "List pull requests"},
+		{Name: "mcp__slack__post_message", Server: "slack", Description: "Post a message to a channel"},
+	})
+	a := &App{deferredMCPCatalog: catalog}
+	result := a.codeGraphDynamicSystemBlock(agent.RunOptions{})
+	if result != "" {
+		t.Fatalf("expected empty prompt for non-code-graph tools, got: %s", result)
+	}
+}
+
+func TestCodeGraphDynamicSystemBlock_EmptyCatalog(t *testing.T) {
+	a := &App{deferredMCPCatalog: nil}
+	result := a.codeGraphDynamicSystemBlock(agent.RunOptions{})
+	if result != "" {
+		t.Fatalf("expected empty prompt for nil catalog, got: %s", result)
+	}
+}
+
+func TestCodeGraphDynamicSystemBlock_DescriptionMatch(t *testing.T) {
+	catalog := whalemcp.NewDeferredToolCatalog([]whalemcp.DeferredToolMeta{
+		{Name: "mcp__mem__analyze", Server: "codebase-memory", Description: "Trace paths through the code graph and analyze dependencies"},
+	})
+	a := &App{deferredMCPCatalog: catalog}
+	result := a.codeGraphDynamicSystemBlock(agent.RunOptions{})
+	if result == "" {
+		t.Fatal("expected match via description keyword 'code graph'")
+	}
+}
+
+func TestCodeGraphDynamicSystemBlock_KeywordCaseInsensitive(t *testing.T) {
+	catalog := whalemcp.NewDeferredToolCatalog([]whalemcp.DeferredToolMeta{
+		{Name: "mcp__tools__Search_Graph", Server: "tools", Description: "SEARCH the CODE GRAPH"},
+	})
+	a := &App{deferredMCPCatalog: catalog}
+	result := a.codeGraphDynamicSystemBlock(agent.RunOptions{})
+	if result == "" {
+		t.Fatal("expected case-insensitive match on name and description")
 	}
 }

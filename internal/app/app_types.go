@@ -161,6 +161,7 @@ type App struct {
 	thinkingEnabled       bool
 	contextWindow         int
 	mcpManager            *whalemcp.Manager
+	deferredMCPCatalog    *whalemcp.DeferredToolCatalog
 	lspManager            *lsp.Manager
 	mcpSig                string
 	mcpSigFrozen          bool

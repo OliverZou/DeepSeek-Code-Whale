@@ -5,9 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 	"path/filepath"
 	"sort"
-	"strings"
 
 	"github.com/usewhale/whale/internal/core"
 	whalemcp "github.com/usewhale/whale/internal/mcp"
@@ -52,7 +52,10 @@ func (a *App) refreshMCPTools() error {
 
 	// Build deferred catalog and wire up tool_search.
 	catalog := a.mcpManager.BuildDeferredCatalog()
+	a.deferredMCPCatalog = catalog
 	a.setupDeferredToolSearchLocked(catalog)
+	a.setupMCPBridgeLocked(catalog)
+	a.setupASTEditCallerLocked(catalog)
 
 	// Rebuild registries: base tools + tool_search (if catalog non-empty).
 	if err := a.rebuildToolRegistriesLocked(); err != nil {
@@ -104,6 +107,105 @@ func (a *App) setupDeferredToolSearchLocked(catalog *whalemcp.DeferredToolCatalo
 	a.toolset.SetDeferredToolSearch(catAdapter, promoter, renderer)
 }
 
+// setupMCPBridgeLocked detects codebase-memory MCP tools in the catalog
+// and configures the toolset's MCPBridge so that codebase_search and
+// codebase_trace become available. Passes nil when no code-graph tools are found.
+func (a *App) setupMCPBridgeLocked(catalog *whalemcp.DeferredToolCatalog) {
+	if a.toolset == nil {
+		return
+	}
+	serverName := findCodeGraphServer(catalog)
+	if serverName == "" {
+		a.toolset.SetMCPBridge(nil)
+		return
+	}
+	a.toolset.SetMCPBridge(func(ctx context.Context, toolName string, args map[string]any) (string, bool, error) {
+		result, err := a.mcpManager.CallTool(ctx, serverName, toolName, args)
+		if err != nil {
+			return "", false, err
+		}
+		return whalemcp.CallToolResultText(result), result.IsError, nil
+	})
+}
+
+// setupASTEditCallerLocked detects ast-edit MCP tools in the catalog and
+// configures the toolset's ASTEditCaller so that ast_edit, ast_patch, and
+// ast_symbols become available. Passes nil when no ast-edit tools are found.
+func (a *App) setupASTEditCallerLocked(catalog *whalemcp.DeferredToolCatalog) {
+	if a.toolset == nil {
+		return
+	}
+	serverName := findASTEditServer(catalog)
+	if serverName == "" {
+		a.toolset.SetASTEditCaller(nil)
+		return
+	}
+	a.toolset.SetASTEditCaller(func(ctx context.Context, toolName string, args map[string]any) (string, bool, error) {
+		result, err := a.mcpManager.CallTool(ctx, serverName, toolName, args)
+		if err != nil {
+			return "", false, err
+		}
+		return whalemcp.CallToolResultText(result), result.IsError, nil
+	})
+}
+
+// findCodeGraphServer returns the MCP server name of the first code-graph tool
+// found in the catalog, or "" if none match.
+func findCodeGraphServer(catalog *whalemcp.DeferredToolCatalog) string {
+	if catalog == nil {
+		return ""
+	}
+	for _, t := range catalog.Tools() {
+		if matchCodeGraphTool(t.Name, t.Description) {
+			return t.Server
+		}
+	}
+	return ""
+}
+
+// findASTEditServer returns the MCP server name of the first ast-edit tool
+// found in the catalog, or "" if none match.
+func findASTEditServer(catalog *whalemcp.DeferredToolCatalog) string {
+	if catalog == nil {
+		return ""
+	}
+	for _, t := range catalog.Tools() {
+		if matchASTEditTool(t.Name, t.Description) {
+			return t.Server
+		}
+	}
+	return ""
+}
+
+// matchToolByKeywords returns true when a normalized tool name or description
+// contains any of the given keywords (all lower-case, space-separated).
+func matchToolByKeywords(name, description string, keywords []string) bool {
+	norm := func(s string) string {
+		s = strings.ToLower(s)
+		s = strings.ReplaceAll(s, "_", " ")
+		s = strings.ReplaceAll(s, "-", " ")
+		return s
+	}
+	nl := norm(name)
+	dl := norm(description)
+	for _, kw := range keywords {
+		if strings.Contains(nl, kw) || strings.Contains(dl, kw) {
+			return true
+		}
+	}
+	return false
+}
+
+// matchCodeGraphTool returns true when a tool matches code-graph keywords.
+func matchCodeGraphTool(name, description string) bool {
+	return matchToolByKeywords(name, description, codeGraphKeywords)
+}
+
+// matchASTEditTool returns true when a tool matches ast-edit keywords.
+func matchASTEditTool(name, description string) bool {
+	return matchToolByKeywords(name, description, astEditKeywords)
+}
+
 const availableDeferredToolsMaxChars = 4000
 
 // renderDeferredToolsBlock returns the <available-deferred-tools> block for
@@ -135,6 +237,7 @@ func (a *App) renderDeferredToolsBlock() string {
 	omitted := len(allTools) - shownCount
 	return truncated + fmt.Sprintf("\n... %d more tool(s) omitted\n</available-deferred-tools>", omitted)
 }
+
 
 // makeDeferredPromoter returns a function that builds full Tool objects for given names,
 // adds them to registries, and returns their specs.
