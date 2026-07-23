@@ -21,10 +21,13 @@ func (b *Toolset) codeGraphTools() []core.Tool {
 	}
 }
 
-// codeGraphProject returns the project name for the current workspace.
-// Defaults to the workspace root's base directory name, which matches the
-// convention used by codebase-memory-mcp (e.g. "whale" from "/src/whale").
-func (b *Toolset) codeGraphProject() string {
+// defaultCodeGraphProject returns the project name for the current workspace.
+// Uses the auto-detected name from setup if available; falls back to the
+// workspace root's base directory name.
+func (b *Toolset) defaultCodeGraphProject() string {
+	if b.codeGraphProject != "" {
+		return b.codeGraphProject
+	}
 	return filepath.Base(b.root)
 }
 
@@ -61,7 +64,7 @@ func (b *Toolset) codebaseSearchTool() core.Tool {
 				return marshalToolError(call, "invalid_args", "query is required"), nil
 			}
 			if in.Project == "" {
-				in.Project = b.codeGraphProject()
+				in.Project = b.defaultCodeGraphProject()
 			}
 
 			text, isError, err := b.codeGraphCaller(ctx, "search_graph", map[string]any{
@@ -133,7 +136,7 @@ func (b *Toolset) codebaseTraceTool() core.Tool {
 				in.Direction = "both"
 			}
 			if in.Project == "" {
-				in.Project = b.codeGraphProject()
+				in.Project = b.defaultCodeGraphProject()
 			}
 
 			text, isError, err := b.codeGraphCaller(ctx, "trace_path", map[string]any{
@@ -197,7 +200,7 @@ func (b *Toolset) codebaseImpactTool() core.Tool {
 				return marshalToolError(call, "invalid_args", "symbol_name is required"), nil
 			}
 			if in.Project == "" {
-				in.Project = b.codeGraphProject()
+				in.Project = b.defaultCodeGraphProject()
 			}
 
 			text, isError, err := b.codeGraphCaller(ctx, "trace_path", map[string]any{

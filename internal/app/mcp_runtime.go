@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 	"path/filepath"
 	"sort"
 
@@ -56,6 +57,7 @@ func (a *App) refreshMCPTools() error {
 	a.setupDeferredToolSearchLocked(catalog)
 	a.setupMCPBridgeLocked(catalog)
 	a.setupASTEditCallerLocked(catalog)
+	a.detectCodeGraphProject(catalog)
 
 	// Rebuild registries: base tools + tool_search (if catalog non-empty).
 	if err := a.rebuildToolRegistriesLocked(); err != nil {
@@ -161,6 +163,62 @@ func findCodeGraphServer(catalog *whalemcp.DeferredToolCatalog) string {
 		}
 	}
 	return ""
+}
+
+// detectCodeGraphProject auto-detects the codebase-memory project name by
+// calling list_projects and matching root_path against the workspace root.
+// On failure, the toolset falls back to the workspace directory name.
+func (a *App) detectCodeGraphProject(catalog *whalemcp.DeferredToolCatalog) {
+	if a.toolset == nil {
+		return
+	}
+	serverName := findCodeGraphServer(catalog)
+	if serverName == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	result, err := a.mcpManager.CallTool(ctx, serverName, "list_projects", nil)
+	if err != nil {
+		return // silent fallback
+	}
+	if result.IsError {
+		return
+	}
+	text := whalemcp.CallToolResultText(result)
+	project := matchProjectByRoot(text, a.workspaceRoot)
+	if project != "" {
+		a.toolset.SetCodeGraphProject(project)
+	}
+}
+
+// matchProjectByRoot parses a list_projects JSON response and returns the
+// project name whose root_path is an ancestor of (or equals) the given root.
+// Returns "" if no match is found.
+func matchProjectByRoot(jsonText, workspaceRoot string) string {
+	var response struct {
+		Projects []struct {
+			Name     string `json:"name"`
+			RootPath string `json:"root_path"`
+		} `json:"projects"`
+	}
+	if err := json.Unmarshal([]byte(jsonText), &response); err != nil {
+		return ""
+	}
+	// Prefer exact match, then ancestor match (workspace is inside project root).
+	cleaned := filepath.Clean(workspaceRoot)
+	var best string
+	for _, p := range response.Projects {
+		cleanedRoot := filepath.Clean(p.RootPath)
+		if cleaned == cleanedRoot {
+			return p.Name
+		}
+		if strings.HasPrefix(cleaned, cleanedRoot+string(filepath.Separator)) ||
+			strings.HasPrefix(cleaned, cleanedRoot) {
+			best = p.Name
+		}
+	}
+	return best
 }
 
 // findASTEditServer returns the MCP server name of the first ast-edit tool
