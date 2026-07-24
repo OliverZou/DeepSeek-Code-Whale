@@ -187,9 +187,19 @@ func (a *App) detectCodeGraphProject(catalog *whalemcp.DeferredToolCatalog) {
 	}
 	text := whalemcp.CallToolResultText(result)
 	project := matchProjectByRoot(text, a.workspaceRoot)
-	if project != "" {
-		a.toolset.SetCodeGraphProject(project)
-	}
+		if project != "" {
+			a.toolset.SetCodeGraphProject(project)
+			return
+		}
+		// No matching project -- auto-index so code-graph tools work
+		// in subsequent turns. Fire-and-forget; do not block setup.
+		go func() {
+			idxCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+			defer cancel()
+			a.mcpManager.CallTool(idxCtx, serverName, "index_repository", map[string]any{
+				"repo_path": a.workspaceRoot,
+			})
+		}()
 }
 
 // matchProjectByRoot parses a list_projects JSON response and returns the
