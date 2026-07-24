@@ -290,7 +290,7 @@ func (a *App) codeGraphDynamicSystemBlock(opts agent.RunOptions) string {
 	return strings.TrimSpace(`
 Code discovery.
 
-- Three code-graph tools are available: codebase_search, codebase_trace, and codebase_impact.
+- Four code-graph tools are available: codebase_search, codebase_trace, codebase_impact, and codebase_index.
 - Use codebase_search to find symbols (functions, classes, methods) by name, purpose, or natural-language description. Returns matching symbols with their qualified names and file locations.
 - Use codebase_trace to trace call chains and data flow from a symbol. Accepts a qualified name from codebase_search results. Supports "inbound" (callers), "outbound" (callees), or "both" directions.
 - Use codebase_impact to analyze the impact of a change AFTER editing a symbol — returns callers, callees, and related tests. Tells you what might break and which tests to run.

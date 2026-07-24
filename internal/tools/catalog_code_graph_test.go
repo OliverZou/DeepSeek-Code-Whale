@@ -15,8 +15,8 @@ func TestCodeGraphTools_Available(t *testing.T) {
 		return "{}", false, nil
 	})
 	tools := b.codeGraphTools()
-	if len(tools) != 3 {
-		t.Fatalf("expected 3 tools, got %d", len(tools))
+	if len(tools) != 4 {
+		t.Fatalf("expected 4 tools, got %d", len(tools))
 	}
 	names := map[string]bool{}
 	for _, tool := range tools {
@@ -30,6 +30,9 @@ func TestCodeGraphTools_Available(t *testing.T) {
 	}
 	if !names["codebase_impact"] {
 		t.Fatal("expected codebase_impact tool")
+	}
+	if !names["codebase_index"] {
+		t.Fatal("expected codebase_index tool")
 	}
 }
 
@@ -71,7 +74,7 @@ func TestCodebaseSearch_CallsCodeGraph(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 	if !called {
-		t.Fatal("expected CodeGraphCaller to be called")
+		t.Fatal("expected MCPBridge to be called")
 	}
 	if receivedTool != "search_graph" {
 		t.Fatalf("expected search_graph, got %q", receivedTool)
@@ -240,8 +243,16 @@ func TestCodeGraphTools_ReadOnly(t *testing.T) {
 
 	tools := b.codeGraphTools()
 	for _, tool := range tools {
-		if !core.DescribeTool(tool).ReadOnly {
-			t.Fatalf("%s should be read-only", tool.Name())
+		spec := core.DescribeTool(tool)
+		switch tool.Name() {
+		case "codebase_index":
+			if spec.ReadOnly {
+				t.Fatalf("%s should NOT be read-only", tool.Name())
+			}
+		default:
+			if !spec.ReadOnly {
+				t.Fatalf("%s should be read-only", tool.Name())
+			}
 		}
 	}
 }
