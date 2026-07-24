@@ -469,6 +469,11 @@ func (a *Agent) runStreamWithNewMessages(ctx context.Context, sessionID string, 
 						assistant.Text = strings.TrimSpace(assistant.Text) + "\n\n" + reminder
 					}
 				}
+				if reminder := a.checkIncompletePlan(ctx, sessionID); reminder != "" {
+					if strings.TrimSpace(assistant.Text) != "" {
+						assistant.Text = strings.TrimSpace(assistant.Text) + "\n\n" + reminder
+					}
+				}
 				if a.mode == session.ModePlan && strings.TrimSpace(assistant.Text) != "" {
 					emit(AgentEvent{Type: AgentEventTypePlanCompleted, Content: assistant.Text})
 				}
@@ -710,4 +715,45 @@ func countIncompleteTodos(tr core.ToolResult) int {
 		}
 	}
 	return count
+}
+
+
+// checkIncompletePlan scans the session history for the most recent update_plan
+// call and returns a reminder if steps remain incomplete. Returns "" if
+// all plan steps are complete or no plan exists.
+func (a *Agent) checkIncompletePlan(ctx context.Context, sessionID string) string {
+	msgs, err := a.store.List(ctx, sessionID)
+	if err != nil {
+		return ""
+	}
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if msgs[i].Role != core.RoleAssistant {
+			continue
+		}
+		for _, tc := range msgs[i].ToolCalls {
+			if tc.Name != "update_plan" {
+				continue
+			}
+			var input struct {
+				Plan []struct {
+					Step   string `json:"step"`
+					Status string `json:"status"`
+				} `json:"plan"`
+			}
+			if err := json.Unmarshal([]byte(tc.Input), &input); err != nil {
+				continue
+			}
+			pending := 0
+			for _, s := range input.Plan {
+				if s.Status != "completed" {
+					pending++
+				}
+			}
+			if pending > 0 {
+				return fmt.Sprintf("You have %d incomplete plan step(s) out of %d total. Update progress with update_plan before finishing.", pending, len(input.Plan))
+			}
+			return ""
+		}
+	}
+	return ""
 }

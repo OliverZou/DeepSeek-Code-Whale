@@ -119,6 +119,7 @@ func (a *App) ensureAgent() (*agent.Agent, error) {
 				a.workflowDynamicSystemBlock,
 				a.codeGraphDynamicSystemBlock,
 				a.astEditDynamicSystemBlock,
+					a.planProgressDynamicSystemBlock,
 			),
 							agent.WithDynamicSystemBlocks(func() string { return a.renderDeferredToolsBlock() }),
 				agent.WithProjectMemory(a.cfg.MemoryEnabled, a.cfg.MemoryMaxChars, parseCSVList(a.cfg.MemoryFileOrder), a.workspaceRoot),
@@ -346,6 +347,15 @@ AST editing.
 - Use ast_patch for targeted changes inside a function body (changing a few lines, adding a guard clause). Searches only within the named symbol, not the whole file.
 - Use ast_symbols to list all symbols in a file before editing — replaces the "read file and mentally parse structure" step.
 - edit and multi_edit remain available for text-level changes (fixing string literals, comments, config values, imports) where AST tools do not apply.`)
+}
+
+// planProgressDynamicSystemBlock injects the current plan progress into the
+// system prompt when an active plan (via update_plan) exists. Returns empty
+// string when no plan is active or in non-agent modes.
+func (a *App) planProgressDynamicSystemBlock(opts agent.RunOptions) string {
+	ctx := context.Background()
+	state := extractPlanProgress(ctx, a.msgStore, a.sessionID)
+	return renderPlanProgress(state)
 }
 
 func (a *App) workflowDynamicSystemBlock(opts agent.RunOptions) string {
