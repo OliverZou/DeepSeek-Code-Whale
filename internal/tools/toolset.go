@@ -48,8 +48,9 @@ type Toolset struct {
 	deferredPromote     DeferredToolPromoter
 	deferredRenderer    DeferredToolRenderer
 	codeGraphCaller     MCPBridge
-	codeGraphProject    string
-	astEditCaller       MCPBridge
+	codeGraphProject       string
+	codeGraphProjectList   string // cached list of available projects for error hints
+	astEditCaller          MCPBridge
 }
 
 // MCPBridge calls a code-graph MCP tool by name and returns raw result text.

@@ -18,6 +18,7 @@ func (b *Toolset) codeGraphTools() []core.Tool {
 		b.codebaseSearchTool(),
 		b.codebaseTraceTool(),
 		b.codebaseImpactTool(),
+		b.codebaseIndexTool(),
 	}
 }
 
@@ -212,6 +213,43 @@ func (b *Toolset) codebaseImpactTool() core.Tool {
 			})
 			if err != nil {
 				return marshalToolError(call, "code_graph_error", fmt.Sprintf("code graph impact analysis failed: %v", err)), nil
+			}
+			if isError {
+				return core.ToolResult{
+					ToolCallID: call.ID,
+					Name:       call.Name,
+					ModelText:  text,
+					Outcome:    core.OutcomeFailure,
+					Code:       "code_graph_error",
+				}, nil
+			}
+			return core.ToolResult{
+				ToolCallID: call.ID,
+				Name:       call.Name,
+				ModelText:  text,
+				Outcome:    core.OutcomeSuccess,
+				Code:       "ok",
+			}, nil
+		},
+	}
+}
+
+func (b *Toolset) codebaseIndexTool() core.Tool {
+	return toolFn{
+		name:        "codebase_index",
+		description: "Index the current workspace into the code knowledge graph. Call this when codebase_search returns \"project not found\" — indexes the repository so subsequent codebase_search, codebase_trace, and codebase_impact calls will work. This may take a while on large repositories.",
+		parameters: map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
+			"properties":           map[string]any{},
+		},
+		capabilities: []string{"workspace.write"},
+		fn: func(ctx context.Context, call core.ToolCall) (core.ToolResult, error) {
+			text, isError, err := b.codeGraphCaller(ctx, "index_repository", map[string]any{
+				"repo_path": b.root,
+			})
+			if err != nil {
+				return marshalToolError(call, "code_graph_error", fmt.Sprintf("index failed: %v", err)), nil
 			}
 			if isError {
 				return core.ToolResult{
