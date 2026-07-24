@@ -475,7 +475,7 @@ func (a *Agent) runStreamWithNewMessages(ctx context.Context, sessionID string, 
 						assistant.Text = strings.TrimSpace(assistant.Text) + "\n\n" + reminder
 					}
 				}
-				if warning := checkPlanQuality(assistant.Text); warning != "" {
+				if warning := a.checkPlanQuality(ctx, sessionID, assistant.Text); warning != "" {
 					assistant.Text = strings.TrimSpace(assistant.Text) + "\n\n" + warning
 				}
 				if a.mode == session.ModePlan && strings.TrimSpace(assistant.Text) != "" {
@@ -762,10 +762,11 @@ func (a *Agent) checkIncompletePlan(ctx context.Context, sessionID string) strin
 	return ""
 }
 
-// checkPlanQuality checks whether a plan text meets minimum structure
-// requirements. Returns a warning string if the plan lacks numbered phases or
-// bulleted sub-steps, or "" if the plan looks well-structured.
-func checkPlanQuality(plan string) string {
+// checkPlanQuality checks whether a plan meets minimum quality requirements:
+// has numbered phases, bulleted sub-steps, AND update_plan was called with
+// structured steps. Returns a warning if any check fails.
+func (a *Agent) checkPlanQuality(ctx context.Context, sessionID, plan string) string {
+	// Structural check: numbered phases and bullets in the text.
 	hasNumbered := false
 	hasBullet := false
 	for _, line := range strings.Split(plan, "\n") {
@@ -778,11 +779,38 @@ func checkPlanQuality(plan string) string {
 		}
 	}
 	if !hasNumbered || !hasBullet {
-		return "Plan quality note: This plan could be more actionable. " +
-			"Consider structuring it with numbered phases (e.g. \"1. Set up X\", \"2. Implement Y\") " +
-			"with bulleted sub-steps under each phase. Use update_plan to track progress during execution."
+		return "Plan quality: This plan could be more actionable. " +
+			"Structure it with numbered phases and bulleted sub-steps. " +
+			"Use update_plan to save each step for execution tracking."
 	}
+
+	// update_plan check: were structured steps saved?
+	if !a.hasPlanSteps(ctx, sessionID) {
+		return "Use update_plan to save your plan as structured steps before finalizing. " +
+			"Each step should be a concrete action like \"Add auth middleware to middleware.go\"."
+	}
+
 	return ""
+}
+
+// hasPlanSteps returns true if the session contains at least one update_plan
+// call with steps defined.
+func (a *Agent) hasPlanSteps(ctx context.Context, sessionID string) bool {
+	msgs, err := a.store.List(ctx, sessionID)
+	if err != nil {
+		return false
+	}
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if msgs[i].Role != core.RoleAssistant {
+			continue
+		}
+		for _, tc := range msgs[i].ToolCalls {
+			if tc.Name == "update_plan" {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 var matchPlanStep = regexp.MustCompile(`^\d+\.\s`)

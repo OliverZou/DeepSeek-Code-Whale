@@ -164,11 +164,11 @@ func TestUpdatePlanVisibleFromProviderToolsOutsidePlanMode(t *testing.T) {
 	}
 }
 
-func TestUpdatePlanBlockedInPlanMode(t *testing.T) {
+func TestUpdatePlanAllowedInPlanMode(t *testing.T) {
 	a := NewAgentWithRegistry(
 		&updatePlanProvider{},
 		NewInMemoryStore(),
-		NewToolRegistry(nil),
+		NewToolRegistry([]Tool{regTestTool{name: "update_plan"}}),
 		WithSessionMode(session.ModePlan),
 	)
 	events, err := a.RunStreamWithOptions(context.Background(), "s-plan-mode-update", "go", false)
@@ -177,34 +177,19 @@ func TestUpdatePlanBlockedInPlanMode(t *testing.T) {
 	}
 	var sawPlanUpdate bool
 	var sawBlocked bool
-	var blocked string
 	for ev := range events {
 		if ev.Type == AgentEventTypePlanUpdate {
 			sawPlanUpdate = true
 		}
 		if ev.Type == AgentEventTypeToolResult && ev.Result != nil && strings.Contains(ev.Result.ModelText, "plan_mode_blocked") {
 			sawBlocked = true
-			blocked = ev.Result.ModelText
 		}
 	}
-	if sawPlanUpdate {
-		t.Fatal("update_plan should not emit plan update in plan mode")
+	if !sawPlanUpdate {
+		t.Fatal("update_plan should be allowed and emit plan update in plan mode")
 	}
-	if !sawBlocked {
-		t.Fatal("expected update_plan to be blocked in plan mode")
-	}
-	for _, want := range []string{
-		"TODO/checklist",
-		"not allowed in Plan mode",
-		"write_plan_as_final_reply",
-		"write it as your final reply",
-	} {
-		if !strings.Contains(blocked, want) {
-			t.Fatalf("blocked update_plan result missing %q:\n%s", want, blocked)
-		}
-	}
-	if strings.Contains(blocked, "<proposed_plan>") {
-		t.Fatalf("blocked update_plan guidance must not reference the sentinel:\n%s", blocked)
+	if sawBlocked {
+		t.Fatal("update_plan should NOT be blocked in plan mode")
 	}
 }
 

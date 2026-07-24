@@ -313,7 +313,7 @@ func TestPlanModeInstructionsTreatExecutionRequestsAsPlanning(t *testing.T) {
 		"Ground the plan in the actual environment",
 		"How to present the plan",
 		"taken as your proposed plan",
-		"update_plan is a TODO/checklist/progress tool",
+		"Use update_plan to save your plan as structured",
 		"the user is then asked to approve it",
 	} {
 		if !strings.Contains(immutable, want) {

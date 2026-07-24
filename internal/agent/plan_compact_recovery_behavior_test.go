@@ -376,8 +376,8 @@ func TestPlanModeHonorsTerminalContentOverStreamedPrefix(t *testing.T) {
 			completed = ev.Content
 		}
 	}
-	if completed != sparseFullPlan {
-		t.Fatalf("plan_completed should carry the full terminal plan, got %q", completed)
+	if !strings.Contains(completed, sparseFullPlan) {
+		t.Fatalf("plan_completed should contain the full terminal plan, got %q", completed)
 	}
 	msgs, err := store.List(context.Background(), "s-sparse-plan")
 	if err != nil {
