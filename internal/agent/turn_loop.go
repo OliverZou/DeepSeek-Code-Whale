@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -474,6 +475,9 @@ func (a *Agent) runStreamWithNewMessages(ctx context.Context, sessionID string, 
 						assistant.Text = strings.TrimSpace(assistant.Text) + "\n\n" + reminder
 					}
 				}
+				if warning := checkPlanQuality(assistant.Text); warning != "" {
+					assistant.Text = strings.TrimSpace(assistant.Text) + "\n\n" + warning
+				}
 				if a.mode == session.ModePlan && strings.TrimSpace(assistant.Text) != "" {
 					emit(AgentEvent{Type: AgentEventTypePlanCompleted, Content: assistant.Text})
 				}
@@ -757,3 +761,28 @@ func (a *Agent) checkIncompletePlan(ctx context.Context, sessionID string) strin
 	}
 	return ""
 }
+
+// checkPlanQuality checks whether a plan text meets minimum structure
+// requirements. Returns a warning string if the plan lacks numbered phases or
+// bulleted sub-steps, or "" if the plan looks well-structured.
+func checkPlanQuality(plan string) string {
+	hasNumbered := false
+	hasBullet := false
+	for _, line := range strings.Split(plan, "\n") {
+		line = strings.TrimSpace(line)
+		if matchPlanStep.MatchString(line) {
+			hasNumbered = true
+		}
+		if strings.HasPrefix(line, "- ") || strings.HasPrefix(line, "* ") {
+			hasBullet = true
+		}
+	}
+	if !hasNumbered || !hasBullet {
+		return "Plan quality note: This plan could be more actionable. " +
+			"Consider structuring it with numbered phases (e.g. \"1. Set up X\", \"2. Implement Y\") " +
+			"with bulleted sub-steps under each phase. Use update_plan to track progress during execution."
+	}
+	return ""
+}
+
+var matchPlanStep = regexp.MustCompile(`^\d+\.\s`)
