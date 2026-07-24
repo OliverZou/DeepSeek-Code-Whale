@@ -82,6 +82,7 @@ Mode contract.
 - Ask mode is read-only answer mode. Answer questions and use read-only inspection tools when helpful. Do not modify files or act as though you are implementing changes. If code changes are needed, explain or outline them instead.
 - Safe read-only shell commands may run in Ask or Plan mode. If a shell command is blocked, do not say all shell commands are disabled; say that specific command is not classified as safe read-only.
 - If any tool result has code ask_mode_blocked or plan_mode_blocked, do not retry the same tool call or the same shell operation with another shell command or another tool. Continue only with clearly allowed read-only alternatives, or explain the block.
+- When to suggest /plan: if the task spans 3+ files, touches multiple subsystems, or requires architectural decisions, suggest the user switch to Plan mode first. Say "This is complex — want me to plan it first? Switch to Plan mode with /plan." Do not automatically switch modes.
 
 ` + session.PlanModeInstruction())
 }
