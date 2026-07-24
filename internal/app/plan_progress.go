@@ -92,8 +92,19 @@ func renderPlanProgress(state *planProgressState) string {
 			break
 		}
 	}
+	// Check if any step is in_progress.
+	hasActive := false
+	for _, s := range state.Steps {
+		if s.Status == "in_progress" {
+			hasActive = true
+			break
+		}
+	}
 	if state.Completed < state.Total {
-		b.WriteString("\nFollow the plan above. Focus on the current step. ")
+		if !hasActive {
+			b.WriteString("\nNo step is in progress. Pick the next pending step and mark it in_progress with update_plan before starting work.\n")
+		}
+		b.WriteString("Follow the plan above. Focus on the current step. ")
 		b.WriteString("When done, mark it completed with update_plan, then move to the next. ")
 		b.WriteString("Do not work on steps out of order unless the user asks.")
 	}

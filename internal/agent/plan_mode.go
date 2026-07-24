@@ -12,7 +12,7 @@ import (
 // finalize before the runaway-loop guard ends it. One is enough: a plan turn
 // that keeps re-running the same read-only checks should be told to commit to a
 // plan rather than die as an execution-limit summary with no plan and no gate.
-const maxPlanLoopNudges = 1
+const maxPlanLoopNudges = 3
 
 const planLoopNudgeText = "<plan_investigation_stalled>\nYou keep repeating the same tool calls without moving toward a plan. If you already understand enough, STOP investigating and write your plan now as your final reply (plain Markdown, no special tags). If you genuinely need a decision from the user before you can finalize, call request_user_input instead.\n</plan_investigation_stalled>"
 

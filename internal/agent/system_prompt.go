@@ -105,6 +105,7 @@ Workflow authoring.
 - Use standard JSON Schema for structured output. If a property uses enum, include an explicit type such as type: "string" so the script can run in both Whale and Claude Code.
 - End generated workflows by returning a final JSON-serializable result, usually the synthesis/report object.
 - For create-workflow launches, tell the user the workflow was saved and that /workflows opens the workflow panel. Do not mention /workflows with run ids or hidden subcommands.
+	- Plan-to-workflow: after a plan is approved, map plan steps to agent() calls for automated execution. Parallelize independent steps.
 `)
 }
 
