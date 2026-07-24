@@ -13,6 +13,7 @@ func (b *Toolset) Tools() []core.Tool {
 	tools = append(tools, b.fileMutationTools()...)
 	tools = append(tools, b.shellTools()...)
 	tools = append(tools, b.planRuntimeTools()...)
+	tools = append(tools, b.projectMemoryTools()...)
 	tools = append(tools, b.todoRuntimeTools()...)
 	tools = append(tools, b.codeGraphTools()...)
 	tools = append(tools, b.astEditTools()...)

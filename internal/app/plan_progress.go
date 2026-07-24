@@ -92,5 +92,10 @@ func renderPlanProgress(state *planProgressState) string {
 			break
 		}
 	}
+	if state.Completed < state.Total {
+		b.WriteString("\nFollow the plan above. Focus on the current step. ")
+		b.WriteString("When done, mark it completed with update_plan, then move to the next. ")
+		b.WriteString("Do not work on steps out of order unless the user asks.")
+	}
 	return strings.TrimSpace(b.String())
 }
