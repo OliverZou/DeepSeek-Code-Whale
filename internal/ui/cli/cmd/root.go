@@ -315,6 +315,7 @@ func newRootCmd(opts *cliOptions) *cobra.Command {
 	root.AddCommand(newResumeCmd(opts))
 	root.AddCommand(newPluginCmd(opts))
 	root.AddCommand(newAppServerCmd(opts))
+	root.AddCommand(newTeamCmd())
 	return root
 }
 

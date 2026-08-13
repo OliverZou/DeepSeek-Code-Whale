@@ -10,6 +10,7 @@ import (
 	"github.com/usewhale/whale/internal/policy"
 	"github.com/usewhale/whale/internal/skills"
 	"github.com/usewhale/whale/internal/tasks"
+	"github.com/usewhale/whale/internal/team_engine"
 	"github.com/usewhale/whale/internal/tools"
 	"github.com/usewhale/whale/internal/workflow"
 )
@@ -95,12 +96,13 @@ func (a *App) rebuildTaskRuntimeLocked() error {
 	if a.pluginManager != nil {
 		extraSkills = a.pluginManager.Skills()
 	}
+	agentLibrary := tasks.NewAgentDefinitionLibraryWithDefinitions(a.workspaceRoot, taskAgentDefinitions(a.pluginAgents))
 	taskRunner := tasks.NewRunner(tasks.RunnerConfig{
 		ProviderFactory:            providerFactory,
 		ProviderFactoryWithOptions: providerFactoryWithOptions,
 		ParentTools:                a.subagentToolRegistry,
 		WorkspaceTools:             workspaceTools,
-		AgentDefinitions:           tasks.NewAgentDefinitionLibraryWithDefinitions(a.workspaceRoot, taskAgentDefinitions(a.pluginAgents)),
+		AgentDefinitions:           agentLibrary,
 		ParentPolicy:               a.permissionPolicy,
 		MessageStore:               a.msgStore,
 		SessionsDir:                a.sessionsDir,
@@ -134,6 +136,7 @@ func (a *App) rebuildTaskRuntimeLocked() error {
 		},
 	})
 	a.taskTools = tasks.NewTools(taskRunner)
+	team_engine.SetDefaultSpawnFunc(teamEngineSpawnAdapter(taskRunner, agentLibrary))
 	a.workflowManager = nil
 	a.workflowRunner = nil
 	workflowLibrary := workflow.NewLibrary(a.workspaceRoot)

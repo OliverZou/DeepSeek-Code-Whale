@@ -9,12 +9,14 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/usewhale/whale/internal/core"
 	"github.com/usewhale/whale/internal/lsp"
 	"github.com/usewhale/whale/internal/policy"
 	"github.com/usewhale/whale/internal/skills"
+	"github.com/usewhale/whale/internal/team_engine"
 	"github.com/usewhale/whale/internal/webfetch"
 )
 
@@ -23,34 +25,42 @@ type SymbolOutlineProvider interface {
 }
 
 type Toolset struct {
-	root                string
-	worktreeRoot        string
-	originalWorkspace   string
-	httpClient          *http.Client
-	webFetchClient      *webfetch.Client
-	ddgSearchURL        string
-	bingSearchURL       string
-	tasks               *shellTaskRegistry
-	fileLocks           *fileMutationLocks
-	fileStates          *fileStateCache
-	afterFileRead       func(string)
-	beforeFileCommit    func(string)
-	skillDisabled       []string
-	extraSkills         []*skills.Skill
-	execBoundary        policy.RulePolicy
-	execApproval        policy.ApprovalFunc
-	sessionIDFunc       func() string
-	foregroundShellWait foregroundShellWaitConfig
-	symbolOutline       SymbolOutlineProvider
-	lspManager          *lsp.Manager
-	lspOverride         lspToolProvider
-	deferredCatalog     DeferredToolCatalog
-	deferredPromote     DeferredToolPromoter
-	deferredRenderer    DeferredToolRenderer
-	codeGraphCaller     MCPBridge
-	codeGraphProject       string
-	codeGraphProjectList   string // cached list of available projects for error hints
-	astEditCaller          MCPBridge
+	root                 string
+	worktreeRoot         string
+	originalWorkspace    string
+	httpClient           *http.Client
+	webFetchClient       *webfetch.Client
+	ddgSearchURL         string
+	bingSearchURL        string
+	tasks                *shellTaskRegistry
+	fileLocks            *fileMutationLocks
+	fileStates           *fileStateCache
+	afterFileRead        func(string)
+	beforeFileCommit     func(string)
+	skillDisabled        []string
+	extraSkills          []*skills.Skill
+	execBoundary         policy.RulePolicy
+	execApproval         policy.ApprovalFunc
+	sessionIDFunc        func() string
+	foregroundShellWait  foregroundShellWaitConfig
+	symbolOutline        SymbolOutlineProvider
+	lspManager           *lsp.Manager
+	lspOverride          lspToolProvider
+	deferredCatalog      DeferredToolCatalog
+	deferredPromote      DeferredToolPromoter
+	deferredRenderer     DeferredToolRenderer
+	codeGraphCaller      MCPBridge
+	codeGraphProject     string
+	codeGraphProjectList string // cached list of available projects for error hints
+	astEditCaller        MCPBridge
+
+	// teamEngineSpawnFunc is an optional SubagentSpawner callback for Team Engine.
+	// When set, Team Engine tools use FuncSpawner instead of ShellSubagentSpawner,
+	// enabling full Whale runtime integration (context isolation, tool permissions).
+	teamEngineSpawnFunc team_engine.SpawnFunc
+
+	autoExecCancel   context.CancelFunc
+	autoExecCancelMu sync.Mutex
 }
 
 // MCPBridge calls a code-graph MCP tool by name and returns raw result text.
@@ -115,6 +125,14 @@ func NewToolset(root string) (*Toolset, error) {
 			Rules:   policy.DefaultRules(),
 		},
 	}, nil
+}
+
+func (b *Toolset) SetTeamEngineSpawnFunc(fn team_engine.SpawnFunc) {
+	b.teamEngineSpawnFunc = fn
+	// Also register as the package-level default so that any team engine
+	// instance can fall back to the native subagent adapter instead of
+	// ShellSubagentSpawner.
+	team_engine.SetDefaultSpawnFunc(fn)
 }
 
 func (b *Toolset) SetForegroundShellWait(defaultMS, maxMS int) {

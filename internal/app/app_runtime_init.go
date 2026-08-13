@@ -11,6 +11,7 @@ import (
 	"github.com/usewhale/whale/internal/policy"
 	"github.com/usewhale/whale/internal/skills"
 	"github.com/usewhale/whale/internal/tasks"
+	"github.com/usewhale/whale/internal/team_engine"
 	"github.com/usewhale/whale/internal/tools"
 	"github.com/usewhale/whale/internal/workflow"
 )
@@ -106,12 +107,13 @@ func initAppRuntime(cfg Config, sessionInit appSessionInit, toolInit appToolInit
 	if toolInit.pluginManager != nil {
 		extraSkills = toolInit.pluginManager.Skills()
 	}
+	agentLibrary := tasks.NewAgentDefinitionLibraryWithDefinitions(workspaceRoot, taskAgentDefinitions(toolInit.pluginAgents))
 	taskRunner := tasks.NewRunner(tasks.RunnerConfig{
 		ProviderFactory:            providerFactory,
 		ProviderFactoryWithOptions: providerFactoryWithOptions,
 		ParentTools:                toolInit.subagentToolRegistry,
 		WorkspaceTools:             workspaceTools,
-		AgentDefinitions:           tasks.NewAgentDefinitionLibraryWithDefinitions(workspaceRoot, taskAgentDefinitions(toolInit.pluginAgents)),
+		AgentDefinitions:           agentLibrary,
 		ParentPolicy:               policy.RulePolicy{Default: cfg.PermissionDefault, Rules: append([]policy.PermissionRule{}, cfg.PermissionRules...), WorkspaceRoot: workspaceRoot, WorktreeRoot: worktreeRoot},
 		MessageStore:               sessionInit.msgStore,
 		SessionsDir:                sessionInit.sessionsDir,
@@ -139,6 +141,7 @@ func initAppRuntime(cfg Config, sessionInit appSessionInit, toolInit appToolInit
 		ApprovalFunc: approvalFunc,
 	})
 	taskTools := tasks.NewTools(taskRunner)
+	team_engine.SetDefaultSpawnFunc(teamEngineSpawnAdapter(taskRunner, agentLibrary))
 	goalTools := newGoalTools(cfg.DataDir, sessionInit.sessionsDir, parentSessionIDFunc)
 	var workflowManager *workflow.RunManager
 	var workflowRunner *workflow.ScriptRunner
