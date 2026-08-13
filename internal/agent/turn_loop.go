@@ -476,8 +476,10 @@ func (a *Agent) runStreamWithNewMessages(ctx context.Context, sessionID string, 
 						assistant.Text = strings.TrimSpace(assistant.Text) + "\n\n" + reminder
 					}
 				}
-				if warning := a.checkPlanQuality(ctx, sessionID, assistant.Text); warning != "" {
-					assistant.Text = strings.TrimSpace(assistant.Text) + "\n\n" + warning
+				if a.mode == session.ModePlan {
+					if warning := a.checkPlanQuality(ctx, sessionID, assistant.Text); warning != "" {
+						assistant.Text = strings.TrimSpace(assistant.Text) + "\n\n" + warning
+					}
 				}
 				if a.mode == session.ModePlan && strings.TrimSpace(assistant.Text) != "" {
 					emit(AgentEvent{Type: AgentEventTypePlanCompleted, Content: assistant.Text})

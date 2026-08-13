@@ -8,6 +8,7 @@ package agent
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/usewhale/whale/internal/core"
@@ -29,9 +30,15 @@ func assertAgentGolden(t *testing.T, name, got string) {
 	if err != nil {
 		t.Fatalf("read golden %s: %v (regenerate with UPDATE_GOLDEN=1)", path, err)
 	}
-	if string(want) != got {
+	if normalizeGoldenLineEndings(string(want)) != normalizeGoldenLineEndings(got) {
 		t.Fatalf("golden mismatch for %s:\nwant: %s\ngot:  %s", name, want, got)
 	}
+}
+
+// normalizeGoldenLineEndings collapses CRLF to LF so golden comparisons are
+// stable regardless of core.autocrlf checkout settings on Windows.
+func normalizeGoldenLineEndings(s string) string {
+	return strings.ReplaceAll(s, "\r\n", "\n")
 }
 
 func TestToolCallCapBlockedResultGolden(t *testing.T) {
