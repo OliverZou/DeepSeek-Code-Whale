@@ -524,13 +524,13 @@ func TestResolveTestCommands(t *testing.T) {
 			t.Fatal("expected nil")
 		}
 	})
-	t.Run("auto detect disabled by default", func(t *testing.T) {
+	t.Run("auto detect fallback", func(t *testing.T) {
 		d := t.TempDir()
 		os.WriteFile(filepath.Join(d, "go.mod"), []byte("mod x\n"), 0644)
 		a := &Agent{workspaceRoot: d}
 		c := a.resolveTestCommands()
-		if c != nil {
-			t.Fatal("auto-detect should be disabled by default")
+		if c == nil || len(c) == 0 {
+			t.Fatal("expected auto-detected test command when none configured")
 		}
 	})
 }

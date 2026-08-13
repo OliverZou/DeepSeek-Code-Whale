@@ -188,8 +188,9 @@ type AgentEvent struct {
 }
 
 type PlanUpdateStep struct {
-	Step   string `json:"step"`
-	Status string `json:"status"`
+	Step   string   `json:"step"`
+	Status string   `json:"status"`
+	Files  []string `json:"files,omitempty"`
 }
 
 type PlanUpdateInfo struct {
@@ -1037,7 +1038,10 @@ func (a *Agent) resolveTestCommands() []string {
 	if len(a.testCommands) > 0 {
 		return a.testCommands
 	}
-	return nil
+	if strings.TrimSpace(a.workspaceRoot) == "" {
+		return nil
+	}
+	return autoDetectTestCommands(a.workspaceRoot)
 }
 
 // dirtyConfigFiles returns which auto-detection config files were modified this turn.

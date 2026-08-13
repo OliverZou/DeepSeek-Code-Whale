@@ -55,7 +55,7 @@ var fileRefRe = regexp.MustCompile(`(\S+\.(?:go|py|js|ts|tsx|jsx|java|rs|c|cpp|h
 
 func extractFileRefs(text string) map[string]bool {
 	refs := make(map[string]bool)
-	errorIndicators := []string{"error", "fail", "FAIL", "Error", "panic", "fatal", "FATAL", "undefined", "cannot", "syntax", "unresolved", "not found", "missing", "import"}
+	errorIndicators := []string{"error", "fail", "FAIL", "Error", "panic", "fatal", "FATAL", "undefined", "cannot", "syntax", "unresolved", "not found", "missing", "import", "expected", "mismatch", "assertion"}
 	for _, line := range strings.Split(text, "\n") {
 		hasError := false
 		lowerLine := strings.ToLower(line)
@@ -151,7 +151,25 @@ func mergeVerificationResults(verifyText, testText, reviewText string, originFil
 		if reviewText != "" {
 			parts = append(parts, "--- review output ---\n"+reviewText)
 		}
-		return MergedVerification{Passed: true, RawText: strings.Join(parts, "\n\n")}
+		raw := strings.Join(parts, "\n\n")
+		// If verification reported a failure but no file reference could be
+		// parsed (e.g. Go test's `--- FAIL: TestX` line carries no filename),
+		// do not silently pass — surface it as an unparsed P0 so the fix loop
+		// re-engages instead of declaring a false "all green".
+		if looksFailed(verifyText) || looksFailed(testText) {
+			return MergedVerification{
+				Passed: false,
+				Findings: []VerificationFinding{{
+					Severity: "P0",
+					Problem:  "verification/test reported a failure that could not be parsed into file references",
+					Fix:      "inspect the raw output below and fix the underlying issue",
+					Sources:  []string{"verify"},
+					Origin:   "own",
+				}},
+				RawText: raw,
+			}
+		}
+		return MergedVerification{Passed: true, RawText: raw}
 	}
 
 	sort.Slice(findings, func(i, j int) bool {
@@ -194,6 +212,18 @@ func hasP0P1FromOwn(findings []VerificationFinding) bool {
 			continue
 		}
 		if f.Severity == "P0" || f.Severity == "P1" {
+			return true
+		}
+	}
+	return false
+}
+
+// hasP0Finding reports whether findings include any P0 issue, regardless of
+// origin. P0 issues are deterministic correctness failures and must never be
+// skipped as flaky.
+func hasP0Finding(findings []VerificationFinding) bool {
+	for _, f := range findings {
+		if f.Severity == "P0" {
 			return true
 		}
 	}
@@ -256,4 +286,18 @@ func severityOrder(s string) int {
 	default:
 		return 4
 	}
+}
+
+// looksFailed reports whether verification/test output contains a failure
+// signal even when no file reference could be extracted. This catches the
+// common Go test shape `--- FAIL: TestX` (no filename) followed by an
+// assertion line, so an unparsed failure is never reported as passing.
+func looksFailed(text string) bool {
+	lower := strings.ToLower(text)
+	for _, sig := range []string{"--- fail", "panic:", "error:", "undefined:", "expected ", "cannot "} {
+		if strings.Contains(lower, sig) {
+			return true
+		}
+	}
+	return false
 }

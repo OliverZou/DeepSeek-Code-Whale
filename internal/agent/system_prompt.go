@@ -58,6 +58,11 @@ func (a *Agent) buildRuntimeSystemBlocks(opts ...RunOptions) []string {
 				"# Project Memory\n\nThe user pinned these notes about this project. Treat them as authoritative context for this workspace:\n\n```\n"+mem.Content+"\n```",
 			)
 		}
+		if saved, ok := memory.ReadSavedMemory(a.workspaceRoot, a.projectMemoryMaxChars); ok {
+			systemBlocks = append(systemBlocks,
+				"# Saved Project Memory\n\nFacts saved earlier via save_project_memory about this project. Treat them as authoritative context:\n\n```\n"+saved.Content+"\n```",
+			)
+		}
 	}
 	for _, render := range a.dynamicSystemBlocks {
 		if render == nil {

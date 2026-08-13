@@ -59,7 +59,7 @@ func DefaultRecoveryPolicy() RecoveryPolicy {
 			FailureClassPermissionDenied: {Action: RecoveryActionPassThrough, MaxAttempts: 0},
 			FailureClassMCPToolError:     {Action: RecoveryActionPassThrough, MaxAttempts: 0},
 			FailureClassToolUnavailable:  {Action: RecoveryActionPassThrough, MaxAttempts: 0},
-			FailureClassUnknown:          {Action: RecoveryActionPassThrough, MaxAttempts: 0},
+			FailureClassUnknown:          {Action: RecoveryActionRequestReplan, MaxAttempts: 0},
 		},
 	}
 }

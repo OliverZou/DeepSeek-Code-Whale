@@ -131,6 +131,7 @@ func (a *Agent) runStreamWithNewMessages(ctx context.Context, sessionID string, 
 		leakedToolCallNudges := 0
 		consecutiveStormRounds := 0
 		consecutiveRedundantRounds := 0
+		forcedContinue := false
 		progress := &progressTracker{}
 		if a.repairer != nil {
 			a.repairer.resetStorm()
@@ -523,7 +524,7 @@ func (a *Agent) runStreamWithNewMessages(ctx context.Context, sessionID string, 
 				}
 
 				// Check for flaky findings.
-				if a.verifyLoopConfig.IgnoreFlakyFindings && anyRepeatedFindings(mv.Findings, a.prevRoundFindings) {
+				if a.verifyLoopConfig.IgnoreFlakyFindings && !hasP0Finding(mv.Findings) && anyRepeatedFindings(mv.Findings, a.prevRoundFindings) {
 					emit(AgentEvent{
 						Type:      AgentEventTypeVerifyFixSkipped,
 						VerifyFix: &VerifyFixInfo{Skipped: true, Reason: "repeated findings — possible flaky test or pre-existing issue"},
@@ -594,7 +595,7 @@ func (a *Agent) runStreamWithNewMessages(ctx context.Context, sessionID string, 
 				}
 
 				// Flaky check.
-				if a.verifyLoopConfig.IgnoreFlakyFindings && anyRepeatedFindings(mv.Findings, a.prevRoundFindings) {
+				if a.verifyLoopConfig.IgnoreFlakyFindings && !hasP0Finding(mv.Findings) && anyRepeatedFindings(mv.Findings, a.prevRoundFindings) {
 					emit(AgentEvent{
 						Type:      AgentEventTypeVerifyFixSkipped,
 						VerifyFix: &VerifyFixInfo{Skipped: true, Reason: "repeated findings"},
@@ -627,6 +628,28 @@ func (a *Agent) runStreamWithNewMessages(ctx context.Context, sessionID string, 
 			}
 
 			// Normal completion path — no verify-fix loop or loop is disabled.
+			// B2: if the model reports done but todo/plan items remain
+			// incomplete, force it back into the loop once instead of merely
+			// appending a reminder it cannot see.
+			if !forcedContinue {
+				if reminder := a.incompleteWorkReminder(ctx, sessionID); reminder != "" {
+					forcedContinue = true
+					rt.Log.Append(assistant)
+					history = append(history, assistant)
+					nudge := core.TextMessage(sessionID, core.RoleUser, reminder, true)
+					created, err := a.store.Create(ctx, nudge)
+					if err != nil {
+						emit(AgentEvent{Type: AgentEventTypeError, Err: err})
+						return
+					}
+					rt.Log.Append(created)
+					history = append(history, created)
+					if !emit(AgentEvent{Type: AgentEventTypeResponseReset}) {
+						return
+					}
+					continue
+				}
+			}
 			finalizeAndDone()
 			return
 		}
@@ -686,6 +709,22 @@ func (a *Agent) checkIncompleteTodos(ctx context.Context, sessionID string) stri
 	return ""
 }
 
+// incompleteWorkReminder returns a single nudge when the model is about to
+// finish but todo items or plan steps remain incomplete, otherwise "".
+func (a *Agent) incompleteWorkReminder(ctx context.Context, sessionID string) string {
+	var parts []string
+	if r := a.checkIncompleteTodos(ctx, sessionID); r != "" {
+		parts = append(parts, r)
+	}
+	if a.hasPendingPlanSteps(ctx, sessionID) {
+		parts = append(parts, "plan steps are still pending.")
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return "You reported done but work remains: " + strings.Join(parts, " ") + " Continue working on the remaining items instead of finishing."
+}
+
 // countIncompleteTodos counts todo items with status != "completed" in a
 // todo_list tool result. The result contains a JSON array of {status: ...} objects.
 func countIncompleteTodos(tr core.ToolResult) int {
@@ -720,8 +759,6 @@ func countIncompleteTodos(tr core.ToolResult) int {
 	}
 	return count
 }
-
-
 
 // checkPlanQuality checks whether a plan meets minimum quality requirements:
 // has numbered phases, bulleted sub-steps, AND update_plan was called with
