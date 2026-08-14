@@ -3,10 +3,13 @@ package app
 import (
 	"context"
 	"os"
+	"path/filepath"
 
 	"github.com/usewhale/whale/internal/core"
 	"github.com/usewhale/whale/internal/plugins"
 	"github.com/usewhale/whale/internal/policy"
+	"github.com/usewhale/whale/internal/team_engine"
+	teampglog "github.com/usewhale/whale/internal/team_engine/log"
 )
 
 func New(ctx context.Context, cfg Config, start StartOptions) (*App, error) {
@@ -95,5 +98,9 @@ func New(ctx context.Context, cfg Config, start StartOptions) (*App, error) {
 		userInput:             defaultUserInputFunc(start.UserInputFunc),
 	}
 	appRef = app
+
+	team_engine.SetLogger(teampglog.NewTeamLog(workspaceRoot))
+	team_engine.CleanupInterruptedTasks(filepath.Join(workspaceRoot, ".whale", "team_tasks"))
+
 	return app, nil
 }
