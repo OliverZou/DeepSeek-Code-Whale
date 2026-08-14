@@ -15,6 +15,7 @@ import (
 	"github.com/usewhale/whale/internal/llm"
 	"github.com/usewhale/whale/internal/llm/deepseek"
 	"github.com/usewhale/whale/internal/team_engine"
+	whaleworktree "github.com/usewhale/whale/internal/worktree"
 )
 
 func newTeamCmd() *cobra.Command {
@@ -106,6 +107,12 @@ Subcommands:
 				return fmt.Errorf("init engine: %w", err)
 			}
 			defer eng.Close()
+
+			// Enable git worktree isolation for coding tasks when run inside a
+			// git repo (non-git dirs silently fall back to the default mode).
+			if repoRoot, err := whaleworktree.CheckoutRoot(workdir); err == nil {
+				eng.EnableWorktree(repoRoot)
+			}
 
 			taskID := args[0]
 			fmt.Printf("🚀 Running task %s...\n", taskID)
@@ -199,6 +206,12 @@ Subcommands:
 				return fmt.Errorf("init engine: %w", err)
 			}
 			defer eng.Close()
+
+			// Enable git worktree isolation for coding tasks when run inside a
+			// git repo (non-git dirs silently fall back to the default mode).
+			if repoRoot, err := whaleworktree.CheckoutRoot(workdir); err == nil {
+				eng.EnableWorktree(repoRoot)
+			}
 
 			// Optional team configuration.
 			if teamName, _ := cmd.Flags().GetString("team"); teamName != "" {

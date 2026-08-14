@@ -346,18 +346,26 @@ func (e *TeamEngine) createWorktree(taskID string) (string, string, error) {
 }
 
 // collectWorktreeDiff generates a git diff for a coding task's worktree.
+// collectWorktreeDiff generates a git diff for a coding task's worktree.
+// Call after commitWorktree so the diff captures the committed worker changes.
 func (e *TeamEngine) collectWorktreeDiff(taskID string) string {
-	e.mu.Lock()
-	branch, ok := e.activeTrees[taskID]
-	delete(e.activeTrees, taskID)
-	e.mu.Unlock()
-
-	if !ok || branch == "" || e.worktreeDir == "" {
+	branch := e.activeBranch(taskID)
+	if branch == "" || e.worktreeDir == "" {
 		return ""
 	}
 
-	// git diff of the worktree branch vs its base.
-	cmd := exec.Command("git", "diff", branch+"^.."+branch)
+	// Diff the worktree branch against the main repo's current HEAD (the base
+	// the worktree was created from). The team engine merges worktrees
+	// serially, so the main HEAD is still the original base here.
+	baseCmd := exec.Command("git", "rev-parse", "HEAD")
+	baseCmd.Dir = e.worktreeDir
+	baseOut, err := baseCmd.Output()
+	if err != nil {
+		return ""
+	}
+	base := strings.TrimSpace(string(baseOut))
+
+	cmd := exec.Command("git", "diff", base+".."+branch)
 	cmd.Dir = e.worktreeDir
 	out, _ := cmd.Output()
 	diff := string(out)
@@ -367,6 +375,7 @@ func (e *TeamEngine) collectWorktreeDiff(taskID string) string {
 	}
 	return diff
 }
+
 
 // cleanupWorktree removes a worktree directory and branch.
 func (e *TeamEngine) cleanupWorktree(taskID string) {
@@ -385,8 +394,61 @@ func (e *TeamEngine) cleanupWorktree(taskID string) {
 	cmd.Dir = e.worktreeDir
 	cmd.Run()
 	// Remove the branch.
-	exec.Command("git", "branch", "-D", branch).Dir = e.worktreeDir
+	delCmd := exec.Command("git", "branch", "-D", branch)
+	delCmd.Dir = e.worktreeDir
+	_ = delCmd.Run()
 }
+
+// activeBranch returns the worktree branch for a task without consuming the
+// entry. Used for reuse detection, diff, merge, and cleanup.
+func (e *TeamEngine) activeBranch(taskID string) string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.activeTrees[taskID]
+}
+
+// commitWorktree commits the worker's working-tree changes in its isolated
+// worktree so they can be diffed and merged as a real commit. Returns nil when
+// there is nothing to commit. --no-verify skips untrusted pre-commit hooks
+// (see AGENTS.md: hooks are untrusted input that may run shell commands).
+func (e *TeamEngine) commitWorktree(taskID string) error {
+	branch := e.activeBranch(taskID)
+	if branch == "" || e.worktreeDir == "" {
+		return nil
+	}
+	wtPath := filepath.Join(e.worktreeDir, ".whale", "worktrees", branch)
+
+	add := exec.Command("git", "add", "-A")
+	add.Dir = wtPath
+	if out, err := add.CombinedOutput(); err != nil {
+		return fmt.Errorf("git add: %s: %w", string(out), err)
+	}
+
+	commit := exec.Command("git", "commit", "-m", "team task "+taskID[:8], "--no-verify")
+	commit.Dir = wtPath
+	out, err := commit.CombinedOutput()
+	if err != nil && !strings.Contains(string(out), "nothing to commit") {
+		return fmt.Errorf("git commit: %s: %w", string(out), err)
+	}
+	return nil
+}
+
+// mergeWorktree merges the task's worktree branch back into the main repo.
+// Uses --no-ff so the merge commit keeps the team task traceable. Returns an
+// error on conflict/failure; the caller decides whether to abort.
+func (e *TeamEngine) mergeWorktree(taskID string) error {
+	branch := e.activeBranch(taskID)
+	if branch == "" || e.worktreeDir == "" {
+		return nil
+	}
+	cmd := exec.Command("git", "merge", branch, "--no-ff", "--no-edit", "-m", "team task "+taskID[:8])
+	cmd.Dir = e.worktreeDir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("git merge: %s: %w", string(out), err)
+	}
+	return nil
+}
+
 
 // isWorktreeEligibleRole returns true if the role modifies code and benefits from worktree isolation.
 func isWorktreeEligibleRole(role AgentRole) bool {
@@ -1077,18 +1139,27 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 			agentWorkdir := filepath.Join(e.Whiteboard.TaskDir(taskID), "out")
 			os.MkdirAll(agentWorkdir, 0755)
 
-			// Coding Harness (场景2): create isolated git worktree for coding tasks.
+			// Coding Harness (场景2): create or reuse an isolated git worktree
+			// for coding tasks. On retry the same worktree is reused so the
+			// Worker keeps accumulating changes on one branch.
 			var hasWorktree bool
 			if e.worktreeEnabled && isWorktreeEligibleRole(task.Role) {
-				wtPath, branch, err := e.createWorktree(task.ID)
-				if err == nil {
+				branch := e.activeBranch(task.ID)
+				if branch == "" {
+					wtPath, newBranch, err := e.createWorktree(task.ID)
+					if err == nil {
+						branch = newBranch
+						// Append worktree info to prompt only on first creation.
+						prompt += fmt.Sprintf("\n\n## Git Worktree: %s\nYou are working in an isolated git branch `%s`. All changes are safe.\nWhen finished, describe what you changed.",
+							wtPath, branch)
+					}
+				}
+				if branch != "" {
+					wtPath := filepath.Join(e.worktreeDir, ".whale", "worktrees", branch)
 					agentWorkdir = wtPath
 					task.Workdir = wtPath
 					task.ArtifactPath = branch
 					hasWorktree = true
-					// Append worktree info to prompt so the Worker knows where it is.
-					prompt += fmt.Sprintf("\n\n## Git Worktree: %s\nYou are working in an isolated git branch `%s`. All changes are safe.\nWhen finished, describe what you changed.",
-						wtPath, branch)
 				}
 			}
 
@@ -1262,8 +1333,9 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 				}
 			}
 
-			// Coding Harness: collect git diff after worker completes.
+			// Coding Harness: commit then collect git diff after worker completes.
 			if hasWorktree {
+				_ = e.commitWorktree(task.ID)
 				diff := e.collectWorktreeDiff(task.ID)
 				diffContent := fmt.Sprintf("\n\n## git diff\n```diff\n%s\n```", diff)
 				if err := e.Whiteboard.AppendOutput(task.ID, diffContent); err != nil {
@@ -1406,6 +1478,23 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 				return false, fmt.Errorf("update retry count: %w", err)
 			}
 			e.mu.Unlock()
+
+			// Coding Harness: merge the worktree branch back into the main repo
+			// now that verification passed.
+			if e.activeBranch(taskID) != "" {
+				if err := e.mergeWorktree(taskID); err != nil {
+					// Merge conflict/failure: abort to restore the main repo and
+					// keep the worktree branch for manual inspection. The diff
+					// artifact already holds the worker's changes.
+					abort := exec.Command("git", "merge", "--abort")
+					abort.Dir = e.worktreeDir
+					_ = abort.Run()
+					Log("worktree", "task %s merge failed (branch kept): %v", taskID[:8], err)
+				} else {
+					e.cleanupWorktree(taskID)
+				}
+			}
+
 			// Write verify file — file-based completion proof.
 			if task.Output != "" {
 				os.WriteFile(filepath.Join(e.Whiteboard.TaskDir(taskID), "verify.md"), []byte(feedback), 0644)
