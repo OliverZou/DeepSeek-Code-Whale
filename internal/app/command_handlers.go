@@ -77,6 +77,14 @@ func (a *App) ExecuteSlash(line string) (CommandExecution, error) {
 		res, err := a.forkCurrentSession(cmdResult.ForkName)
 		return CommandExecution{Handled: true, Text: res.Message, LocalResult: res.Local}, err
 	}
+	if cmdResult.TeamList {
+		text, err := a.listTeamGoals()
+		return CommandExecution{Handled: true, Text: text}, err
+	}
+	if cmdResult.TeamGoal != "" {
+		text, err := a.startTeamGoal(cmdResult.TeamGoal, cmdResult.TeamName)
+		return CommandExecution{Handled: true, Text: text}, err
+	}
 	out := CommandExecution{Handled: true, ShouldExit: cmdResult.ShouldExit}
 	if cmdResult.Mode != "" {
 		mode, err := session.ParseMode(cmdResult.Mode)

@@ -194,6 +194,16 @@ func teamAgentsDir(tc *TeamConfig) string {
 	return filepath.Join(tc.TeamDir, "agents")
 }
 
+// teamName returns the team's name — the directory basename — or "" when the
+// team has no on-disk directory. Recorded into member session meta so the
+// session picker can render team members as distinguishable entries.
+func teamName(tc *TeamConfig) string {
+	if tc == nil || tc.TeamDir == "" {
+		return ""
+	}
+	return filepath.Base(tc.TeamDir)
+}
+
 // LoadTeamConfig reads and parses a single team YAML file.
 func LoadTeamConfig(path string) (*TeamConfig, error) {
 	data, err := os.ReadFile(path)

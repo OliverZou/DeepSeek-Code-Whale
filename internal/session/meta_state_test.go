@@ -231,6 +231,44 @@ func TestListSessionsHidesSubagentSessions(t *testing.T) {
 	}
 }
 
+func TestListSessionsShowsTeamMembers(t *testing.T) {
+	dir := t.TempDir()
+	if err := SaveSessionMeta(dir, "parent", SessionMeta{Title: "parent"}); err != nil {
+		t.Fatalf("save parent meta: %v", err)
+	}
+	// Plain subagent stays hidden; team member (Team meta set) shows.
+	if err := SaveSessionMeta(dir, "plain-sub", SessionMeta{Kind: "subagent", ParentSessionID: "parent", Status: "completed"}); err != nil {
+		t.Fatalf("save plain subagent meta: %v", err)
+	}
+	if err := SaveSessionMeta(dir, "team-lead", SessionMeta{Kind: "subagent", Team: "MVP开发专家团", Role: "planner", Task: "开发登录页", Status: "completed"}); err != nil {
+		t.Fatalf("save team member meta: %v", err)
+	}
+	for _, id := range []string{"parent", "plain-sub", "team-lead"} {
+		if err := os.WriteFile(filepath.Join(dir, id+".jsonl"), []byte("{}\n"), 0o600); err != nil {
+			t.Fatalf("write session %s: %v", id, err)
+		}
+	}
+	out, err := ListSessions(dir, 10)
+	if err != nil {
+		t.Fatalf("list sessions: %v", err)
+	}
+	if len(out) != 2 {
+		t.Fatalf("expected parent + team member, got %+v", out)
+	}
+	var teamLead SessionSummary
+	for _, s := range out {
+		if s.ID == "team-lead" {
+			teamLead = s
+		}
+	}
+	if teamLead.ID == "" {
+		t.Fatalf("expected team-lead in results, got %+v", out)
+	}
+	if got := SessionConversationTitle(dir, "team-lead", teamLead.Meta); got != "[MVP开发专家团] planner — 开发登录页" {
+		t.Fatalf("unexpected team member title: %q", got)
+	}
+}
+
 func TestListSessionsHidesLegacySubagentSessionNames(t *testing.T) {
 	dir := t.TempDir()
 	for _, name := range []string{"parent.jsonl", "parent--subagent-call-1.jsonl", "subagent-call-2.jsonl"} {

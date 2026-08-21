@@ -24,6 +24,9 @@ type Result struct {
 	ReviewPrompt       string
 	AllowShellPrefixes []string
 	ForkName           string
+	TeamGoal           string // /team <goal> — start a team run for this goal
+	TeamName           string // optional --team NAME selector for /team
+	TeamList           bool   // /team (no args) or /team list — enumerate running team runs
 	BtwQuestion        string
 }
 
@@ -76,6 +79,24 @@ func Parse(line, currentSessionID string, now time.Time) (Result, error) {
 			name = strings.TrimSpace(fields[1])
 		}
 		return Result{Handled: true, SessionID: currentSessionID, ForkName: name}, nil
+	}
+	if head == "/team" {
+		rest := strings.TrimSpace(strings.TrimPrefix(trimmed, "/team"))
+		teamName := ""
+		if i := strings.Index(rest, "--team"); i >= 0 {
+			teamName = strings.TrimSpace(strings.TrimPrefix(rest[i:], "--team"))
+			rest = strings.TrimSpace(rest[:i])
+		}
+		if rest == "" {
+			if teamName != "" {
+				return Result{}, fmt.Errorf("usage: /team <goal> [--team NAME]")
+			}
+			return Result{Handled: true, SessionID: currentSessionID, TeamList: true}, nil
+		}
+		if rest == "list" {
+			return Result{Handled: true, SessionID: currentSessionID, TeamList: true}, nil
+		}
+		return Result{Handled: true, SessionID: currentSessionID, TeamGoal: rest, TeamName: teamName}, nil
 	}
 	if trimmed == "/clear" {
 		return Result{Handled: true, SessionID: currentSessionID, ClearScreen: true}, nil

@@ -48,6 +48,7 @@ type SessionMeta struct {
 	OriginalHeadCommit string    `json:"original_head_commit,omitempty"`
 	Kind               string    `json:"kind,omitempty"`
 	ParentSessionID    string    `json:"parent_session_id,omitempty"`
+	Team               string    `json:"team,omitempty"`
 	Role               string    `json:"role,omitempty"`
 	Model              string    `json:"model,omitempty"`
 	Task               string    `json:"task,omitempty"`
@@ -74,6 +75,7 @@ type SessionMetaPatch struct {
 	OriginalHeadCommit string
 	Kind               string
 	ParentSessionID    string
+	Team               string
 	Role               string
 	Model              string
 	Task               string
@@ -98,6 +100,7 @@ func SessionMetaPatchFromMeta(meta SessionMeta) SessionMetaPatch {
 		OriginalHeadCommit: meta.OriginalHeadCommit,
 		Kind:               meta.Kind,
 		ParentSessionID:    meta.ParentSessionID,
+		Team:               meta.Team,
 		Role:               meta.Role,
 		Model:              meta.Model,
 		Task:               meta.Task,
@@ -237,6 +240,9 @@ func PatchSessionMeta(sessionsDir, sessionID string, patch SessionMetaPatch) (Se
 	}
 	if strings.TrimSpace(patch.ParentSessionID) != "" {
 		cur.ParentSessionID = strings.TrimSpace(patch.ParentSessionID)
+	}
+	if strings.TrimSpace(patch.Team) != "" {
+		cur.Team = strings.TrimSpace(patch.Team)
 	}
 	if strings.TrimSpace(patch.Role) != "" {
 		cur.Role = strings.TrimSpace(patch.Role)

@@ -3,6 +3,7 @@ package session
 import (
 	"bufio"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -45,7 +46,10 @@ func ListSessions(sessionsDir string, limit int) ([]SessionSummary, error) {
 			continue
 		}
 		meta, err := LoadSessionMeta(sessionsDir, id)
-		if err == nil && strings.TrimSpace(meta.Kind) == "subagent" {
+		if err == nil && strings.TrimSpace(meta.Kind) == "subagent" && strings.TrimSpace(meta.Team) == "" {
+			// Plain subagents stay hidden from the picker; team members carry
+			// Team meta so the user can switch into a Leader/worker/verifier
+			// session to observe or redirect it (P3).
 			continue
 		}
 		out = append(out, SessionSummary{
@@ -70,6 +74,20 @@ func ListSessions(sessionsDir string, limit int) ([]SessionSummary, error) {
 func SessionConversationTitle(sessionsDir, sessionID string, meta SessionMeta) string {
 	if title := strings.TrimSpace(meta.Title); title != "" {
 		return singleLine(title)
+	}
+	// Team member sessions have no Title but carry Team/Role/Task meta — render
+	// a distinguishable entry for the session picker (P3).
+	if meta.Kind == "subagent" && strings.TrimSpace(meta.Team) != "" {
+		role := strings.TrimSpace(meta.Role)
+		task := strings.TrimSpace(meta.Task)
+		switch {
+		case task != "":
+			return singleLine(fmt.Sprintf("[%s] %s — %s", meta.Team, role, task))
+		case role != "":
+			return singleLine(fmt.Sprintf("[%s] %s", meta.Team, role))
+		default:
+			return singleLine(fmt.Sprintf("[%s] team member", meta.Team))
+		}
 	}
 	if title, err := FirstVisibleUserMessage(sessionsDir, sessionID); err == nil && title != "" {
 		return title

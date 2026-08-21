@@ -30,6 +30,7 @@ func resolveTeamSpawnRequest(req team_engine.SubagentRequest, library *tasks.Age
 	tasksReq := tasks.SpawnSubagentRequest{
 		Task:         req.Task,
 		Role:         req.Role,
+		Team:         req.Team,
 		Model:        req.Model,
 		MaxToolIters: req.MaxIters,
 		MaxToolCalls: req.MaxCalls,

@@ -117,6 +117,7 @@ type SubagentRequest struct {
 	Task          string   // The prompt/description for the agent
 	Role          string   // Role name (e.g. "developer", "verifier")
 	AgentName     string   // Agent definition name from .md file (e.g. "backend-engineer")
+	Team          string   // team name, recorded into session meta for picker rendering
 	TeamAgentsDir string   // team's agents/ dir (e.g. ~/.whale/teams/<name>/agents); adapter resolves team-local agent definitions from here
 	Model         string   // LLM model name; "" = Whale default
 	Tools         []string // Allowed tool names
@@ -209,6 +210,7 @@ func (ar *AgentRunner) RunWithContext(ctx context.Context, prompt, workdir, tool
 		Task:          prompt,
 		Role:          role,
 		AgentName:     agentName,
+		Team:          teamName(ar.team),
 		TeamAgentsDir: teamAgentsDir(ar.team),
 		Tools:         toolNames,
 		Workdir:       workdir,
@@ -275,6 +277,7 @@ func (ar *AgentRunner) RunVerifier(prompt, workdir string, timeout time.Duration
 		Task:          prompt,
 		Role:          "verifier",
 		AgentName:     agentName,
+		Team:          teamName(ar.team),
 		TeamAgentsDir: teamAgentsDir(ar.team),
 		Workdir:       workdir,
 		Timeout:       timeout,
@@ -357,6 +360,7 @@ func (ar *AgentRunner) RunDecomposer(prompt, workdir string, timeout time.Durati
 		Task:          prompt,
 		Role:          "planner",
 		AgentName:     agentName,
+		Team:          teamName(ar.team),
 		TeamAgentsDir: teamAgentsDir(ar.team),
 		Workdir:       workdir,
 		Timeout:       timeout,
@@ -444,6 +448,7 @@ func (ar *AgentRunner) RunElaborationStep(prompt, workdir string, timeout time.D
 	req := SubagentRequest{
 		Task:     prompt,
 		Role:     "planner",
+		Team:     teamName(ar.team),
 		Tools:    nil, // no tools — pure text analysis
 		Workdir:  workdir,
 		Timeout:  timeout,

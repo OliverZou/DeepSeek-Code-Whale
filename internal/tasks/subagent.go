@@ -24,6 +24,7 @@ import (
 type SpawnSubagentRequest struct {
 	Task              string          `json:"task"`
 	Role              string          `json:"role,omitempty"`
+	Team              string          `json:"team,omitempty"` // team name, recorded into session meta for picker rendering
 	Agent             AgentDefinition `json:"agent,omitempty"`
 	Model             string          `json:"model,omitempty"`
 	MaxToolIters      int             `json:"max_tool_iters,omitempty"`
@@ -284,6 +285,7 @@ func (r *Runner) runSubagent(ctx context.Context, req SpawnSubagentRequest, prog
 		r.saveSubagentMeta(sessionID, session.SessionMeta{
 			Kind:               "subagent",
 			ParentSessionID:    parentSessionID,
+			Team:               req.Team,
 			Role:               role,
 			Model:              model,
 			Task:               task,
