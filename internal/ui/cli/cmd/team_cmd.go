@@ -315,11 +315,21 @@ Subcommands:
 				if batch.Status == team_engine.BatchStatusFailed {
 					icon = "❌"
 				}
+				// A batch can be "passed" while still carrying suspended tasks
+				// (left for user intervention) — surface that instead of a green check.
+				for _, t := range batch.Tasks {
+					if t.State == team_engine.TaskStateSuspended {
+						icon = "⚠️"
+						break
+					}
+				}
 				fmt.Printf("  %s Batch %s [%s]\n", icon, batch.LabelOrID(), batch.Status)
 				for _, t := range batch.Tasks {
 					taskIcon := "  ✅"
 					if t.State == team_engine.TaskStateFailed {
 						taskIcon = "  ❌"
+					} else if t.State == team_engine.TaskStateSuspended {
+						taskIcon = "  ⚠️"
 					}
 					fmt.Printf("    %s %s [%s] %s\n", taskIcon, t.ID[:8], t.State, t.Title)
 				}
@@ -837,6 +847,8 @@ func statusIcon(state team_engine.TaskState) string {
 		return "✔️"
 	case team_engine.TaskStateFailed:
 		return "❌"
+	case team_engine.TaskStateSuspended:
+		return "⚠️"
 	default:
 		return "❓"
 	}

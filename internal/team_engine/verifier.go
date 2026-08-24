@@ -20,6 +20,7 @@ type Verifier struct {
 	timeout    time.Duration
 	model      string
 	agentName  string
+	workdir    string
 	LastPrompt string
 }
 
@@ -46,6 +47,15 @@ func (v *Verifier) WithAgentName(name string) *Verifier {
 	return v
 }
 
+// WithWorkdir overrides the directory the Verifier inspects. By default the
+// Verifier inspects task.Workdir (the original workspace); callers that run the
+// Worker in a sandboxed out/ directory must point the Verifier there instead,
+// otherwise it looks for deliverables in the wrong place.
+func (v *Verifier) WithWorkdir(wd string) *Verifier {
+	v.workdir = wd
+	return v
+}
+
 // ---------------------------------------------------------------------------
 // BuildPrompt — task context for the Verifier agent
 // ---------------------------------------------------------------------------
@@ -57,7 +67,10 @@ func (v *Verifier) BuildPrompt(task *Task) string {
 	workerOutput, _ := v.whiteboard.ReadOutput(task.ID)
 	inbox, _ := v.whiteboard.ReadInput(task.ID)
 
-	workdir := task.Workdir
+	workdir := v.workdir
+	if workdir == "" {
+		workdir = task.Workdir
+	}
 	if workdir == "" {
 		workdir = "."
 	}
@@ -127,7 +140,10 @@ those issues. An empty [] array means "no issues" and the task will auto-pass.
 // Returns (passed, retry, feedback, err).
 func (v *Verifier) Verify(task *Task) (passed bool, retry bool, feedback string, err error) {
 	prompt := v.BuildPrompt(task)
-	workdir := task.Workdir
+	workdir := v.workdir
+	if workdir == "" {
+		workdir = task.Workdir
+	}
 	if workdir == "" {
 		workdir = "."
 	}
@@ -222,7 +238,6 @@ func hasVerdictMarkers(output string) bool {
 		strings.Contains(upper, "FINDINGS") ||
 		strings.Contains(upper, "---JSON")
 }
-
 
 // ---------------------------------------------------------------------------
 // Shared helpers

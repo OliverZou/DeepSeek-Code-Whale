@@ -419,6 +419,15 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 		var verifyDur time.Duration
 		var v *Verifier
 
+		// Non-worktree: the Worker produced in its sandbox out/ directory, but
+		// task.Workdir still points at the original workspace (output is only
+		// propagated there after a PASS). Point the Verifier at the sandbox so it
+		// inspects the actual deliverables instead of an empty workspace.
+		verifyWorkdir := task.Workdir
+		if e.activeBranch(taskID) == "" {
+			verifyWorkdir = filepath.Join(e.Whiteboard.TaskDir(taskID), "out")
+		}
+
 		// Transition to verifying (skip the separate checking phase —
 		// the Verifier agent performs mechanical checks itself).
 		e.mu.Lock()
@@ -445,7 +454,7 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 				if e.Loggers != nil {
 					e.Loggers.Engine("task %s verifier CONTINUE session", taskID[:8])
 				}
-				v = NewVerifier(e.Whiteboard, e.Runner, e.Router, 0, verifierModel).WithAgentName(verifierAgentName)
+				v = NewVerifier(e.Whiteboard, e.Runner, e.Router, 0, verifierModel).WithAgentName(verifierAgentName).WithWorkdir(verifyWorkdir)
 				prompt := v.BuildPrompt(task)
 				resp := e.shellSpawner.ContinueSession(ws, prompt)
 				verifyDur = time.Since(verifyStart)
@@ -466,13 +475,13 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 				if e.Loggers != nil {
 					e.Loggers.Engine("task %s verifier SPAWN persistent agent=%s", taskID[:8], verifierAgentName)
 				}
-				v = NewVerifier(e.Whiteboard, e.Runner, e.Router, 0, verifierModel).WithAgentName(verifierAgentName)
+				v = NewVerifier(e.Whiteboard, e.Runner, e.Router, 0, verifierModel).WithAgentName(verifierAgentName).WithWorkdir(verifyWorkdir)
 				prompt := v.BuildPrompt(task)
 				req := SubagentRequest{
 					Task:      prompt,
 					Role:      "verifier",
 					AgentName: verifierAgentName,
-					Workdir:   task.Workdir,
+					Workdir:   verifyWorkdir,
 					Timeout:   time.Duration(e.Router.ResolveTimeout(task.Role, true)) * time.Second,
 					MaxIters:  15,
 					MaxCalls:  50,
@@ -498,7 +507,7 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 				}
 			} else {
 				// Fallback: normal spawn via Runner.
-				v = NewVerifier(e.Whiteboard, e.Runner, e.Router, 0, verifierModel).WithAgentName(verifierAgentName)
+				v = NewVerifier(e.Whiteboard, e.Runner, e.Router, 0, verifierModel).WithAgentName(verifierAgentName).WithWorkdir(verifyWorkdir)
 				if e.Loggers != nil {
 					e.Loggers.Engine("task %s verifier START agent=%s", taskID[:8], verifierAgentName)
 				}
