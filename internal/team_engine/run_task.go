@@ -256,6 +256,11 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 					e.Loggers.Engine("task %s worker CONTINUE session (retry=%d)", taskID[:8], attempt)
 				}
 				resp := e.shellSpawner.ContinueSession(ws, fbPrompt)
+				if !resp.Success {
+					// The session died (timeout/crash) — drop it so the next
+					// retry spawns a fresh session instead of reusing a dead one.
+					e.closePersistentSession(workerKey)
+				}
 				result = &RunResult{
 					SessionID:       resp.SessionID,
 					ExitCode:        resp.ExitCode,
@@ -453,6 +458,9 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 					if feedback == "" {
 						feedback = resp.Output
 					}
+					// Session died (timeout/crash) — drop it so the next retry
+					// spawns a fresh verifier session.
+					e.closePersistentSession(vKey)
 				}
 			} else if e.shellSpawner != nil {
 				if e.Loggers != nil {

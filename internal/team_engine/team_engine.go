@@ -203,6 +203,12 @@ func (e *TeamEngine) Close() error {
 
 	e.wg.Wait()
 
+	// Close any lingering persistent subprocess sessions (worker/verifier) so
+	// their child processes exit instead of idling on an open stdin pipe.
+	for key := range e.persistentSessions {
+		e.closePersistentSession(key)
+	}
+
 	for taskID := range activeTrees {
 		e.cleanupWorktree(taskID)
 	}

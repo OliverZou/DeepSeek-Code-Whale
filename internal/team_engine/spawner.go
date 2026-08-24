@@ -387,6 +387,11 @@ type PersistentSession struct {
 
 	pid int
 	mu  sync.Mutex // serialises writes to stdin
+
+	// cancel aborts the underlying subprocess.  Set from a WithTimeout
+	// context so a request timeout kills the process instead of leaving
+	// the session to run unbounded (see SpawnPersistent).
+	cancel context.CancelFunc
 }
 
 // SpawnPersistent starts a whale exec --persist subprocess, writes the
@@ -406,6 +411,7 @@ func (s *ShellSubagentSpawner) SpawnPersistent(ctx context.Context, req Subagent
 	args := []string{
 		"exec",
 		"--dangerously-skip-permissions",
+		"--timeout-sec", fmt.Sprintf("%d", int(req.Timeout.Seconds())),
 		"--persist",
 	}
 	if req.Model != "" {
@@ -422,7 +428,20 @@ func (s *ShellSubagentSpawner) SpawnPersistent(ctx context.Context, req Subagent
 		cwd = "."
 	}
 
-	cmd := exec.CommandContext(context.Background(), whaleBin, args...)
+	runCtx := context.Background()
+	var cancel context.CancelFunc
+	if req.Timeout > 0 {
+		runCtx, cancel = context.WithTimeout(runCtx, req.Timeout)
+	}
+	// The session owns cancel once constructed; release it on any early-return
+	// path so the timeout timer does not leak.
+	sessionOwnsCancel := false
+	defer func() {
+		if cancel != nil && !sessionOwnsCancel {
+			cancel()
+		}
+	}()
+	cmd := exec.CommandContext(runCtx, whaleBin, args...)
 	cmd.Dir = cwd
 	cmd.Env = append(os.Environ(),
 		fmt.Sprintf("WHALE_MAX_TOKENS=%d", req.MaxTokens),
@@ -455,7 +474,9 @@ func (s *ShellSubagentSpawner) SpawnPersistent(ctx context.Context, req Subagent
 		stdoutBuf: bufio.NewScanner(stdoutPipe),
 		stderr:    &sessionStderr,
 		pid:       cmd.Process.Pid,
+		cancel:    cancel,
 	}
+	sessionOwnsCancel = true
 	// Large buffer — agent output can be large.
 	session.stdoutBuf.Buffer(make([]byte, 0, 256*1024), 4*1024*1024)
 
@@ -479,6 +500,9 @@ func (s *ShellSubagentSpawner) ContinueSession(session *PersistentSession, promp
 func (s *ShellSubagentSpawner) CloseSession(session *PersistentSession) {
 	if session == nil {
 		return
+	}
+	if session.cancel != nil {
+		session.cancel()
 	}
 	session.mu.Lock()
 	if session.stdin != nil {
