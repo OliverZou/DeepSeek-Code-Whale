@@ -6,8 +6,10 @@ import (
 	"github.com/usewhale/whale/internal/team_engine/log"
 )
 
-// Leader provides backward-compatible access to planning, review, and escalation.
-// Deprecated: New code should use Planner, Reviewer, and Escalator directly.
+// Leader bundles the Planner and Reviewer into the TeamCycle orchestration
+// surface: decompose the goal (Cycle 0), then review each plan-level
+// CycleReport. Both delegate to subagent spawns via the native adapter, so
+// the Leader's session is observable and forkable like any member session.
 type Leader struct {
 	planner  *Planner
 	reviewer *Reviewer

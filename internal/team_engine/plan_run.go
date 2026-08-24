@@ -991,7 +991,6 @@ func (e *TeamEngine) teamMaxAgents() int {
 }
 
 // RunBatch executes all tasks in a batch in parallel, respecting the
-// configured concurrency limit.// RunBatch executes all tasks in a batch in parallel, respecting the
 // configured concurrency limit.
 func (e *TeamEngine) RunBatch(ctx context.Context, batch *Batch) error {
 	batch.Status = BatchStatusRunning
