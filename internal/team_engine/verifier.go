@@ -247,12 +247,6 @@ func parseVerdict(output string) (passed bool, retry bool) {
 // ---json block).  A response with none of them did not come from a functioning
 // Verifier (e.g. a spawn error string like "error: unknown flag: --persist"),
 // so it must never auto-pass.
-func hasVerdictMarkers(output string) bool {
-	upper := strings.ToUpper(output)
-	return strings.Contains(upper, "VERDICT") ||
-		strings.Contains(upper, "FINDINGS") ||
-		strings.Contains(upper, "---JSON")
-}
 
 // ---------------------------------------------------------------------------
 // Shared helpers

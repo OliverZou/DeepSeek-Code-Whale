@@ -623,8 +623,6 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 				if task.Output != "" {
 					os.WriteFile(filepath.Join(e.Whiteboard.TaskDir(taskID), "verify.md"), []byte(feedback), 0644)
 				}
-				// Record lesson for future agents with the same role.
-				e.recordLesson(task.Role, task.Title, truncateLesson(verifierFeedbackForWorker(feedback), 80))
 				return true, nil
 			}
 			// passed=false after mechanical verification: fall through to retry.
@@ -678,16 +676,10 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 			return false, fmt.Errorf("update task for retry: %w", err)
 		}
 
-		// 0 issues → pass immediately.
-		currCount := len(ParseFindings(feedback))
-		if currCount == 0 && hasVerdictMarkers(feedback) {
-			e.mu.Unlock()
-			e.closePersistentSession("worker:" + taskID)
-			if task.Output != "" {
-				os.WriteFile(filepath.Join(e.Whiteboard.TaskDir(taskID), "verify.md"), []byte(feedback), 0644)
-			}
+		// 记录失败教训：仅当 verifier 给出结构化 findings 时，供同角色
+		// 后续 worker 参考。PASS 无教训价值，不记录。
+		if len(ParseFindings(feedback)) > 0 {
 			e.recordLesson(task.Role, task.Title, truncateLesson(verifierFeedbackForWorker(feedback), 80))
-			return true, nil
 		}
 		// Stagnation: same findings 2 rounds → suspend.
 		if attempt >= 2 {
