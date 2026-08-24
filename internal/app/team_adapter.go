@@ -192,26 +192,50 @@ func teamToolsToCapabilities(toolNames []string) []string {
 // .md prompt that don't apply in Team Engine.  Team Engine handles retry,
 // routing, and output format itself — the agent doesn't need these instructions.
 //
+// Sections before "团队协作" are removed by heading so the role's core
+// competency sections (coding standards, design rules, testing standards)
+// survive — the persona is never reduced to a bare stub. "团队协作" (and
+// everything after it) is truncated, because it marks the start of the
+// SendMessage/shutdown orchestration protocol — and in team-lead.md the whole
+// SOP workflow follows it, so truncation drops that too.
+//
 // Stripped sections:
-//   - Smart Routing / Send To: Engineer/QA/NoOne
-//   - Test Round Control (STRICT — MAX N ROUNDS)
-//   - Test Report Format (engine provides OUTPUT FORMAT)
-//   - 团队协作 / SendMessage / shutdown_request
+//   - ## Input ("You will receive Design Doc / PRD" pipeline handoff)
+//   - ### 3. Run Tests and Smart Routing (QA's Send-To routing protocol)
+//   - ## Test Round Control (STRICT — MAX N ROUNDS)
+//   - ## Test Report Format (engine provides OUTPUT FORMAT)
+//   - ## 团队协作 … (SendMessage / shutdown_request / SOP orchestration)
 func stripWorkbuddySections(prompt string) string {
-	markers := []string{
-		"\n### 3. Run Tests and Smart Routing",
-		"\n#### Smart Routing Decision",
-		"\n## Test Round Control",
-		"\n## Test Report Format",
-		"\n## Input\n\nYou will receive:",
-		"\n## 团队协作",
+	for _, h := range []string{
+		"## Input",
+		"### 3. Run Tests and Smart Routing",
+		"## Test Round Control",
+		"## Test Report Format",
+	} {
+		prompt = stripSection(prompt, h)
 	}
-	for _, m := range markers {
-		if idx := strings.Index(prompt, m); idx >= 0 {
-			prompt = prompt[:idx]
-		}
+	// 团队协作 starts the orchestration protocol; truncate from there.
+	if idx := strings.Index(prompt, "## 团队协作"); idx >= 0 {
+		prompt = prompt[:idx]
 	}
 	return prompt
+}
+
+// stripSection removes the section beginning at heading (inclusive) up to the
+// next level-2 ("## ") heading, or the end of the prompt if none follows. A
+// level-2 boundary is used (rather than the next heading of any level) so a
+// section's deeper sub-headings ("###"/"####") are removed with it instead of
+// being mistaken for the section's end.
+func stripSection(prompt, heading string) string {
+	idx := strings.Index(prompt, heading)
+	if idx < 0 {
+		return prompt
+	}
+	rest := prompt[idx+len(heading):]
+	if next := strings.Index(rest, "\n## "); next >= 0 {
+		return prompt[:idx] + rest[next:]
+	}
+	return prompt[:idx]
 }
 
 // NewTeamEngineSpawnFunc exposes the team-engine subagent adapter for callers
