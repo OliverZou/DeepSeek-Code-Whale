@@ -80,8 +80,8 @@ func teamEngineSpawnAdapter(runner *tasks.Runner, library *tasks.AgentDefinition
 				PermissionMode: permissionForRole(req.Role),
 			}
 			// A verifier whose agent definition didn't resolve still needs the
-			// tool-grounded verify profile (read + shell.run, no write) so it
-			// can execute tests/linters instead of only static review.
+			// tool-grounded verify profile (read + shell.run + write) so it
+			// can execute tests/linters and drop its black-box test artifacts.
 			if req.Role == "verifier" && len(tasksReq.Tools) == 0 {
 				tasksReq.Tools = teamToolsToCapabilities(team_engine.ProfileToToolNames(team_engine.ProfileVerify))
 			}
@@ -146,9 +146,10 @@ func teamEngineSpawnAdapter(runner *tasks.Runner, library *tasks.AgentDefinition
 // permissionForRole returns the default permission mode for a team role.
 // Read-only roles (planner, reviewer, researcher, …) stay read-only; workers
 // get auto so they can write artifacts and run shell commands. The verifier is
-// special: it needs shell.run to execute tests/linters (tool-grounded
-// verification), but its toolset is constrained to the verify profile
-// (read + shell, no write) in the adapter fallback, so auto is safe.
+// special: it needs shell.run to execute tests/linters plus workspace.write to
+// drop its black-box test artifacts (tool-grounded verification), but its
+// toolset is constrained to the verify profile in the adapter fallback, so
+// auto is safe.
 func permissionForRole(role string) string {
 	switch role {
 	case "verifier":

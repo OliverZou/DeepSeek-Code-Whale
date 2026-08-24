@@ -124,10 +124,14 @@ func ProfileToToolNames(profile ToolProfile) []string {
 			"shell_run", "shell_wait", "shell_cancel",
 		}
 	case ProfileVerify:
-		// Tool-grounded verification: can run test/lint/build via shell
-		// but cannot modify files. Decision must be based on command output.
+		// Tool-grounded verification: can run test/lint/build via shell and
+		// write its own acceptance-level test artifacts to the verify/ dir.
+		// The write tool replaces shell-based file drops (mkdir/cat heredoc),
+		// which break under cmd.exe/pwsh on Windows and leave stray "-p" dirs
+		// or tmp files. Decision must still be backed by command output.
 		return []string{
 			"read_file", "list_dir", "grep", "search_files",
+			"write",
 			"shell_run", "shell_wait", "shell_cancel",
 			"web_search", "web_fetch", "fetch",
 		}

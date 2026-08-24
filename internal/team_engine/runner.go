@@ -267,9 +267,9 @@ func (ar *AgentRunner) Run(prompt, workdir, tools string, timeout time.Duration,
 
 // RunVerifier spawns a verifier subagent.  The agent definition (from .md
 // file or builtin) resolved via agentName provides the system prompt and
-// skills, but the toolset is always ProfileVerify (read + shell.run, no
-// write) — verification is tool-grounded by the task, so it never inherits a
-// role's write/test tools.
+// skills, but the toolset is always ProfileVerify (read + shell.run + write)
+// — verification is tool-grounded by the task, so it never inherits a role's
+// write/test tools.
 func (ar *AgentRunner) RunVerifier(prompt, workdir string, timeout time.Duration, maxIters, maxCalls, maxTokens int, agentName string, model ...string) *RunResult {
 	req := SubagentRequest{
 		Task:          prompt,
@@ -283,7 +283,8 @@ func (ar *AgentRunner) RunVerifier(prompt, workdir string, timeout time.Duration
 	}
 	// Verification is tool-grounded regardless of which agent persona the
 	// verifier resolves to: it needs read + shell.run (to execute the worker's
-	// own tests/linters) and must not inherit a QA persona's write/test tools.
+	// own tests/linters) + write (to drop its black-box test artifacts to
+	// verify/), and must not inherit a QA persona's write/test tools.
 	// The verify toolset is fixed by the task, not by the role.
 	req.Tools = ProfileToToolNames(ProfileVerify)
 	if len(model) > 0 && model[0] != "" {
