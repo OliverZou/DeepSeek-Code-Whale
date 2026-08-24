@@ -19,6 +19,7 @@ import (
 	"github.com/usewhale/whale/internal/tasks"
 	"github.com/usewhale/whale/internal/team_engine"
 	teampglog "github.com/usewhale/whale/internal/team_engine/log"
+	"github.com/usewhale/whale/internal/tools"
 	whaleworktree "github.com/usewhale/whale/internal/worktree"
 )
 
@@ -810,11 +811,20 @@ func ensureTeamEngineSpawnFunc(workdir string) {
 		return deepseek.New(opts...)
 	}
 	library := tasks.NewAgentDefinitionLibrary(workdir)
+	// Native subagents select tools from the parent registry by capability.
+	// A minimal CLI runner has no parent tools, so build the workspace
+	// toolset here — otherwise workers get an empty tool set and cannot
+	// write artifacts (they'd emit only the <analysis> preamble).
+	var parentTools *core.ToolRegistry
+	if toolset, err := tools.NewToolset(workdir); err == nil {
+		parentTools, _ = core.NewToolRegistryChecked(toolset.Tools())
+	}
 	runner := tasks.NewRunner(tasks.RunnerConfig{
 		ProviderFactory:  providerFactory,
 		AgentDefinitions: library,
 		WorkspaceRoot:    workdir,
 		DefaultModel:     defaults.DefaultModel,
+		ParentTools:      parentTools,
 	})
 	team_engine.SetDefaultSpawnFunc(app.NewTeamEngineSpawnFunc(runner, library))
 }

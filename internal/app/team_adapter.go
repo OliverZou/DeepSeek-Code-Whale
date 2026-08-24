@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/usewhale/whale/internal/tasks"
@@ -31,7 +32,11 @@ func teamEngineSpawnAdapter(runner *tasks.Runner, library *tasks.AgentDefinition
 			OutputSchema: req.OutputSchema,
 		}
 		if len(req.Tools) > 0 {
-			tasksReq.Tools = req.Tools
+			// req.Tools carries team-engine tool names (ProfileToToolNames),
+			// which the shell spawner understands but the native subagent
+			// does not. Translate them to native capabilities so the child
+			// agent actually receives workspace.write / shell.run / etc.
+			tasksReq.Tools = teamToolsToCapabilities(req.Tools)
 		}
 
 		// Resolve agent definition from .md file when AgentName is set.
@@ -54,20 +59,19 @@ func teamEngineSpawnAdapter(runner *tasks.Runner, library *tasks.AgentDefinition
 
 		// Fallback: provide inline agent definitions for built-in roles.
 		if tasksReq.Agent.Name == "" {
-			switch req.Role {
-			case "planner", "verifier", "reviewer", "researcher", "evaluator", "synthesizer":
-				tasksReq.Agent = tasks.AgentDefinition{
-					Name:           req.Role,
-					Description:    "Team engine " + req.Role + " agent",
-					PermissionMode: tasks.AgentPermissionReadOnly,
-				}
-			default:
-				tasksReq.Agent = tasks.AgentDefinition{
-					Name:           req.Role,
-					Description:    "Team engine agent",
-					PermissionMode: tasks.AgentPermissionAuto,
-				}
+			tasksReq.Agent = tasks.AgentDefinition{
+				Name:           req.Role,
+				Description:    "Team engine " + req.Role + " agent",
+				PermissionMode: permissionForRole(req.Role),
 			}
+		}
+
+		// An agent resolved from a .md file may omit permission mode, which
+		// normalizes to read-only and would strip workspace.write / shell.run
+		// from workers, leaving them unable to produce artifacts. Default it
+		// by role (read-only roles stay read-only; workers get auto).
+		if tasksReq.Agent.PermissionMode == "" {
+			tasksReq.Agent.PermissionMode = permissionForRole(req.Role)
 		}
 
 		if req.Workdir != "" {
@@ -111,6 +115,53 @@ func teamEngineSpawnAdapter(runner *tasks.Runner, library *tasks.AgentDefinition
 			Diagnostic:      diag,
 		}, nil
 	}
+}
+
+// permissionForRole returns the default permission mode for a team role.
+// Read-only roles (planner, verifier, reviewers) stay read-only; workers get
+// auto so they can write artifacts and run shell commands.
+func permissionForRole(role string) string {
+	switch role {
+	case "planner", "verifier", "reviewer", "researcher", "evaluator", "synthesizer":
+		return tasks.AgentPermissionReadOnly
+	default:
+		return tasks.AgentPermissionAuto
+	}
+}
+
+// teamToolsToCapabilities maps team-engine tool names (ProfileToToolNames) to
+// native subagent capabilities. The shell spawner consumes tool names directly;
+// the native subagent selects tools by capability (workspace.write, shell.run,
+// …), so "apply_patch" — which the native toolset does not provide — correctly
+// collapses into workspace.write alongside "edit"/"write".
+func teamToolsToCapabilities(toolNames []string) []string {
+	caps := map[string]bool{}
+	add := func(c string) { caps[c] = true }
+	for _, name := range toolNames {
+		switch name {
+		case "read_file", "list_dir", "grep", "search_files":
+			add(tasks.CapabilityWorkspaceRead)
+		case "edit", "write", "apply_patch", "multi_edit":
+			add(tasks.CapabilityWorkspaceWrite)
+		case "shell_run", "shell_wait", "shell_cancel":
+			add(tasks.CapabilityShellRun)
+		case "write_stdin":
+			add(tasks.CapabilityTerminalWrite)
+		case "web_search":
+			add(tasks.CapabilityWebSearch)
+		case "web_fetch", "fetch":
+			add(tasks.CapabilityWebFetch)
+		}
+	}
+	if len(caps) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(caps))
+	for c := range caps {
+		out = append(out, c)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // stripWorkbuddySections removes WorkBuddy-specific sections from an agent
