@@ -2,6 +2,7 @@ package team_engine
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -164,6 +165,9 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 			if len(task.ParentIDs) == 0 {
 				prompt += "\n\n如果任务过大无法一次完成，在产出开头输出 [SPLIT_PLAN] 拆分。"
 			}
+			// 产物会在任务 done 后复制到用户 workspace 根目录。用相对路径引用
+			// 沙箱外文件（如 ../../game.js）在复制后层级改变会失效——要求用绝对路径。
+			prompt += "\n\n【路径约束】你的产出文件会被复制到用户 workspace 根目录后交付。严禁用相对路径（如 ../../game.js）引用工作目录之外的文件，这类路径在复制后失效。若需引用其他任务的产出文件，请使用其绝对路径。"
 
 			// State: assigned → producing (under lock).
 			e.mu.Lock()
@@ -539,53 +543,62 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 		}
 
 		if passed {
-			e.mu.Lock()
-			if err := e.Store.TransitionState(taskID, TaskStateVerified, "", ""); err != nil {
-				e.mu.Unlock()
-				return false, fmt.Errorf("transition to verified: %w", err)
-			}
-			if err := e.Store.TransitionState(taskID, TaskStateDone, "", ""); err != nil {
-				e.mu.Unlock()
-				return false, fmt.Errorf("transition to done: %w", err)
-			}
-			if err := e.Store.UpdateTask(taskID, map[string]interface{}{
-				"retry_count": attempt,
-			}); err != nil {
-				e.mu.Unlock()
-				return false, fmt.Errorf("update retry count: %w", err)
-			}
-			e.mu.Unlock()
-
-			// Coding Harness: merge the worktree branch back into the main repo
-			// now that verification passed.
-			if e.activeBranch(taskID) != "" {
-				if err := e.mergeWorktree(taskID); err != nil {
-					// Merge conflict/failure: abort to restore the main repo and
-					// keep the worktree branch for manual inspection. The diff
-					// artifact already holds the worker's changes.
-					abort := exec.Command("git", "merge", "--abort")
-					abort.Dir = e.worktreeDir
-					_ = abort.Run()
-					Log("worktree", "task %s merge failed (branch kept): %v", taskID[:8], err)
-				} else {
-					e.cleanupWorktree(taskID)
-				}
-			} else {
-				// Non-worktree: the Worker ran in a sandboxed out/ directory.
-				// Copy its results back into the task's workdir so the user's
-				// project actually reflects the completed work.
+			// Non-worktree: propagate BEFORE marking done so a mechanical re-check
+			// can downgrade the verdict if the propagated deliverable is broken
+			// (e.g. hardcoded sandbox-relative paths that no longer resolve after
+			// copy — see #24).
+			if e.activeBranch(taskID) == "" {
 				if err := e.propagateTaskOutput(taskID, task.Workdir); err != nil {
 					Log("task", "task %s output propagation failed: %v", taskID[:8], err)
+				} else if ok, detail := runMechanicalVerify(task.Workdir); !ok {
+					passed = false
+					feedback = "交付物传播到 workspace 后机械验证失败（自动化测试/构建未通过）：\n" + detail
 				}
 			}
 
-			// Write verify file — file-based completion proof.
-			if task.Output != "" {
-				os.WriteFile(filepath.Join(e.Whiteboard.TaskDir(taskID), "verify.md"), []byte(feedback), 0644)
+			if passed {
+				e.mu.Lock()
+				if err := e.Store.TransitionState(taskID, TaskStateVerified, "", ""); err != nil {
+					e.mu.Unlock()
+					return false, fmt.Errorf("transition to verified: %w", err)
+				}
+				if err := e.Store.TransitionState(taskID, TaskStateDone, "", ""); err != nil {
+					e.mu.Unlock()
+					return false, fmt.Errorf("transition to done: %w", err)
+				}
+				if err := e.Store.UpdateTask(taskID, map[string]interface{}{
+					"retry_count": attempt,
+				}); err != nil {
+					e.mu.Unlock()
+					return false, fmt.Errorf("update retry count: %w", err)
+				}
+				e.mu.Unlock()
+
+				// Coding Harness: merge the worktree branch back into the main repo
+				// now that verification passed.
+				if e.activeBranch(taskID) != "" {
+					if err := e.mergeWorktree(taskID); err != nil {
+						// Merge conflict/failure: abort to restore the main repo and
+						// keep the worktree branch for manual inspection. The diff
+						// artifact already holds the worker's changes.
+						abort := exec.Command("git", "merge", "--abort")
+						abort.Dir = e.worktreeDir
+						_ = abort.Run()
+						Log("worktree", "task %s merge failed (branch kept): %v", taskID[:8], err)
+					} else {
+						e.cleanupWorktree(taskID)
+					}
+				}
+
+				// Write verify file — file-based completion proof.
+				if task.Output != "" {
+					os.WriteFile(filepath.Join(e.Whiteboard.TaskDir(taskID), "verify.md"), []byte(feedback), 0644)
+				}
+				// Record lesson for future agents with the same role.
+				e.recordLesson(task.Role, task.Title, truncateLesson(feedback, 80))
+				return true, nil
 			}
-			// Record lesson for future agents with the same role.
-			e.recordLesson(task.Role, task.Title, truncateLesson(feedback, 80))
-			return true, nil
+			// passed=false after mechanical verification: fall through to retry.
 		}
 
 		// Verification failed — prepare retry.
@@ -676,4 +689,70 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 	}
 
 	return false, nil
+}
+
+// runMechanicalVerify 在传播后的 workdir 检测并运行标准测试/构建命令，
+// 确认交付物真正可用。未检测到自动化测试时返回 passed=true（不误判）。
+func runMechanicalVerify(workdir string) (passed bool, detail string) {
+	name, args := detectTestCommand(workdir)
+	if name == "" {
+		return true, ""
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Dir = workdir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return false, fmt.Sprintf("%s %s\n%s", name, strings.Join(args, " "), string(out))
+	}
+	return true, ""
+}
+
+// detectTestCommand 在 workdir 检测标准自动化测试/构建命令，返回命令名与参数。
+// 返回空 name 表示未检测到自动化测试。
+func detectTestCommand(workdir string) (name string, args []string) {
+	exists := func(p string) bool {
+		_, err := os.Stat(p)
+		return err == nil
+	}
+
+	// Go module：优先 go test。
+	if exists(filepath.Join(workdir, "go.mod")) {
+		return "go", []string{"test", "./..."}
+	}
+	// Node 测试文件（test/ 目录或根目录 *.test.js）。
+	if matches, _ := filepath.Glob(filepath.Join(workdir, "test", "*.test.js")); len(matches) > 0 {
+		return "node", []string{"--test", "test"}
+	}
+	if matches, _ := filepath.Glob(filepath.Join(workdir, "*.test.js")); len(matches) > 0 {
+		return "node", []string{"--test"}
+	}
+	// package.json 有非占位 test script。
+	if pkg := filepath.Join(workdir, "package.json"); exists(pkg) {
+		if script := npmTestScript(pkg); script != "" && !isNoopNpmTest(script) {
+			return "npm", []string{"test"}
+		}
+	}
+	return "", nil
+}
+
+// npmTestScript 读取 package.json 的 scripts.test。
+func npmTestScript(pkgPath string) string {
+	data, err := os.ReadFile(pkgPath)
+	if err != nil {
+		return ""
+	}
+	var pkg struct {
+		Scripts map[string]string `json:"scripts"`
+	}
+	if err := json.Unmarshal(data, &pkg); err != nil {
+		return ""
+	}
+	return pkg.Scripts["test"]
+}
+
+// isNoopNpmTest 判断 npm 默认占位 test script（未定义真实测试）。
+func isNoopNpmTest(script string) bool {
+	return strings.Contains(strings.ToLower(script), "no test specified")
 }

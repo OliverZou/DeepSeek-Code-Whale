@@ -35,9 +35,17 @@ verifier 在 `task.Workdir`（原始 workspace，如 `D:\src\whale_test_2048`）
 
 ### 已定位、待进一步调查
 
-**3. [major] verifier 持久会话复用失效（`#10a`）**
+**3. [major] verifier 持久会话空闲期被 kill（`#10a`）— 根因已找到并修复（d9f2d25）**
 
-部分任务第 2/3 轮 verifier 返回空 `[FAIL]`（第 2 轮 `Duration 0.0s` 立即返回，第 3 轮 `300.0s` 超时）。现象指向：持久会话跨重试复用时上下文膨胀，verifier 第 3 轮处理复杂任务超时，或 `ContinueSession` 后 app 层 turn 管理未产生有意义的验证输出。需深入调查 `RunTurnWithContentOptions` 与持久会话的上下文/turn 管理。
+**根因**：旧版 `SpawnPersistent` 用 `exec.CommandContext(runCtx, …)`，其中 `runCtx = context.WithTimeout(req.Timeout)`，而 `req.Timeout` 对 verifier 是 300s。这个 deadline **覆盖整个持久会话生命周期**（从 spawn 到 CloseSession）。当 verifier 第一次验证返回 FAIL、worker 进入重试（重新产出，耗时可能 > 300s）时，verifier 子进程在空闲中命中 300s deadline，被 `CommandContext` 自动 kill。下一个 `ContinueSession` 时子进程已死 → `stdin` 写失败 → 立即返回空 `[FAIL]`（`Duration 0.0s`）。
+
+**证据**（engine.log 时间线精确对应 300s 阈值）：
+- `f2119309`：verifier 第一次验证后空闲 **171s**（< 300s）→ CONTINUE 成功（46.6s）。
+- `af207e0c`：verifier 第一次验证后空闲 **497s**（> 300s）→ CONTINUE 立即失败（0.0s）。
+
+**修复**（d9f2d25，`spawner.go`）：`exec.CommandContext` → `exec.Command`（无 context）；会话级 timeout 改为 `sendAndReceive` 内的 per-call `time.AfterFunc`，只在该次 round-trip 未按时返回 EOT 时 kill。空闲期不再有 timer 悬挂。
+
+**验证**：`persist_idle_repro_test.go` 用最新二进制实测空闲 480s 后 round2 仍正常返回（`STILL_ALIVE`），确认空闲期不再退出。2048 测试当时跑的是 d9f2d25 提交前编译的旧二进制，故仍暴露该 bug——重新编译后不复现。
 
 **4. [major] 测试项目产物 bug：game.js 的 `window` 无守卫（`#10e`）**
 
@@ -45,15 +53,29 @@ verifier 在 `task.Workdir`（原始 workspace，如 `D:\src\whale_test_2048`）
 
 ### 工程/可观测性问题
 
-**5. [minor] 日志为空（`#11`）**
+**5. [minor] 日志为空（`#11`）— 已修复（移除 build tag 门槛）**
 
-`team_engine.log` 与 `engine.log` 均为 0 字节。Escalator 的 `"task … suspended … needs user intervention"` 日志、DW 批次日志等都无处可查，导致排障只能靠读白板文件。
+`team_engine.log` 与 `engine.log` 均为 0 字节。根因：`internal/team_engine/log/teamlog.go` 带 `//go:build teamlog` 编译标签，默认构建（`go build` 无 `-tags teamlog`）时编译的是 `teamlog_off.go` 的 **no-op 实现**，`NewTeamLog` 返回空 `&TeamLog{}`，所有 `WorkerStart`/`VerifierDone`/`BatchDone` 日志方法都是空函数。因此即便 `app_new.go` 已接线 `SetLogger(NewTeamLog(workspaceRoot))`，默认二进制也不落任何日志。
+
+修复：删除 `teamlog.go` 的 `//go:build teamlog` 标签（改为无条件编译真实实现），删除 `teamlog_off.go`（no-op 实现，避免符号重复）。默认构建现在会真实写入 `team_engine.log`，排障有据可查。`go build ./...`、`go vet`、`gofmt -l` 均通过。
 
 **6. [minor] 工件泄漏（`#12`）**
 
 `.whale_verify_check.html` 泄漏到 workdir 根目录（推测为某 verifier 的临时验证产物未清理）。
 
-## 三、根因链（一次失败是如何放大成 4 个 suspended 的）
+**7. [major] worker 产物硬编码沙箱深度 → 传播后测试失效（`#24`）**
+
+**澄清**：之前怀疑「verifier 没真正运行测试就 pass」。核对 `0547e017`（单元测试任务）的 `verify.md` 后，**verifier 确实运行了测试**（`node --test test/game.test.js` → 45/45 pass，`node test/game.test.js` → 45/45 pass），且正确判断了沙箱内 5 层相对路径指向 repo root 的 `game.js`。verifier 的 PASS 在**沙箱语境**下是对的。
+
+**真正的 bug 在传播后**：worker 在沙箱 `out/` 目录写 `test/game.test.js` 时，用 `require(path.join(__dirname, '..','..','..','..','..','game.js'))` 硬编码 5 层深度。沙箱内 `out/test/` 向上 5 层正好到 workspace root 的 `game.js`（测试通过）。但 `propagateTaskOutput`（纯 `copyDir`，不做路径修正）把文件复制到最终 workspace 后，`__dirname` 变成 `<workspace>/test`，向上 5 层 = 盘符根，`require('D:\game.js')` → `MODULE_NOT_FOUND`（实测复现）。
+
+**根因**：sandbox 隔离下，worker 用相对路径「逃逸」沙箱引用 workspace root 的跨任务产物（`game.js` 是 `f2119309` 的产物），路径深度依赖沙箱层级；传播改变层级后失效。且传播后无任何验证。
+
+**已修复（两者都做）**：
+- **提示层预防**：worker prompt 追加「【路径约束】」，明示产物会被复制到 workspace 根目录、严禁用相对路径（如 `../../game.js`）引用沙箱外文件。治本，但依赖 LLM 遵从。
+- **机械验证兜底**：`propagateTaskOutput` 提前到 done 标记之前，传播后调用 `runMechanicalVerify` 在最终 workspace 检测并运行标准测试/构建（`go test ./...`、`node --test`、`npm test`），exit≠0 降级 FAIL 触发重试，反馈含失败输出。未检测到自动化测试则跳过（不误判）。治标兜底，确保传播后失效必然被发现。
+
+**未做（依赖显式化）**：③ 跨任务依赖显式化——依赖产物通过 input/inbox 传入沙箱而非靠 worker 猜路径。这是更彻底的根治，但需改动 whiteboard/leader 分解逻辑，作为后续项。
 
 1. verifier 查错目录（`#10d`）→ 第 1 轮误判 `FAIL`。
 2. worker 收到反馈后重试，作为 workaround 把文件复制到原始 workspace。
@@ -69,7 +91,7 @@ verifier 在 `task.Workdir`（原始 workspace，如 `D:\src\whale_test_2048`）
 | 文件 | 改动 |
 |---|---|
 | `internal/team_engine/verifier.go` | `Verifier` 增加 `workdir` 字段与 `WithWorkdir`；`BuildPrompt`/`Verify` 优先用覆盖的 workdir |
-| `internal/team_engine/run_task.go` | 计算 `verifyWorkdir`（非 worktree → 沙箱 `out/`），三处 verifier 创建与 `req.Workdir` 均指向它 |
+| `internal/team_engine/run_task.go` | 计算 `verifyWorkdir`（非 worktree → 沙箱 `out/`），三处 verifier 创建与 `req.Workdir` 均指向它；worker prompt 追加路径约束；`propagateTaskOutput` 提前到 done 前，传播后 `runMechanicalVerify` 机械验证（exit≠0 降级 FAIL） |
 | `internal/ui/cli/cmd/team_cmd.go` | `suspended` 显示 `⚠️`（任务与批次）、`statusIcon` 补分支 |
 
 验证：`go build ./...` 通过；`go test ./internal/team_engine/ ./internal/ui/cli/cmd/` 全部通过。
