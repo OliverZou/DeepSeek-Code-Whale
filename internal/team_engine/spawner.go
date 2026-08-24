@@ -388,10 +388,10 @@ type PersistentSession struct {
 	pid int
 	mu  sync.Mutex // serialises writes to stdin
 
-	// cancel aborts the underlying subprocess.  Set from a WithTimeout
-	// context so a request timeout kills the process instead of leaving
-	// the session to run unbounded (see SpawnPersistent).
-	cancel context.CancelFunc
+	// timeout bounds a single sendAndReceive round-trip.  Applied per call so a
+	// slow verification doesn't kill the process between retries (the old
+	// spawn-time context timeout spanned the whole session lifetime).
+	timeout time.Duration
 }
 
 // SpawnPersistent starts a whale exec --persist subprocess, writes the
@@ -428,20 +428,7 @@ func (s *ShellSubagentSpawner) SpawnPersistent(ctx context.Context, req Subagent
 		cwd = "."
 	}
 
-	runCtx := context.Background()
-	var cancel context.CancelFunc
-	if req.Timeout > 0 {
-		runCtx, cancel = context.WithTimeout(runCtx, req.Timeout)
-	}
-	// The session owns cancel once constructed; release it on any early-return
-	// path so the timeout timer does not leak.
-	sessionOwnsCancel := false
-	defer func() {
-		if cancel != nil && !sessionOwnsCancel {
-			cancel()
-		}
-	}()
-	cmd := exec.CommandContext(runCtx, whaleBin, args...)
+	cmd := exec.Command(whaleBin, args...)
 	cmd.Dir = cwd
 	cmd.Env = append(os.Environ(),
 		fmt.Sprintf("WHALE_MAX_TOKENS=%d", req.MaxTokens),
@@ -474,9 +461,8 @@ func (s *ShellSubagentSpawner) SpawnPersistent(ctx context.Context, req Subagent
 		stdoutBuf: bufio.NewScanner(stdoutPipe),
 		stderr:    &sessionStderr,
 		pid:       cmd.Process.Pid,
-		cancel:    cancel,
+		timeout:   req.Timeout,
 	}
-	sessionOwnsCancel = true
 	// Large buffer — agent output can be large.
 	session.stdoutBuf.Buffer(make([]byte, 0, 256*1024), 4*1024*1024)
 
@@ -500,9 +486,6 @@ func (s *ShellSubagentSpawner) ContinueSession(session *PersistentSession, promp
 func (s *ShellSubagentSpawner) CloseSession(session *PersistentSession) {
 	if session == nil {
 		return
-	}
-	if session.cancel != nil {
-		session.cancel()
 	}
 	session.mu.Lock()
 	if session.stdin != nil {
@@ -536,6 +519,20 @@ func (ps *PersistentSession) sendAndReceive(prompt string) *SubagentResponse {
 	_, err := io.WriteString(ps.stdin, prompt+whaleEOP)
 	if err != nil {
 		return &SubagentResponse{SessionID: shellSessionID(ps.pid), SpawnerType: "shell", ExitCode: -1, Success: false}
+	}
+
+	// Per-call timeout: kill the subprocess if it doesn't emit EOT in time.
+	// This replaces the old spawn-time context timeout, which spanned the whole
+	// session lifetime and could kill the process while it idled between
+	// retries (breaking the next ContinueSession).
+	var timer *time.Timer
+	if ps.timeout > 0 {
+		timer = time.AfterFunc(ps.timeout, func() {
+			if ps.cmd.Process != nil {
+				ps.cmd.Process.Kill()
+			}
+		})
+		defer timer.Stop()
 	}
 
 	// Read until EOT.
@@ -586,7 +583,6 @@ func (ps *PersistentSession) sendAndReceive(prompt string) *SubagentResponse {
 		PID:         ps.pid,
 	}
 }
-
 
 var _ SubagentSpawner = (*ShellSubagentSpawner)(nil)
 
