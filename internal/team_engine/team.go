@@ -542,7 +542,7 @@ func stripGenericRoleSection(prompt string) string {
 	}
 	// Current "## 角色分配" role bullet: defer to the team role list.
 	return strings.Replace(prompt,
-		"- role：与领域精确匹配的具体角色名（如 \"Go Backend Developer\"）",
+		"- role：与领域精确匹配的具体角色名",
 		"- role：从下方 Available Team Roles 列表选择，禁止自造角色名",
 		1)
 }

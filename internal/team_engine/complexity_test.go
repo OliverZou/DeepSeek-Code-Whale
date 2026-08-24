@@ -53,7 +53,7 @@ func TestDecomposePromptComplexity(t *testing.T) {
 		if strings.Contains(p, "不同 batch 串行") {
 			t.Errorf("decompose prompt must not claim batches run serially:\n%s", p)
 		}
-		if !strings.Contains(p, "必须 depends_on 实现任务") {
+		if !strings.Contains(p, "必须 depends_on 产出任务") {
 			t.Errorf("decompose prompt should tell tests to depend on implementation:\n%s", p)
 		}
 		if !strings.Contains(p, "合并为同一个任务") {
