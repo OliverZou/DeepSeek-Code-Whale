@@ -1705,31 +1705,29 @@ func (e *TeamEngine) appendTeamMemory(role AgentRole, lesson string) {
 	f.WriteString(fmt.Sprintf("\n## %s\n%s\n", time.Now().Format("2006-01-02 15:04"), lesson))
 }
 
-// assembleParentOutputs finds tasks that were decomposed into children
-// (management nodes) and whose children are all done.  For each such
-// parent, it reads all child output files and concatenates them into the
-
 // writePlanJSON writes the decomposition plan as plan.json.
 // plan.json is the authoritative record of how a task was decomposed.
 func (e *TeamEngine) writePlanJSON(masterTaskID string, planTasks []PlanTask) {
 	type planEntry struct {
-		ID          string   `json:"id"`
-		Title       string   `json:"title"`
-		Description string   `json:"description"`
-		Role        string   `json:"role"`
-		Output      string   `json:"output"`
-		BatchID     string   `json:"batch_id"`
-		DependsOn   []string `json:"depends_on,omitempty"`
+		ID                 string   `json:"id"`
+		Title              string   `json:"title"`
+		Description        string   `json:"description"`
+		Role               string   `json:"role"`
+		Output             string   `json:"output"`
+		BatchID            string   `json:"batch_id"`
+		DependsOn          []string `json:"depends_on,omitempty"`
+		AcceptanceCriteria []string `json:"acceptance_criteria,omitempty"`
 	}
 	entries := make([]planEntry, len(planTasks))
 	for i, pt := range planTasks {
 		entries[i] = planEntry{
-			Title:       pt.Title,
-			Description: pt.Description,
-			Role:        pt.Role,
-			Output:      pt.Output,
-			BatchID:     pt.BatchID,
-			DependsOn:   pt.DependsOnBatch,
+			Title:              pt.Title,
+			Description:        pt.Description,
+			Role:               pt.Role,
+			Output:             pt.Output,
+			BatchID:            pt.BatchID,
+			DependsOn:          pt.DependsOnBatch,
+			AcceptanceCriteria: pt.AcceptanceCriteria,
 		}
 	}
 	plan := map[string]interface{}{
