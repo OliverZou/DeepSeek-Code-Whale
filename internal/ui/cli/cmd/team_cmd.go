@@ -331,6 +331,7 @@ Subcommands:
 	executeCmd.Flags().String("team", "", "Team name to use for decomposition")
 	executeCmd.Flags().String("model", "", "Model override for the Leader decomposition step")
 	executeCmd.Flags().Bool("worktree", false, "Use git worktree isolation for coding tasks")
+	executeCmd.Flags().String("stop-at", "", "Stop early: 'spec' (elaborate only) or 'decompose' (plan only)")
 
 	// --- status subcommand ---
 	statusCmd := &cobra.Command{
