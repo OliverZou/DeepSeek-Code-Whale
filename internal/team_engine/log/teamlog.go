@@ -12,44 +12,33 @@ import (
 // provided, logs go to .whale/team_tasks/logs/team_engine.log.  An optional
 // second file (e.g. dashboard-global log) can be added via AddLog.
 type TeamLog struct {
-	mu  sync.Mutex
-	f   *os.File
-	aux *os.File // optional second log file
+	mu      sync.Mutex
+	f       *os.File
+	fPath   string // lazily opened on first write
+	aux     *os.File
+	auxPath string // lazily opened on first write
 }
 
 // NewTeamLog opens (or creates) the team_engine.log in the workspace.
+// NewTeamLog returns a TeamLog that lazily opens team_engine.log in the
+// workspace on the first write.  No directory or file is created up front, so
+// subprocesses that never log leave no empty .whale/team_tasks/logs/ behind.
 func NewTeamLog(workspaceRoot string) *TeamLog {
 	logDir := filepath.Join(workspaceRoot, ".whale", "team_tasks", "logs")
-	os.MkdirAll(logDir, 0755)
-	f, err := os.OpenFile(filepath.Join(logDir, "team_engine.log"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-	if err != nil {
-		return &TeamLog{}
-	}
-	return &TeamLog{f: f}
+	return &TeamLog{fPath: filepath.Join(logDir, "team_engine.log")}
 }
 
 // NewTeamLogAt creates a TeamLog at an explicit file path.
+// NewTeamLogAt returns a TeamLog that lazily opens an explicit path on the
+// first write.
 func NewTeamLogAt(path string) *TeamLog {
-	os.MkdirAll(filepath.Dir(path), 0755)
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-	if err != nil {
-		// Fallback: use TEMP directory if the requested path isn't writable.
-		fb, err2 := os.OpenFile(filepath.Join(os.TempDir(), filepath.Base(path)), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-		if err2 != nil {
-			return &TeamLog{}
-		}
-		return &TeamLog{f: fb}
-	}
-	return &TeamLog{f: f}
+	return &TeamLog{fPath: path}
 }
 
 // AddLog appends a second log file.  Writes go to both files.
+// AddLog registers a second log file, opened lazily on first write.
 func (t *TeamLog) AddLog(path string) {
-	os.MkdirAll(filepath.Dir(path), 0755)
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-	if err == nil {
-		t.aux = f
-	}
+	t.auxPath = path
 }
 
 // Log writes an arbitrary diagnostic entry (for ad-hoc use).
@@ -68,13 +57,20 @@ func (t *TeamLog) Close() error {
 }
 
 func (t *TeamLog) write(cat, format string, args ...interface{}) {
-	if t.f == nil && t.aux == nil {
+	if t.fPath == "" && t.auxPath == "" {
 		return
 	}
 	if !t.mu.TryLock() {
 		return // avoid deadlock — drop log if mutex is contested
 	}
 	defer t.mu.Unlock()
+	// Lazily open on first write so a logger that never writes leaves no file.
+	if t.f == nil && t.fPath != "" {
+		t.f = openLogFile(t.fPath)
+	}
+	if t.aux == nil && t.auxPath != "" {
+		t.aux = openLogFile(t.auxPath)
+	}
 	ts := time.Now().Format(time.RFC3339)
 	msg := fmt.Sprintf(format, args...)
 	line := fmt.Sprintf("[%s] [%s] %s\n", ts, cat, msg)
@@ -84,6 +80,19 @@ func (t *TeamLog) write(cat, format string, args ...interface{}) {
 	if t.aux != nil {
 		t.aux.WriteString(line)
 	}
+}
+
+// openLogFile creates (if needed) and opens a log file for appending.  Returns
+// nil on failure — logging is best-effort, so callers drop the write.
+func openLogFile(path string) *os.File {
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return nil
+	}
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return nil
+	}
+	return f
 }
 
 // --- Dashboard ---

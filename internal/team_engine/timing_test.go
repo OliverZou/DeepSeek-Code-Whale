@@ -53,3 +53,30 @@ func TestLogRunSummary(t *testing.T) {
 		}
 	}
 }
+
+// TestTeamLog_LazyOpen pins the lazy-open fix: a TeamLog must not create its
+// file (or parent dirs) until the first write.  This keeps subprocesses that
+// never log — leader/worker/verifier `whale exec` children whose cwd is the
+// workdir or a sandbox — from leaving empty .whale/team_tasks/logs/ behind.
+func TestTeamLog_LazyOpen(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "logs", "team_engine.log")
+	tl := log.NewTeamLogAt(path)
+	defer tl.Close()
+
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("lazy log must not create file before first write (stat err=%v)", err)
+	}
+
+	tl.Log("test", "hello %s", "world")
+	if err := tl.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read log after first write: %v", err)
+	}
+	if !strings.Contains(string(raw), "hello world") {
+		t.Fatalf("log content missing after first write: %q", string(raw))
+	}
+}
