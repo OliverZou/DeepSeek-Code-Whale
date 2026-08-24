@@ -432,6 +432,14 @@ func (tc *TeamConfig) BuildLeaderPrompt(basePrompt string) string {
 	if len(tc.Roles) > 0 {
 		// Remove the generic "5. Assign an appropriate ROLE..." section.
 		basePrompt = stripGenericRoleSection(basePrompt)
+		// DecomposePrompt's 角色分配 bullet tells the leader to invent a
+		// domain-specific role name (e.g. "Go Backend Developer"), which
+		// contradicts Rule 5 below ("use ONLY the team role names"). When team
+		// roles exist, defer role choice to the injected list instead.
+		basePrompt = strings.Replace(basePrompt,
+			"- role：与领域精确匹配的具体角色名（如 \"Go Backend Developer\"）",
+			"- role：从下方 Available Team Roles 列表选择，禁止自造角色名",
+			1)
 	}
 
 	sb.WriteString(basePrompt)

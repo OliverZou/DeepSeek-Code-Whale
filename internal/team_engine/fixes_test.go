@@ -82,6 +82,32 @@ func TestBuildLeaderPrompt_StripsGenericRoles(t *testing.T) {
 	}
 }
 
+func TestBuildLeaderPrompt_RoleAssignmentDefersToTeamRoles(t *testing.T) {
+	tc := &TeamConfig{
+		Label:  "test",
+		Leader: TeamLeaderConfig{Role: "队长"},
+		Roles:  []string{"backend-engineer", "frontend-engineer"},
+		RoleTitles: map[string]string{
+			"backend-engineer":  "后端工程师",
+			"frontend-engineer": "前端工程师",
+		},
+		RoleDescs: map[string]string{
+			"backend-engineer":  "写后端",
+			"frontend-engineer": "写前端",
+		},
+	}
+
+	basePrompt := DecomposePrompt("test goal")
+	result := tc.BuildLeaderPrompt(basePrompt)
+
+	if strings.Contains(result, "Go Backend Developer") {
+		t.Error("team role assignment must not tell the leader to invent domain-specific role names")
+	}
+	if !strings.Contains(result, "禁止自造角色名") {
+		t.Error("team role assignment should defer to the injected role list")
+	}
+}
+
 func TestBuildLeaderPrompt_NoRolesPreservesBase(t *testing.T) {
 	tc := &TeamConfig{
 		Label: "test",
