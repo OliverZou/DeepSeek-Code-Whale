@@ -38,6 +38,7 @@ func teamEngineSpawnAdapter(runner *tasks.Runner, library *tasks.AgentDefinition
 		if req.AgentName != "" && library != nil {
 			if def, ok, err := library.Resolve(req.AgentName); err == nil && ok {
 				tasksReq.Agent = def
+				team_engine.Log("adapter", "resolve agent=%q ok tools=%d promptLen=%d", req.AgentName, len(def.Tools), len(def.Prompt))
 				// Prepend the agent's system prompt to the task so the
 				// subagent inherits the expert's behavioral instructions.
 				if def.Prompt != "" {
@@ -46,6 +47,8 @@ func teamEngineSpawnAdapter(runner *tasks.Runner, library *tasks.AgentDefinition
 					// Team Engine stdout-capture mode.
 					tasksReq.Task = stripWorkbuddySections(def.Prompt) + "\n\n---\n\n" + tasksReq.Task
 				}
+			} else {
+				team_engine.Log("adapter", "resolve agent=%q MISSING err=%v", req.AgentName, err)
 			}
 		}
 

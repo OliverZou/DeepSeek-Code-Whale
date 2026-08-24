@@ -239,13 +239,16 @@ Subcommands:
 
 			fmt.Printf("📋 Planning goal: %s\n", goal)
 
+			// Elaborate + decompose are pure one-shot LLM calls — run them
+			// through the in-process lite spawner (plain text response, no
+			// subagent loop). Workers/verifiers still use the native subagent
+			// adapter wired in newTeamEngine, which is what restores AgentName.
+			if lite := newLiteSpawner("deepseek-v4-flash"); lite != nil {
+				eng.Runner.SetLiteSpawner(lite)
+			}
+
 			stopAt := strings.ToLower(strings.TrimSpace(cmd.Flag("stop-at").Value.String()))
 			if stopAt == "spec" || stopAt == "decompose" {
-				// Use fast in-process LLM calls for elaboration (no subprocess).
-				// RunDecomposer ignores liteSpawner, so decompose still uses full isolation.
-				if lite := newLiteSpawner("deepseek-v4-flash"); lite != nil {
-					eng.Runner.SetLiteSpawner(lite)
-				}
 				leader := team_engine.NewLeader(eng.Runner).WithTeam(eng.Team())
 				start := time.Now()
 				elaborated, err := leader.Elaborate(goal, workdir, 120*time.Second)
@@ -842,6 +845,16 @@ func newTeamEngine(dbPath, whiteboardDir, configPath, workdir string) (*team_eng
 		ensureTeamEngineSpawnFunc(workdir)
 	}
 
+	// Wire the team engine logger so team_engine.log lands on disk — the CLI
+	// `team execute` path otherwise leaves it empty. SetLogger closes any
+	// previous logger's file handle first, so repeated engine construction
+	// (as in tests) does not leak the open file. Must run BEFORE LogSpawnerType
+	// so the spawner-type record is not dropped (defaultTeamLog is nil until
+	// SetLogger runs).
+	if cwd, err := os.Getwd(); err == nil {
+		team_engine.SetLogger(teampglog.NewTeamLog(cwd))
+	}
+
 	// Prefer the native subagent adapter; fall back to the shell spawner when
 	// no adapter could be wired (e.g. no API key configured).
 	var spawner team_engine.SubagentSpawner
@@ -851,14 +864,6 @@ func newTeamEngine(dbPath, whiteboardDir, configPath, workdir string) (*team_eng
 	} else {
 		spawner = team_engine.NewShellSubagentSpawner()
 		team_engine.LogSpawnerType("default", "shell", "", 0)
-	}
-
-	// Wire the team engine logger so team_engine.log lands on disk — the CLI
-	// `team execute` path otherwise leaves it empty. SetLogger closes any
-	// previous logger's file handle first, so repeated engine construction
-	// (as in tests) does not leak the open file.
-	if cwd, err := os.Getwd(); err == nil {
-		team_engine.SetLogger(teampglog.NewTeamLog(cwd))
 	}
 
 	return team_engine.New(dbPath, whiteboardDir, configPath, spawner)
