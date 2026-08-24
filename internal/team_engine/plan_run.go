@@ -190,6 +190,7 @@ func (e *TeamEngine) PlanAndRun(ctx context.Context, goal, workdir, masterTaskID
 			task.BatchID = bid
 			task.UseDW = pt.UseDW
 			task.VerifierRole = pt.VerifierRole
+			task.AcceptanceCriteria = pt.AcceptanceCriteria
 			task.MasterTaskID = masterTaskID
 			task.Complexity = complexity
 			task.UpstreamBatches = batch.DependsOn
@@ -933,4 +934,3 @@ func (e *TeamEngine) splitOverloadedPlanTasks(tasks []PlanTask, workdir string, 
 	}
 	return out
 }
-

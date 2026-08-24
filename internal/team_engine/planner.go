@@ -140,12 +140,22 @@ depends_on_batch 声明「下游任务依赖其产出的上游 batch」——无
   用真实 verifier agent。纯机械任务（算法实现、格式转换）留 ""。
 - verifier_focus：审查维度（correctness、security、performance…）
 
+## 验收标准（关键）
+
+每个任务必须产出 2-5 条可验收、可核对的完成条件（acceptance_criteria），
+供 Worker 交付前自检、Verifier 独立验收共用。禁止笼统条件（如「做好 X」）。
+按任务类型产出合适的验收标准：
+- 代码类：功能行为 / 接口契约（给定输入 → 期望输出/行为）；
+- 文档类：覆盖的主题 / 准确性 / 风格约束；
+- 研究类：论证完整性 / 来源可靠 / 结论可信度；
+- 设计类：满足约束 / 权衡合理 / 边界覆盖。
+
 ## 输出
 
 纯 JSON 数组，不加 markdown 包裹。无 depends_on_batch 的 batch 并行执行；有 depends_on_batch 的 batch 等依赖完成后执行。
 
 [
-  {"title":"…","description":"≤3句话","output":"产物路径","role":"角色名","verifier_role":"agent名或空","batch_id":"1","batch_label":"阶段名","depends_on_batch":[],"depends_on_index":-1,"verifier_focus":"审查维度","max_cycles":1}
+  {"title":"…","description":"≤3句话","output":"产物路径","role":"角色名","verifier_role":"agent名或空","acceptance_criteria":["条件1","条件2"],"batch_id":"1","batch_label":"阶段名","depends_on_batch":[],"depends_on_index":-1,"verifier_focus":"审查维度","max_cycles":1}
 ]`, goal, sizeGuide)
 }
 

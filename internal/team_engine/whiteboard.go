@@ -35,15 +35,16 @@ import (
 //
 // InboxParams carries all inputs needed to write a task's inbox.md.
 type InboxParams struct {
-	Title           string
-	Role            string
-	Description     string
-	Output          string
-	UpstreamOutputs []UpstreamRef
-	Template        string
-	Memory          string
-	AllowSelfSplit  bool
-	RetryFeedback   string
+	Title              string
+	Role               string
+	Description        string
+	Output             string
+	AcceptanceCriteria []string
+	UpstreamOutputs    []UpstreamRef
+	Template           string
+	Memory             string
+	AllowSelfSplit     bool
+	RetryFeedback      string
 }
 
 // UpstreamRef is a named file reference to an upstream output.
@@ -555,6 +556,14 @@ func (wb *Whiteboard) WriteInboxFile(taskID string, params InboxParams) error {
 	b.WriteString("## 📋 任务描述\n\n")
 	b.WriteString(params.Description)
 	b.WriteString("\n\n")
+
+	if len(params.AcceptanceCriteria) > 0 {
+		b.WriteString("## ✅ 验收标准（交付前逐项自检核对）\n\n")
+		for i, c := range params.AcceptanceCriteria {
+			b.WriteString(fmt.Sprintf("%d. %s\n", i+1, c))
+		}
+		b.WriteString("\n")
+	}
 
 	if len(params.UpstreamOutputs) > 0 {
 		b.WriteString("## 📥 上游产出（请先阅读）\n\n")

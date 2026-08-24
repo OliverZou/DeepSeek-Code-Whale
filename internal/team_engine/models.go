@@ -78,28 +78,29 @@ const (
 
 // Task is a single unit of work in the Team Engine pipeline.
 type Task struct {
-	ID               string      `json:"id"`                      // UUID
-	Title            string      `json:"title"`                   // 任务标题
-	Description      string      `json:"description"`             // 任务描述（给 Agent 的 prompt）
-	Output           string      `json:"output,omitempty"`        // 声明产出（不进DB，运行时传递）
-	Role             AgentRole   `json:"role"`                    // 角色
-	VerifierRole     string      `json:"verifier_role,omitempty"` // 验证者角色（agent name）
-	Profile          ToolProfile `json:"profile"`                 // 工具权限配置
-	State            TaskState   `json:"state"`                   // 当前状态
-	MaxRetries       int         `json:"max_retries"`             // 最大重试次数
-	RetryCount       int         `json:"retry_count"`             // 已重试次数
-	Workdir          string      `json:"workdir"`                 // 工作目录
-	ParentIDs        []string    `json:"parent_ids"`              // 依赖的上游任务
-	UpstreamBatches  []string    `json:"upstream_batches,omitempty"` // 所在 batch 依赖的上游 batch（精准注入上游产出）
-	ArtifactPath     string      `json:"artifact_path"`           // 产出文件路径（白板）
-	VerifierFeedback string      `json:"verifier_feedback"`       // Verifier 反馈
-	VerifierFocus    string      `json:"verifier_focus"`          // 验证重点 (correctness,security,sources,plausibility,...)
-	Complexity       string      `json:"complexity,omitempty"`    // 目标规模提示 simple/medium/complex（驱动 worker/verifier 迭代预算）
-	BatchID          string      `json:"batch_id"`                // 所属 Batch（stage）
-	MasterTaskID     string      `json:"master_task_id"`          // 所属总任务
-	UseDW            bool        `json:"use_dw"`                  // use Dynamic Workflow for verification
-	CreatedAt        string      `json:"created_at"`              // ISO 8601
-	UpdatedAt        string      `json:"updated_at"`              // ISO 8601
+	ID                 string      `json:"id"`                            // UUID
+	Title              string      `json:"title"`                         // 任务标题
+	Description        string      `json:"description"`                   // 任务描述（给 Agent 的 prompt）
+	Output             string      `json:"output,omitempty"`              // 声明产出（不进DB，运行时传递）
+	Role               AgentRole   `json:"role"`                          // 角色
+	VerifierRole       string      `json:"verifier_role,omitempty"`       // 验证者角色（agent name）
+	AcceptanceCriteria []string    `json:"acceptance_criteria,omitempty"` // 验收标准（Worker 自检 + Verifier 验收共用）
+	Profile            ToolProfile `json:"profile"`                       // 工具权限配置
+	State              TaskState   `json:"state"`                         // 当前状态
+	MaxRetries         int         `json:"max_retries"`                   // 最大重试次数
+	RetryCount         int         `json:"retry_count"`                   // 已重试次数
+	Workdir            string      `json:"workdir"`                       // 工作目录
+	ParentIDs          []string    `json:"parent_ids"`                    // 依赖的上游任务
+	UpstreamBatches    []string    `json:"upstream_batches,omitempty"`    // 所在 batch 依赖的上游 batch（精准注入上游产出）
+	ArtifactPath       string      `json:"artifact_path"`                 // 产出文件路径（白板）
+	VerifierFeedback   string      `json:"verifier_feedback"`             // Verifier 反馈
+	VerifierFocus      string      `json:"verifier_focus"`                // 验证重点 (correctness,security,sources,plausibility,...)
+	Complexity         string      `json:"complexity,omitempty"`          // 目标规模提示 simple/medium/complex（驱动 worker/verifier 迭代预算）
+	BatchID            string      `json:"batch_id"`                      // 所属 Batch（stage）
+	MasterTaskID       string      `json:"master_task_id"`                // 所属总任务
+	UseDW              bool        `json:"use_dw"`                        // use Dynamic Workflow for verification
+	CreatedAt          string      `json:"created_at"`                    // ISO 8601
+	UpdatedAt          string      `json:"updated_at"`                    // ISO 8601
 }
 
 // BatchStatus enumerates the states a task batch can be in.
@@ -165,21 +166,22 @@ func (c *CycleFindingsSet) HasNewFindings(prev *CycleFindingsSet) bool {
 // PlanTask is a single subtask in the leader's decomposition plan, returned
 // as JSON by the planning agent.
 type PlanTask struct {
-	Title            string   `json:"title"`
-	Description      string   `json:"description"`
-	Output           string   `json:"output,omitempty"` // declared deliverable
-	Role             string   `json:"role"`
-	VerifierRole     string   `json:"verifier_role,omitempty"`    // who verifies this task (agent name)
-	BatchID          string   `json:"batch_id,omitempty"`         // which batch (stage) this belongs to
-	BatchLabel       string   `json:"batch_label,omitempty"`      // human label for the batch
-	DependsOnBatch   []string `json:"depends_on_batch,omitempty"` // batch dependencies
-	DependsOnIndex   int      `json:"depends_on_index"`
-	DependsOnIndices []int    `json:"depends_on_indices,omitempty"`
-	Profile          string   `json:"profile,omitempty"`
-	VerifierFocus    string   `json:"verifier_focus,omitempty"`
-	UseDW            bool     `json:"use_dw"`                // enable multi-verifier Dynamic Workflow
-	Concurrency      int      `json:"concurrency,omitempty"` // per-batch override
-	MaxCycles        int      `json:"max_cycles,omitempty"`  // per-batch override
+	Title              string   `json:"title"`
+	Description        string   `json:"description"`
+	Output             string   `json:"output,omitempty"` // declared deliverable
+	Role               string   `json:"role"`
+	VerifierRole       string   `json:"verifier_role,omitempty"`       // who verifies this task (agent name)
+	AcceptanceCriteria []string `json:"acceptance_criteria,omitempty"` // 验收标准（Worker 自检 + Verifier 验收共用）
+	BatchID            string   `json:"batch_id,omitempty"`            // which batch (stage) this belongs to
+	BatchLabel         string   `json:"batch_label,omitempty"`         // human label for the batch
+	DependsOnBatch     []string `json:"depends_on_batch,omitempty"`    // batch dependencies
+	DependsOnIndex     int      `json:"depends_on_index"`
+	DependsOnIndices   []int    `json:"depends_on_indices,omitempty"`
+	Profile            string   `json:"profile,omitempty"`
+	VerifierFocus      string   `json:"verifier_focus,omitempty"`
+	UseDW              bool     `json:"use_dw"`                // enable multi-verifier Dynamic Workflow
+	Concurrency        int      `json:"concurrency,omitempty"` // per-batch override
+	MaxCycles          int      `json:"max_cycles,omitempty"`  // per-batch override
 }
 
 // NewTask creates a Task with sensible defaults and auto-generated

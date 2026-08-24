@@ -21,6 +21,7 @@ type Verifier struct {
 	model      string
 	agentName  string
 	workdir    string
+	verifyDir  string
 	LastPrompt string
 	// LastSystemPrompt captures the assembled extra system-prompt content the
 	// verifier ran with (adapter only; "" for shell) — logged for auditability.
@@ -63,6 +64,14 @@ func (v *Verifier) WithWorkdir(wd string) *Verifier {
 	return v
 }
 
+// WithVerifyDir sets the directory where the Verifier writes its verification
+// artifacts (acceptance-level black-box tests, checklists). It lives beside the
+// deliverable out/ dir and is not propagated to the user workspace.
+func (v *Verifier) WithVerifyDir(dir string) *Verifier {
+	v.verifyDir = dir
+	return v
+}
+
 // ---------------------------------------------------------------------------
 // BuildPrompt — task context for the Verifier agent
 // ---------------------------------------------------------------------------
@@ -82,6 +91,11 @@ func (v *Verifier) BuildPrompt(task *Task) string {
 		workdir = "."
 	}
 
+	verifyDir := v.verifyDir
+	if verifyDir == "" {
+		verifyDir = filepath.Join(workdir, "verify")
+	}
+
 	desc := stripVerifierFeedback(task.Description)
 	var b strings.Builder
 	b.WriteString(fmt.Sprintf(`TASK:
@@ -90,6 +104,13 @@ func (v *Verifier) BuildPrompt(task *Task) string {
 WORKER OUTPUT (%d chars):
 %s
 `, desc, len(workerOutput), truncateStr(workerOutput, 3000)))
+
+	if len(task.AcceptanceCriteria) > 0 {
+		b.WriteString("\nACCEPTANCE CRITERIA（独立验收标准，逐条核对）:\n")
+		for i, c := range task.AcceptanceCriteria {
+			b.WriteString(fmt.Sprintf("%d. %s\n", i+1, c))
+		}
+	}
 
 	// Only include the upstream-output section (## 📥) — the verifier needs to
 	// know which upstream files to check for integration, but not the worker's
@@ -113,15 +134,16 @@ explore — look for recently created/modified files.
 `, len(workerOutput), workdir))
 	}
 
-	b.WriteString(`
+	b.WriteString(fmt.Sprintf(`
 
-VERIFICATION METHOD (follow this order — do NOT author a new test suite):
-1. The worker's own automated tests (go test / node --test / npm test) were
-   already run by an objective gate. Do NOT write a fresh test suite from
-   scratch — it is slow and its expectations are often wrong.
-2. Read the deliverable files and check they match the TASK requirements.
-   Look for completeness, correctness, and obvious bugs.
-3. Only report issues you can prove with file contents or tool output.
+VERIFICATION METHOD (独立验证，不依赖 worker 的结论转述):
+1. 基于 ACCEPTANCE CRITERIA 逐条独立验收，判断交付物是否满足每一条。
+2. 按交付物性质选择验证手段（以比重新执行任务更低的成本）：
+   - 可执行代码/脚本：编写并运行黑盒测试（断言行为符合契约），落盘到
+     验证产物目录 %s 下；审查 worker 的单元测试是否覆盖边界/异常分支——
+     只报告遗漏，不替 worker 补写。
+   - 文档/研究/设计/其他：逐条核对验收标准，核查事实、引用、逻辑一致性。
+3. 所有结论必须能被文件内容或工具输出证明，不凭空臆断。
 
 OUTPUT FORMAT (REQUIRED):
 VERDICT: PASS | FAIL | RETRY
@@ -134,7 +156,7 @@ ISSUES:
   {"id": "unique", "title": "one-line summary", "severity": "critical|major|minor", "evidence": "tool output"}
 ]
 ---
-`)
+`, verifyDir))
 
 	v.LastPrompt = b.String()
 	return v.LastPrompt

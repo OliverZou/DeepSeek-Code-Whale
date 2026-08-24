@@ -135,15 +135,16 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 
 			// Write structured inbox.md.
 			inboxParams := InboxParams{
-				Title:           task.Title,
-				Role:            string(task.Role),
-				Description:     task.Description,
-				Output:          task.Output,
-				UpstreamOutputs: upstreamRefs,
-				Template:        template,
-				Memory:          memory,
-				AllowSelfSplit:  len(task.ParentIDs) == 0,
-				RetryFeedback:   task.VerifierFeedback,
+				Title:              task.Title,
+				Role:               string(task.Role),
+				Description:        task.Description,
+				Output:             task.Output,
+				AcceptanceCriteria: task.AcceptanceCriteria,
+				UpstreamOutputs:    upstreamRefs,
+				Template:           template,
+				Memory:             memory,
+				AllowSelfSplit:     len(task.ParentIDs) == 0,
+				RetryFeedback:      task.VerifierFeedback,
 			}
 			if err := e.Whiteboard.WriteInboxFile(task.ID, inboxParams); err != nil {
 				return false, fmt.Errorf("write inbox: %w", err)
@@ -152,7 +153,7 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 			// Agent prompt: reference inbox.md, working dir is out/.
 			inboxPath := filepath.Join(e.Whiteboard.TaskDir(task.ID), "input.md")
 			outDir := filepath.Join(e.Whiteboard.TaskDir(task.ID), "out")
-			prompt := fmt.Sprintf("[Role: %s]\n\n工作目录: %s\n任务文件: %s\n产出: %s\n\n将产出文件写在你的工作目录下。只汇报实际完成的内容，不虚构数字。",
+			prompt := fmt.Sprintf("[Role: %s]\n\n工作目录: %s\n任务文件: %s\n产出: %s\n\n将产出文件写在你的工作目录下。只汇报实际完成的内容，不虚构数字。交付前对照任务文件里的「验收标准」逐项自检，确认完整性与正确性。",
 				task.Role, outDir, inboxPath, task.Output)
 			if len(task.ParentIDs) == 0 {
 				prompt += "\n\n如果任务过大无法一次完成，在产出开头输出 [SPLIT_PLAN] 拆分。"
@@ -420,6 +421,10 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 		if e.activeBranch(taskID) == "" {
 			verifyWorkdir = filepath.Join(e.Whiteboard.TaskDir(taskID), "out")
 		}
+		// 验证产物目录：verifier 落盘验收级黑盒测试/核查清单的地方，与 out/ 平级，
+		// 不参与 propagateTaskOutput，避免混入用户交付物。
+		verifyDir := filepath.Join(e.Whiteboard.TaskDir(taskID), "verify")
+		os.MkdirAll(verifyDir, 0755)
 
 		// Transition to verifying (skip the separate checking phase —
 		// the Verifier agent performs mechanical checks itself).
@@ -479,7 +484,7 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 				if e.Loggers != nil {
 					e.Loggers.Engine("task %s verifier CONTINUE session", taskID[:8])
 				}
-				v = NewVerifier(e.Whiteboard, e.Runner, e.Router, 0, verifierModel).WithAgentName(verifierAgentName).WithWorkdir(verifyWorkdir)
+				v = NewVerifier(e.Whiteboard, e.Runner, e.Router, 0, verifierModel).WithAgentName(verifierAgentName).WithWorkdir(verifyWorkdir).WithVerifyDir(verifyDir)
 				prompt := v.BuildPrompt(task)
 				resp := e.shellSpawner.ContinueSession(ws, prompt)
 				verifyPromptTokens, verifyCompletionTokens = resp.UsagePrompt, resp.UsageCompletion
@@ -501,7 +506,7 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 				if e.Loggers != nil {
 					e.Loggers.Engine("task %s verifier SPAWN persistent agent=%s", taskID[:8], verifierAgentName)
 				}
-				v = NewVerifier(e.Whiteboard, e.Runner, e.Router, 0, verifierModel).WithAgentName(verifierAgentName).WithWorkdir(verifyWorkdir)
+				v = NewVerifier(e.Whiteboard, e.Runner, e.Router, 0, verifierModel).WithAgentName(verifierAgentName).WithWorkdir(verifyWorkdir).WithVerifyDir(verifyDir)
 				prompt := v.BuildPrompt(task)
 				req := SubagentRequest{
 					Task:      prompt,
@@ -537,7 +542,7 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 				}
 			} else {
 				// Fallback: normal spawn via Runner.
-				v = NewVerifier(e.Whiteboard, e.Runner, e.Router, 0, verifierModel).WithAgentName(verifierAgentName).WithWorkdir(verifyWorkdir)
+				v = NewVerifier(e.Whiteboard, e.Runner, e.Router, 0, verifierModel).WithAgentName(verifierAgentName).WithWorkdir(verifyWorkdir).WithVerifyDir(verifyDir)
 				if e.Loggers != nil {
 					e.Loggers.Engine("task %s verifier START agent=%s", taskID[:8], verifierAgentName)
 				}

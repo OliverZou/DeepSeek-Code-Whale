@@ -450,3 +450,59 @@ func TestTeamMaxAgents(t *testing.T) {
 		t.Fatalf("team max_agents=5: got %d, want 5", got)
 	}
 }
+
+// ============================================================================
+// 验收标准（acceptance_criteria）— Worker 自检 + Verifier 独立验收共用
+// ============================================================================
+
+func TestWriteInboxFileAcceptanceCriteria(t *testing.T) {
+	eng := newTestEngine(t)
+	defer eng.Close()
+
+	task, _ := eng.CreateTask("T", "desc", RoleDeveloper, "", nil, 0, ".", "", "", "")
+	params := InboxParams{
+		Title:              task.Title,
+		Role:               string(task.Role),
+		Description:        task.Description,
+		AcceptanceCriteria: []string{"条件一", "条件二"},
+	}
+	if err := eng.Whiteboard.WriteInboxFile(task.ID, params); err != nil {
+		t.Fatalf("write inbox: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(eng.Whiteboard.TaskDir(task.ID), "input.md"))
+	if err != nil {
+		t.Fatalf("read input.md: %v", err)
+	}
+	s := string(data)
+	if !strings.Contains(s, "## ✅ 验收标准") {
+		t.Errorf("inbox should contain 验收标准 section, got:\n%s", s)
+	}
+	for _, c := range params.AcceptanceCriteria {
+		if !strings.Contains(s, c) {
+			t.Errorf("inbox should list criterion %q", c)
+		}
+	}
+}
+
+func TestVerifierBuildPromptAcceptanceCriteria(t *testing.T) {
+	eng := newTestEngine(t)
+	defer eng.Close()
+
+	task, _ := eng.CreateTask("T", "desc", RoleDeveloper, "", nil, 0, ".", "", "", "")
+	task.AcceptanceCriteria = []string{"给定输入 → 期望输出"}
+	eng.Whiteboard.WriteOutput(task.ID, "worker output")
+
+	verifyDir := filepath.Join(eng.Whiteboard.TaskDir(task.ID), "verify")
+	v := NewVerifier(eng.Whiteboard, eng.Runner, eng.Router, 0).WithVerifyDir(verifyDir)
+	prompt := v.BuildPrompt(task)
+
+	if !strings.Contains(prompt, "ACCEPTANCE CRITERIA") {
+		t.Errorf("verifier prompt should contain ACCEPTANCE CRITERIA section")
+	}
+	if !strings.Contains(prompt, "给定输入 → 期望输出") {
+		t.Errorf("verifier prompt should list the criteria")
+	}
+	if !strings.Contains(prompt, verifyDir) {
+		t.Errorf("verifier prompt should reference verifyDir %q", verifyDir)
+	}
+}
