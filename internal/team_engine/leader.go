@@ -111,6 +111,3 @@ func (l *Leader) ReviewPlanCycle(goal string, report *PlanCycleReport, workdir s
 }
 
 // ReviewProgress delegates to Reviewer.
-func (l *Leader) ReviewProgress(goal, taskTitle, taskRole, taskState string, retryCount int, lastOutput, workdir string, timeout time.Duration, model ...string) (string, error) {
-	return l.reviewer.ReviewProgress(goal, taskTitle, taskRole, taskState, retryCount, lastOutput, workdir, timeout, model...)
-}

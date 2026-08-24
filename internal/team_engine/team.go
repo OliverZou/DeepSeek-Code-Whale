@@ -194,44 +194,6 @@ func teamAgentsDir(tc *TeamConfig) string {
 	return filepath.Join(tc.TeamDir, "agents")
 }
 
-// LoadTeamAgentPrompt reads a team-local agent MD file from the team's agents/ directory.
-// Returns ("", false) if no team-local agent exists.
-func (tc *TeamConfig) LoadTeamAgentPrompt(agentName string) (string, bool) {
-	if tc.TeamDir == "" {
-		return "", false
-	}
-	path := filepath.Join(tc.TeamDir, "agents", agentName+".md")
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return "", false
-	}
-	return string(data), true
-}
-
-// ReadLeaderPersona reads the leader's agent .md file from the team's agents/
-// directory and returns the body content (everything after the YAML frontmatter).
-// Returns empty string when the team has no directory, no leader role, or the
-// agent file doesn't exist.
-func (tc *TeamConfig) ReadLeaderPersona() string {
-	if tc.TeamDir == "" || tc.Leader.Role == "" {
-		return ""
-	}
-	path := filepath.Join(tc.TeamDir, "agents", tc.Leader.Role+".md")
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return ""
-	}
-	content := string(data)
-	// Strip YAML frontmatter (--- ... ---).
-	if strings.HasPrefix(content, "---") {
-		rest := content[3:]
-		if end := strings.Index(rest, "---"); end >= 0 {
-			content = strings.TrimSpace(rest[end+3:])
-		}
-	}
-	return content
-}
-
 // LoadTeamConfig reads and parses a single team YAML file.
 func LoadTeamConfig(path string) (*TeamConfig, error) {
 	data, err := os.ReadFile(path)

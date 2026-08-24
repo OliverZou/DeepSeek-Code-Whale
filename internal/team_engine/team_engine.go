@@ -72,7 +72,7 @@ type TeamEngine struct {
 	activeAgents       map[string]int            // taskID → PID
 	activeStdinWriters map[string]io.WriteCloser // taskID → stdin pipe
 
-	// masterTaskCancels stores cancel functions for active PlanAndRun /
+	// masterTaskCancels stores cancel functions for active TeamCycle /
 	// ResumeMasterTask executions.  When the user clicks "stop" in the
 	// dashboard, the corresponding cancel is called to abort the batch loop.
 	masterTaskCancels map[string]context.CancelFunc // masterTaskID → cancel
@@ -95,12 +95,10 @@ type TeamEngine struct {
 	eventCallbacks []TaskEventCallback
 
 	// Current team configuration (optional).
-	team               *TeamConfig
-	shellSpawner       *ShellSubagentSpawner
-	persistentSessions map[string]*PersistentSession
+	team *TeamConfig
 
 	// leaderSessionID is the Leader subagent's session ID from the most recent
-	// PlanAndRun decompose, persisted so prompt/fork/summarize can address the
+	// TeamCycle decompose, persisted so prompt/fork/summarize can address the
 	// Leader session directly.
 	leaderSessionID string
 
@@ -137,7 +135,7 @@ func (e *TeamEngine) OnEvent(cb TaskEventCallback) func() {
 	}
 }
 
-// SetTeam configures a team for the next PlanAndRun execution.
+// SetTeam configures a team for the next TeamCycle execution.
 func (e *TeamEngine) SetTeam(tc *TeamConfig) {
 	e.team = tc
 	e.Runner.WithTeam(tc)
@@ -209,16 +207,7 @@ func New(_, whiteboardDir, configPath string, spawner SubagentSpawner) (*TeamEng
 		activeStdinWriters: make(map[string]io.WriteCloser),
 		masterTaskCancels:  make(map[string]context.CancelFunc),
 		shutdownCtx:        shutdownCtx,
-		persistentSessions: make(map[string]*PersistentSession),
 		shutdownCancel:     shutdownCancel,
-	}
-
-	// cleanupInterruptedTasks is called separately by the CLI on startup.
-	// Engine instances created for sync/dashboard must never modify state.
-	_ = spawner
-
-	if ss, ok := spawner.(*ShellSubagentSpawner); ok {
-		eng.shellSpawner = ss
 	}
 	return eng, nil
 }
@@ -250,12 +239,6 @@ func (e *TeamEngine) Close() error {
 
 	e.wg.Wait()
 
-	// Close any lingering persistent subprocess sessions (worker/verifier) so
-	// their child processes exit instead of idling on an open stdin pipe.
-	for key := range e.persistentSessions {
-		e.closePersistentSession(key)
-	}
-
 	for taskID := range activeTrees {
 		e.cleanupWorktree(taskID)
 	}
@@ -267,7 +250,7 @@ func (e *TeamEngine) Close() error {
 	return e.Store.Close()
 }
 
-// CancelMasterTaskExecution cancels a running PlanAndRun / ResumeMasterTask
+// CancelMasterTaskExecution cancels a running TeamCycle / ResumeMasterTask
 // for the given masterTaskID.  It is called from the dashboard stop button.
 // Returns true if a running execution was found and cancelled.
 func (e *TeamEngine) CancelMasterTaskExecution(masterTaskID string) bool {
@@ -450,7 +433,7 @@ func (e *TeamEngine) ListSuspendedMasterTasks() ([]*MasterTask, error) {
 	return result, nil
 }
 
-// saveCheckpoint persists PlanAndRun progress for later Resume.
+// saveCheckpoint persists TeamCycle progress for later Resume.
 func (e *TeamEngine) saveCheckpoint(masterTaskID string, completed map[string]bool, passed map[string]bool, outputs map[string]string, batches []*Batch) {
 	type checkpoint struct {
 		CompletedBatches []string            `json:"completed_batches"`
@@ -748,49 +731,9 @@ func (e *TeamEngine) ResumeMasterTask(ctx context.Context, masterTaskID, goal, w
 }
 
 // leaderWatchLoop gives the Leader real-time oversight during execution.
-func (e *TeamEngine) leaderWatchLoop(ctx context.Context, leader *Leader, masterTaskID, goal, workdir string) {
-	eventCh := make(chan TaskEvent, 256)
-	cancel := e.OnEvent(func(event TaskEvent) {
-		select {
-		case eventCh <- event:
-		default:
-		}
-	})
-	defer cancel()
-	heartbeat := time.NewTicker(15 * time.Second)
-	defer heartbeat.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-heartbeat.C:
-			e.reviewStuckTasks(leader, masterTaskID, goal, workdir)
-		case <-eventCh:
-			// Task state changed — immediately check for stuck tasks.
-			e.reviewStuckTasks(leader, masterTaskID, goal, workdir)
-		}
-	}
-}
 
 // reviewStuckTasks checks all tasks for the master task and sends Leader
 // feedback to any task that has been retried more than once.
-func (e *TeamEngine) reviewStuckTasks(leader *Leader, masterTaskID, goal, workdir string) {
-	tasks, err := e.Store.ListTasksByMasterTask(masterTaskID)
-	if err != nil || len(tasks) == 0 {
-		return
-	}
-	for _, t := range tasks {
-		if t.State.IsTerminal() || t.State == TaskStateSuspended || t.RetryCount <= 1 {
-			continue
-		}
-		output, _ := e.Whiteboard.ReadOutput(t.ID)
-		feedback, err := leader.ReviewProgress(goal, t.Title, string(t.Role), string(t.State), t.RetryCount, output, workdir, 30*time.Second)
-		if err != nil || feedback == "" {
-			continue
-		}
-		_ = e.SendFeedback(t.ID, feedback)
-	}
-}
 
 // buildExecutionSummary constructs a human-readable summary of batch execution results.
 func (e *TeamEngine) buildExecutionSummary(batches []*Batch, goal, workdir string) string {
@@ -1271,19 +1214,6 @@ func truncateLesson(s string, n int) string {
 	return s
 }
 
-// closePersistentSession closes and removes a persistent subprocess session.
-func (e *TeamEngine) closePersistentSession(key string) {
-	if e.shellSpawner == nil {
-		return
-	}
-	ws := e.persistentSessions[key]
-	if ws == nil {
-		return
-	}
-	e.shellSpawner.CloseSession(ws)
-	delete(e.persistentSessions, key)
-}
-
 // resolveVerifierAgentName resolves which agent definition to use for
 // verifying a task.  Four-level lookup; always returns a non-empty agent
 // name (falling back to the builtin "verifier").
@@ -1705,37 +1635,6 @@ func (e *TeamEngine) readTeamTemplate(output string) string {
 		return ""
 	}
 	return fmt.Sprintf("\n\n## 📄 产出模板 (%s)\n按以下模板填写产出内容：\n\n%s\n", name, string(data))
-}
-
-// readTeamMemory reads role-specific memory from the team's memory directory.
-func (e *TeamEngine) readTeamMemory(role AgentRole) string {
-	if e.team == nil || e.team.MemoryDir == "" {
-		return ""
-	}
-	path := filepath.Join(e.team.MemoryDir, string(role)+".md")
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return ""
-	}
-	if len(data) == 0 {
-		return ""
-	}
-	return fmt.Sprintf("\n\n## 🧠 Team Memory (%s)\n%s\n", role, string(data))
-}
-
-// appendTeamMemory appends new lessons to the role's memory file.
-func (e *TeamEngine) appendTeamMemory(role AgentRole, lesson string) {
-	if e.team == nil || e.team.MemoryDir == "" || lesson == "" {
-		return
-	}
-	os.MkdirAll(e.team.MemoryDir, 0755)
-	path := filepath.Join(e.team.MemoryDir, string(role)+".md")
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-	if err != nil {
-		return
-	}
-	defer f.Close()
-	f.WriteString(fmt.Sprintf("\n## %s\n%s\n", time.Now().Format("2006-01-02 15:04"), lesson))
 }
 
 // writePlanJSON writes the decomposition plan as plan.json.

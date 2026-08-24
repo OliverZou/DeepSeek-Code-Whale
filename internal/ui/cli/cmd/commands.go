@@ -22,7 +22,6 @@ func newExecCmd(opts *cliOptions) *cobra.Command {
 	var jsonOutput bool
 	var timeoutSec int
 	var attachPaths []string
-	var persistMode bool
 	c := &cobra.Command{
 		Use:   "exec [prompt]",
 		Short: "Run a single prompt non-interactively",
@@ -34,16 +33,12 @@ func newExecCmd(opts *cliOptions) *cobra.Command {
 			if err := prepareCLIConfig(cmd, opts); err != nil {
 				return err
 			}
-			if persistMode {
-				return runExecPersist(cmd.OutOrStdout(), cmd.ErrOrStderr(), cmd.InOrStdin(), opts)
-			}
 			return runExec(cmd.OutOrStdout(), cmd.ErrOrStderr(), cmd.InOrStdin(), opts, args, jsonOutput, timeoutSec, attachPaths)
 		},
 	}
 	c.Flags().BoolVar(&jsonOutput, "json", false, "Emit machine-readable JSON output")
 	c.Flags().IntVar(&timeoutSec, "timeout-sec", 0, "Optional timeout in seconds for this exec run")
 	c.Flags().StringArrayVar(&attachPaths, "attach", nil, "Attach a local file to the prompt")
-	c.Flags().BoolVar(&persistMode, "persist", false, "Run a persistent session reading EOP-delimited prompts from stdin")
 	return c
 }
 
@@ -264,79 +259,6 @@ func runExec(out io.Writer, errOut io.Writer, in io.Reader, opts *cliOptions, ar
 		return ExitError{Code: 1}
 	}
 	return nil
-}
-
-// runExecPersist runs a persistent exec session for team_engine's
-// ShellSubagentSpawner.  It reuses a single App session across turns: prompts
-// are read from stdin delimited by __WHALE_EOP__, and each response is written
-// to stdout delimited by __WHALE_EOT__.
-func runExecPersist(out io.Writer, errOut io.Writer, in io.Reader, opts *cliOptions) error {
-	start := app.StartOptions{NewSession: true, Worktree: opts.worktreeSession}
-	if sid := strings.TrimSpace(os.Getenv("WHALE_SESSION_ID")); sid != "" {
-		start.SessionID = sid
-	}
-	ctx := context.Background()
-	a, err := app.New(ctx, opts.cfg, start)
-	if err != nil {
-		return err
-	}
-	defer a.Close()
-	a.InitializeMCP(ctx, nil)
-
-	reader := bufio.NewReader(in)
-	for {
-		prompt, eof, err := readPersistPrompt(reader)
-		if err != nil {
-			return err
-		}
-		if prompt == "" && eof {
-			return nil
-		}
-		if prompt != "" {
-			res, execErr := a.ExecPrompt(ctx, prompt, false)
-			// Finalize each turn so session meta (turn count, summary) stays
-			// current for the reused session.
-			if err := a.FinalizeTurn(res.Output, res.Status == "completed"); err != nil {
-				// Non-fatal: the turn still produced output.
-			}
-			if txt := res.TextOutput(); txt != "" {
-				if _, err := fmt.Fprintln(out, txt); err != nil {
-					return err
-				}
-			}
-			if execErr != nil && strings.TrimSpace(res.Error) != "" {
-				if _, err := fmt.Fprintln(errOut, res.Error); err != nil {
-					return err
-				}
-			}
-		}
-		if _, err := fmt.Fprintln(out, "__WHALE_EOT__"); err != nil {
-			return err
-		}
-		if eof {
-			return nil
-		}
-	}
-}
-
-// readPersistPrompt reads a single __WHALE_EOP__-delimited prompt from the
-// persistent session's stdin.  eof reports whether the final read hit EOF,
-// meaning the caller should stop after handling this prompt.
-func readPersistPrompt(reader *bufio.Reader) (prompt string, eof bool, err error) {
-	var b strings.Builder
-	for {
-		line, readErr := reader.ReadString('\n')
-		if readErr != nil {
-			if readErr == io.EOF {
-				return strings.TrimSpace(b.String()), true, nil
-			}
-			return "", false, readErr
-		}
-		if strings.TrimSpace(line) == "__WHALE_EOP__" {
-			return strings.TrimSpace(b.String()), false, nil
-		}
-		b.WriteString(line)
-	}
 }
 
 func attachmentSourcesFromPaths(paths []string) []attachments.Source {

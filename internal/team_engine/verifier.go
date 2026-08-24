@@ -268,8 +268,7 @@ func parseVerdict(output string) (passed bool, retry bool) {
 // hasVerdictMarkers reports whether output carries any of the format markers a
 // Verifier's required output format mandates (VERDICT:, ## FINDINGS, or the
 // ---json block).  A response with none of them did not come from a functioning
-// Verifier (e.g. a spawn error string like "error: unknown flag: --persist"),
-// so it must never auto-pass.
+// Verifier (e.g. a spawn error string), so it must never auto-pass.
 
 // ---------------------------------------------------------------------------
 // Shared helpers

@@ -96,39 +96,7 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 		upstreamRefs := e.Store.UpstreamOutputs(task)
 
 		// ---- Phase 1: Producing (skip if resuming with existing output) --
-		workerKey := "worker:" + taskID
 		if !skipProduce {
-			// Persistent session retry: send Verifier feedback to existing
-			// Worker session instead of re-spawning.
-			if ws := e.persistentSessions[workerKey]; ws != nil && e.shellSpawner != nil {
-				fbPrompt := verifierFeedbackForWorker(task.VerifierFeedback)
-				if e.Loggers != nil {
-					e.Loggers.Engine("task %s worker CONTINUE retry=%d", taskID[:8], attempt)
-				}
-				workerStart := time.Now()
-				resp := e.shellSpawner.ContinueSession(ws, fbPrompt)
-				contResult := &RunResult{
-					SessionID:       resp.SessionID,
-					ExitCode:        resp.ExitCode,
-					Stdout:          resp.Output,
-					Stderr:          resp.Diagnostic,
-					DurationSeconds: round(time.Since(workerStart).Seconds(), 2),
-					Success:         resp.Success,
-					PID:             resp.PID,
-					UsagePrompt:     resp.UsagePrompt,
-					UsageCompletion: resp.UsageCompletion,
-				}
-				e.addTokens(resp.UsagePrompt, resp.UsageCompletion)
-				Log("timing", "task %s worker continue done in %.1fs", taskID[:8], time.Since(workerStart).Seconds())
-				if e.Loggers != nil {
-					e.Loggers.Engine("task %s worker CONTINUE DONE in %.1fs (success=%v)", taskID[:8], time.Since(workerStart).Seconds(), resp.Success)
-				}
-				if contResult.Stdout != "" {
-					e.Whiteboard.WriteOutput(task.ID, contResult.Stdout)
-				}
-				goto verifyPhase
-			}
-
 			// Read team template and memory.
 			template := e.readTeamTemplate(task.Output)
 			memory, _ := e.BuildMemoryContext(task.Role, task.Title)
@@ -242,111 +210,52 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 				e.activeStdinWriters[taskID] = w
 				e.mu.Unlock()
 			}
-			workerKey := "worker:" + taskID
 			workerStart := time.Now()
 			var result *RunResult
 
-			// Persistent session: on retry, send Verifier feedback to the
-			// existing Worker session instead of restarting from scratch.
-			if ws := e.persistentSessions[workerKey]; ws != nil && e.shellSpawner != nil {
-				fbPrompt := verifierFeedbackForWorker(task.VerifierFeedback)
-				if e.Loggers != nil {
-					e.Loggers.Engine("task %s worker CONTINUE session (retry=%d)", taskID[:8], attempt)
-				}
-				resp := e.shellSpawner.ContinueSession(ws, fbPrompt)
-				if !resp.Success {
-					// The session died (timeout/crash) — drop it so the next
-					// retry spawns a fresh session instead of reusing a dead one.
-					e.closePersistentSession(workerKey)
-				}
-				result = &RunResult{
-					SessionID:       resp.SessionID,
-					ExitCode:        resp.ExitCode,
-					Stdout:          resp.Output,
-					Stderr:          resp.Diagnostic,
-					DurationSeconds: round(time.Since(workerStart).Seconds(), 2),
-					Success:         resp.Success,
-					PID:             resp.PID,
-					UsagePrompt:     resp.UsagePrompt,
-					UsageCompletion: resp.UsageCompletion,
-				}
-			} else if e.shellSpawner != nil {
-				// First attempt: spawn a persistent Worker session.
-				if e.Loggers != nil {
-					e.Loggers.Engine("task %s worker SPAWN persistent role=%s", taskID[:8], task.Role)
-				}
-				req := SubagentRequest{
-					Task:      prompt,
-					Role:      string(task.Role),
-					Model:     "",
-					Tools:     toolNames,
-					Workdir:   agentWorkdir,
-					Timeout:   taskTimeout,
-					MaxIters:  wIters,
-					MaxCalls:  wCalls,
-					MaxTokens: effectiveMaxTokens(wTokens, ""),
-					OnPID:     onPID,
-				}
-				ws, resp := e.shellSpawner.SpawnPersistent(context.Background(), req)
-				if ws != nil {
-					e.persistentSessions[workerKey] = ws
-				}
-				result = &RunResult{
-					SessionID:       resp.SessionID,
-					ExitCode:        resp.ExitCode,
-					Stdout:          resp.Output,
-					Stderr:          resp.Diagnostic,
-					DurationSeconds: round(time.Since(workerStart).Seconds(), 2),
-					Success:         resp.Success,
-					PID:             resp.PID,
-					UsagePrompt:     resp.UsagePrompt,
-					UsageCompletion: resp.UsageCompletion,
-				}
-			} else {
-				// Native adapter. On retry with a recorded session, prompt the
-				// existing member session with the Verifier feedback instead of
-				// re-spawning — preserves the Worker's failure context (partial
-				// work, exploration state) across retries. First attempt (or no
-				// SessionOps wired) falls through to a fresh spawn.
-				var continued bool
-				if ops := e.getSessionOps(); ops != nil {
-					if sessionID := e.Store.SessionID(taskID); sessionID != "" {
-						continued = true
-						fbPrompt := verifierFeedbackForWorker(task.VerifierFeedback)
-						if e.Loggers != nil {
-							e.Loggers.Engine("task %s worker CONTINUE session %s (retry=%d)", taskID[:8], sessionID, attempt)
-						}
-						resp, err := ops.Continue(taskCtx, sessionID, fbPrompt)
-						if err != nil {
-							result = &RunResult{
-								SessionID: sessionID,
-								ExitCode:  -1,
-								Stderr:    fmt.Sprintf("continue session: %v", err),
-								Success:   false,
-							}
-						} else {
-							result = &RunResult{
-								SessionID:       resp.SessionID,
-								ExitCode:        resp.ExitCode,
-								Stdout:          resp.Output,
-								Stderr:          resp.Diagnostic,
-								DurationSeconds: round(time.Since(workerStart).Seconds(), 2),
-								Success:         resp.Success,
-								UsagePrompt:     resp.UsagePrompt,
-								UsageCompletion: resp.UsageCompletion,
-								SystemPrompt:    resp.SystemPrompt,
-								PID:             resp.PID,
-							}
-						}
-					}
-				}
-				if !continued {
-					// First attempt: normal spawn via Runner.
+			// On retry with a recorded session, prompt the existing member
+			// session with the Verifier feedback instead of re-spawning —
+			// preserves the Worker's failure context (partial work, exploration
+			// state) across retries. First attempt (or no SessionOps wired)
+			// falls through to a fresh spawn.
+			var continued bool
+			if ops := e.getSessionOps(); ops != nil {
+				if sessionID := e.Store.SessionID(taskID); sessionID != "" {
+					continued = true
+					fbPrompt := verifierFeedbackForWorker(task.VerifierFeedback)
 					if e.Loggers != nil {
-						e.Loggers.Engine("task %s worker START role=%s", taskID[:8], task.Role)
+						e.Loggers.Engine("task %s worker CONTINUE session %s (retry=%d)", taskID[:8], sessionID, attempt)
 					}
-					result = e.Runner.RunWithContext(taskCtx, prompt, agentWorkdir, toolsStr, taskTimeout, wIters, wCalls, wTokens, liveOutput, onPID, onStdin)
+					resp, err := ops.Continue(taskCtx, sessionID, fbPrompt)
+					if err != nil {
+						result = &RunResult{
+							SessionID: sessionID,
+							ExitCode:  -1,
+							Stderr:    fmt.Sprintf("continue session: %v", err),
+							Success:   false,
+						}
+					} else {
+						result = &RunResult{
+							SessionID:       resp.SessionID,
+							ExitCode:        resp.ExitCode,
+							Stdout:          resp.Output,
+							Stderr:          resp.Diagnostic,
+							DurationSeconds: round(time.Since(workerStart).Seconds(), 2),
+							Success:         resp.Success,
+							UsagePrompt:     resp.UsagePrompt,
+							UsageCompletion: resp.UsageCompletion,
+							SystemPrompt:    resp.SystemPrompt,
+							PID:             resp.PID,
+						}
+					}
 				}
+			}
+			if !continued {
+				// First attempt: normal spawn via Runner.
+				if e.Loggers != nil {
+					e.Loggers.Engine("task %s worker START role=%s", taskID[:8], task.Role)
+				}
+				result = e.Runner.RunWithContext(taskCtx, prompt, agentWorkdir, toolsStr, taskTimeout, wIters, wCalls, wTokens, liveOutput, onPID, onStdin)
 			}
 			Log("timing", "task %s worker done in %.1fs (success=%v)", taskID[:8], time.Since(workerStart).Seconds(), result.Success)
 			if e.Loggers != nil {
@@ -444,7 +353,6 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 		// Reset for subsequent retry iterations.
 		skipProduce = false
 
-	verifyPhase:
 		// ---- Phase 2: Verifying ----------------------------------------
 		var passed bool
 		var feedback string
@@ -514,83 +422,18 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 				verifierModel = e.team.Config.Model.VerifierDefault
 			}
 			verifyStart := time.Now()
-			vIters, vCalls, vTokens := iterationBudget(task.Complexity, true)
-			vKey := "verifier:" + taskID
 			var verifyPromptTokens, verifyCompletionTokens int
 
-			// Persistent Verifier session: reuse process across retries.
-			if ws := e.persistentSessions[vKey]; ws != nil && e.shellSpawner != nil {
-				if e.Loggers != nil {
-					e.Loggers.Engine("task %s verifier CONTINUE session", taskID[:8])
-				}
-				v = NewVerifier(e.Whiteboard, e.Runner, e.Router, 0, verifierModel).WithAgentName(verifierAgentName).WithWorkdir(verifyWorkdir).WithVerifyDir(verifyDir)
-				prompt := v.BuildPrompt(task)
-				resp := e.shellSpawner.ContinueSession(ws, prompt)
-				verifyPromptTokens, verifyCompletionTokens = resp.UsagePrompt, resp.UsageCompletion
-				verifyDur = time.Since(verifyStart)
-				if resp.Success {
-					passed, _ = parseVerdict(resp.Output)
-					feedback = resp.Output
-				} else {
-					passed = false
-					feedback = resp.Diagnostic
-					if feedback == "" {
-						feedback = resp.Output
-					}
-					// Session died (timeout/crash) — drop it so the next retry
-					// spawns a fresh verifier session.
-					e.closePersistentSession(vKey)
-				}
-			} else if e.shellSpawner != nil {
-				if e.Loggers != nil {
-					e.Loggers.Engine("task %s verifier SPAWN persistent agent=%s", taskID[:8], verifierAgentName)
-				}
-				v = NewVerifier(e.Whiteboard, e.Runner, e.Router, 0, verifierModel).WithAgentName(verifierAgentName).WithWorkdir(verifyWorkdir).WithVerifyDir(verifyDir)
-				prompt := v.BuildPrompt(task)
-				req := SubagentRequest{
-					Task:      prompt,
-					Role:      "verifier",
-					AgentName: verifierAgentName,
-					Workdir:   verifyWorkdir,
-					Timeout:   time.Duration(e.Router.ResolveTimeout(task.Role, true)) * time.Second,
-					MaxIters:  vIters,
-					MaxCalls:  vCalls,
-					MaxTokens: effectiveMaxTokens(vTokens, verifierModel),
-				}
-				if verifierModel != "" {
-					req.Model = verifierModel
-				}
-				ws, resp := e.shellSpawner.SpawnPersistent(context.Background(), req)
-				if ws != nil {
-					e.persistentSessions[vKey] = ws
-				}
-				verifyPromptTokens, verifyCompletionTokens = resp.UsagePrompt, resp.UsageCompletion
-				verifyDur = time.Since(verifyStart)
-				if resp.Success {
-					passed, _ = parseVerdict(resp.Output)
-					feedback = resp.Output
-				} else {
-					passed = false
-					feedback = resp.Diagnostic
-					if feedback == "" {
-						feedback = resp.Output
-					}
-					// Session died (timeout/crash) — drop it so the next retry
-					// spawns a fresh verifier session instead of reusing a dead one.
-					e.closePersistentSession(vKey)
-				}
-			} else {
-				// Fallback: normal spawn via Runner.
-				v = NewVerifier(e.Whiteboard, e.Runner, e.Router, 0, verifierModel).WithAgentName(verifierAgentName).WithWorkdir(verifyWorkdir).WithVerifyDir(verifyDir)
-				if e.Loggers != nil {
-					e.Loggers.Engine("task %s verifier START agent=%s", taskID[:8], verifierAgentName)
-				}
-				passed, _, feedback, err = v.Verify(task)
-				verifyPromptTokens, verifyCompletionTokens = v.LastPromptTokens, v.LastCompletionTokens
-				verifyDur = time.Since(verifyStart)
-				if err != nil {
-					return false, fmt.Errorf("verifier error: %w", err)
-				}
+			// Normal spawn via Runner.
+			v = NewVerifier(e.Whiteboard, e.Runner, e.Router, 0, verifierModel).WithAgentName(verifierAgentName).WithWorkdir(verifyWorkdir).WithVerifyDir(verifyDir)
+			if e.Loggers != nil {
+				e.Loggers.Engine("task %s verifier START agent=%s", taskID[:8], verifierAgentName)
+			}
+			passed, _, feedback, err = v.Verify(task)
+			verifyPromptTokens, verifyCompletionTokens = v.LastPromptTokens, v.LastCompletionTokens
+			verifyDur = time.Since(verifyStart)
+			if err != nil {
+				return false, fmt.Errorf("verifier error: %w", err)
 			}
 			if e.Loggers != nil {
 				e.Loggers.Engine("task %s verifier DONE in %.1fs (pass=%v)", taskID[:8], verifyDur.Seconds(), passed)

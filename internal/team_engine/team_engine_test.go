@@ -842,10 +842,20 @@ func TestResumeMasterTask(t *testing.T) {
 // ============================================================================
 
 // newMockEngine creates an engine with a mock spawner pre-configured with
-// role-specific outputs for decomposer, worker, and verifier.
+// role-specific outputs for decomposer, worker, and verifier.  The planner
+// gets a per-role sequence so the TeamCycle flow works: elaborate-check,
+// elaborate-spec, decompose (plan JSON), and the plan-level review (accept).
+// Tests with pre-decomposed plans don't configure a planner output — they get
+// an accept-only sequence (the review is the only planner spawn).
 func newMockEngine(t *testing.T, outputs map[string]string) *TeamEngine {
 	t.Helper()
-	spawner := &mockSpawner{roleOutputs: outputs}
+	roleSeq := map[string][]string{}
+	if plan, ok := outputs["planner"]; ok {
+		roleSeq["planner"] = []string{"", "", plan, `{"decision":"accept","reason":"mock review"}`}
+	} else {
+		roleSeq["planner"] = []string{`{"decision":"accept","reason":"mock review"}`}
+	}
+	spawner := &mockSpawner{roleOutputs: outputs, roleSeq: roleSeq}
 	eng, err := New(":memory:", t.TempDir(), "", spawner)
 	if err != nil {
 		t.Fatalf("new engine: %v", err)
@@ -879,7 +889,7 @@ func TestIntegration_SimpleCodeTask(t *testing.T) {
 		t.Fatalf("create master task: %v", err)
 	}
 
-	batches, err := eng.PlanAndRun(context.Background(), "write add.go", workdir, mt.ID)
+	batches, err := eng.TeamCycle(context.Background(), "write add.go", workdir, mt.ID)
 	if err != nil {
 		t.Fatalf("plan and run: %v", err)
 	}
@@ -948,7 +958,7 @@ func Reverse(s string) string {
 		t.Fatalf("create master task: %v", err)
 	}
 
-	batches, err := eng.PlanAndRun(context.Background(), "write reverse.go", workdir, mt.ID)
+	batches, err := eng.TeamCycle(context.Background(), "write reverse.go", workdir, mt.ID)
 	if err != nil {
 		t.Fatalf("plan and run: %v", err)
 	}
@@ -994,7 +1004,7 @@ func TestIntegration_VerdictVariants(t *testing.T) {
 			mustWrite(t, workdir, "output.txt", "worker output here")
 
 			mt, _ := eng.CreateMasterTask("test", workdir, "")
-			batches, err := eng.PlanAndRun(context.Background(), "test", workdir, mt.ID)
+			batches, err := eng.TeamCycle(context.Background(), "test", workdir, mt.ID)
 			if err != nil && tc.wantDone {
 				t.Errorf("plan and run failed: %v", err)
 				return
@@ -1130,7 +1140,7 @@ In-memory map[string]string with sync.RWMutex for concurrent access.`
 	}
 
 	// Run the pipeline and collect engine log events.
-	batches, err := eng.PlanAndRun(context.Background(), "build KV store CLI", workdir, mt.ID)
+	batches, err := eng.TeamCycle(context.Background(), "build KV store CLI", workdir, mt.ID)
 	if err != nil {
 		t.Fatalf("plan and run: %v", err)
 	}
@@ -1184,6 +1194,9 @@ func TestIntegration_SelfSplitPipeline(t *testing.T) {
 	planJSON := "[{\"title\":\"Build complete KV store\",\"description\":\"Too large for one pass\",\"output\":\"store.go\",\"role\":\"software-engineer\",\"batch_id\":\"batch-1\",\"batch_label\":\"Implementation\",\"verifier_focus\":\"correctness\",\"use_dw\":false,\"max_cycles\":3}]"
 
 	roleSeq := map[string][]string{
+		// TeamCycle planner sequence: elaborate-check, elaborate-spec,
+		// decompose (plan JSON), plan-level review (accept).
+		"planner": {"", "", planJSON, `{"decision":"accept","reason":"mock review"}`},
 		"software-engineer": {
 			"[SPLIT_PLAN][{\"title\":\"Implement data model\",\"description\":\"Write store.go\",\"output\":\"store.go\",\"role\":\"software-engineer\",\"batch_id\":\"batch-1\",\"verifier_focus\":\"correctness\"},{\"title\":\"Implement CLI\",\"description\":\"Write main.go\",\"output\":\"main.go\",\"role\":\"software-engineer\",\"batch_id\":\"batch-1\",\"verifier_focus\":\"correctness\"}]",
 			"package main\n\nimport \"sync\"\n\nvar Store = struct {\n\tsync.RWMutex\n\tData map[string]string\n}{Data: make(map[string]string)}\n",
@@ -1214,7 +1227,7 @@ func TestIntegration_SelfSplitPipeline(t *testing.T) {
 	mustWrite(t, workdir, "main.go", roleSeq["software-engineer"][2])
 
 	mt, _ := eng.CreateMasterTask("build KV store", workdir, "")
-	batches, err := eng.PlanAndRun(context.Background(), "build KV store", workdir, mt.ID)
+	batches, err := eng.TeamCycle(context.Background(), "build KV store", workdir, mt.ID)
 	if err != nil {
 		t.Fatalf("plan and run: %v", err)
 	}
@@ -1291,7 +1304,7 @@ func TestIntegration_SoftwareTeam_AgentVerifier(t *testing.T) {
 		t.Fatalf("create master task: %v", err)
 	}
 
-	batches, err := eng.PlanAndRun(context.Background(), "write gcd.go", workdir, mt.ID)
+	batches, err := eng.TeamCycle(context.Background(), "write gcd.go", workdir, mt.ID)
 	if err != nil {
 		t.Fatalf("plan and run: %v", err)
 	}

@@ -70,7 +70,7 @@ func NewEscalationManager() *EscalationManager {
 // channel; if the engine mutex is held, no other goroutine can call Resolve
 // and the engine deadlocks.
 //
-// Callers in PlanAndRun's cycle loop do not hold TeamEngine.mu, so this is
+// Callers in the cycle loops do not hold TeamEngine.mu, so this is
 // safe in normal operation.  Adding new call sites: ensure any locks are
 // released before calling Escalate.
 func (em *EscalationManager) Escalate(req EscalationRequest) (EscalationDecision, error) {

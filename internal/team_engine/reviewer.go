@@ -242,67 +242,8 @@ func (r *Reviewer) ReviewPlanCycle(goal string, report *PlanCycleReport, workdir
 // ProactiveLeaderPrompt returns a prompt for proactively reviewing a task's progress.
 // When decomposeContext is non-empty, it is injected so the Leader can
 // reference its own decomposition decisions.
-func ProactiveLeaderPrompt(goal string, taskTitle string, taskRole string, taskState string, retryCount int, lastOutput string, decomposeContext ...string) string {
-	outputPreview := lastOutput
-	if len(outputPreview) > 500 {
-		outputPreview = outputPreview[:500] + "..."
-	}
-	dc := ""
-	if len(decomposeContext) > 0 {
-		dc = decomposeContext[0]
-	}
-	contextBlock := ""
-	if dc != "" {
-		contextBlock = fmt.Sprintf("\n## 你之前的分解决策\n\n%s\n\n---\n", dc)
-	}
-	return fmt.Sprintf(`You are a proactive Team Leader overseeing a running pipeline.
-
-GOAL:
-%s
-
-%sA task needs your attention:
-
-Task:     %s
-Role:     %s
-State:    %s
-Retries:  %d
-
-Latest output:
-%s
-
-Decide if you need to intervene:
-- "none"       → Task is on track, no intervention needed
-- "guidance"   → Task is off track or stuck, provide course correction
-- "redirect"   → Task should be reprioritized or replaced
-
-OUTPUT FORMAT (pure JSON, no markdown):
-{"action": "none|guidance|redirect", "reason": "...", "feedback": "specific guidance for the worker"}
-`, goal, contextBlock, taskTitle, taskRole, taskState, retryCount, outputPreview)
-}
 
 // ReviewProgress proactively reviews a single task's progress.
-func (r *Reviewer) ReviewProgress(goal, taskTitle, taskRole, taskState string, retryCount int, lastOutput, workdir string, timeout time.Duration, model ...string) (string, error) {
-	if timeout <= 0 {
-		timeout = 60 * time.Second
-	}
-	prompt := ProactiveLeaderPrompt(goal, taskTitle, taskRole, taskState, retryCount, lastOutput, r.decomposeContext)
-	result := r.runner.RunDecomposer(prompt, workdir, timeout, model...)
-
-	if !result.Success {
-		return "", fmt.Errorf("leader review failed (exit %d): %s", result.ExitCode, result.Stderr)
-	}
-
-	output := strings.TrimSpace(result.Stdout)
-	if output == "" {
-		return "", nil
-	}
-
-	action := extractJSONObject(output)
-	if action == "" {
-		return output, nil
-	}
-	return action, nil
-}
 
 // BatchLabelOrID returns the batch label if set, otherwise the batch ID.
 func (r *CycleReport) BatchLabelOrID() string {

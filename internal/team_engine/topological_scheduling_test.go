@@ -36,7 +36,7 @@ func TestTopologicalScheduling_FailedBatchDoesNotAbortSiblings(t *testing.T) {
 		{Title: "C", Description: "depends on missing batch", Output: "c.go", Role: "software-engineer", BatchID: "batch-c", BatchLabel: "C", DependsOnBatch: FlexibleStringSlice{"ghost"}, MaxCycles: 1},
 	}
 
-	batches, err := eng.PlanAndRun(context.Background(), "three batches", workdir, mt.ID, plan...)
+	batches, err := eng.TeamCycle(context.Background(), "three batches", workdir, mt.ID, plan...)
 	if err != nil {
 		t.Fatalf("plan and run: %v", err)
 	}

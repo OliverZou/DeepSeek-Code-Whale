@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"bufio"
 	"bytes"
 	"encoding/json"
 	"errors"
@@ -664,35 +663,6 @@ func TestReadExecPromptFallsBackToStdin(t *testing.T) {
 		t.Fatalf("prompt = %q", got)
 	}
 }
-
-func TestReadPersistPrompt(t *testing.T) {
-	tests := []struct {
-		name     string
-		input    string
-		wantText string
-		wantEOF  bool
-	}{
-		{"single line then EOP", "hello\n__WHALE_EOP__\n", "hello", false},
-		{"multi-line prompt then EOP", "line one\nline two\n__WHALE_EOP__\n", "line one\nline two", false},
-		{"EOF without EOP returns accumulated text", "trailing prompt\n", "trailing prompt", true},
-		{"empty input hits EOF immediately", "", "", true},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			got, eof, err := readPersistPrompt(bufio.NewReader(strings.NewReader(tc.input)))
-			if err != nil {
-				t.Fatalf("readPersistPrompt: %v", err)
-			}
-			if got != tc.wantText {
-				t.Errorf("text = %q, want %q", got, tc.wantText)
-			}
-			if eof != tc.wantEOF {
-				t.Errorf("eof = %v, want %v", eof, tc.wantEOF)
-			}
-		})
-	}
-}
-
 
 func TestRunExecTextOutput(t *testing.T) {
 	t.Setenv("DEEPSEEK_API_KEY", "sk-1234567890abcdef1234")

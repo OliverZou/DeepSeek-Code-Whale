@@ -13,89 +13,6 @@ import (
 // Pipeline: Plan → Batches → Tasks (with parallelism)
 // ---------------------------------------------------------------------------
 
-// PlanAndRun uses the Leader to decompose a goal into batches of subtasks
-// and runs them respecting batch-level dependencies with parallelism.
-//
-// Architecture:
-//
-//	Leader     → plan ([]PlanTask with batch_id)
-//	Engine     → group by batch_id → []Batch
-//	           → for each Batch (in dependency order):
-//	               → spawn all tasks in batch in parallel (goroutine pool)
-//	               → wait for all tasks to finish (sync.WaitGroup)
-//	               → gate: all PASS → next batch, any FAIL → abort
-//	           → write board.md + deliverable.md
-//
-// PlanAndRun accepts optional pre-decomposed planTasks.  When provided, the
-// internal decompose step is skipped and the pre-computed plan is used directly.
-func (e *TeamEngine) PlanAndRun(ctx context.Context, goal, workdir, masterTaskID string, preDecomposed ...PlanTask) ([]*Batch, error) {
-	runStart := time.Now()
-
-	// Register a cancel for this execution so the dashboard stop button works.
-	execCtx, execCancel := context.WithCancel(ctx)
-	defer execCancel()
-	e.mu.Lock()
-	e.masterTaskCancels[masterTaskID] = execCancel
-	e.mu.Unlock()
-	defer func() {
-		e.mu.Lock()
-		delete(e.masterTaskCancels, masterTaskID)
-		e.mu.Unlock()
-	}()
-
-	// Scope files and logs under the master task directory.
-	e.Whiteboard.SetMaster(masterTaskID)
-	if e.Loggers != nil {
-		masterDir := filepath.Join(e.Whiteboard.BaseDir(), masterTaskID)
-		if err := e.Loggers.SetBaseDir(masterDir); err != nil {
-			return nil, fmt.Errorf("set log dir: %w", err)
-		}
-	}
-
-	leader := NewLeader(e.Runner).WithLoggers(e.Loggers).WithTeam(e.team).WithOnLog(func() {
-		e.fireEvent(TaskEvent{Type: EventLeaderLog})
-	})
-	// Start Leader real-time oversight — monitors stuck tasks via heartbeat.
-	if e.shellSpawner != nil {
-		go e.leaderWatchLoop(execCtx, leader, masterTaskID, goal, workdir)
-	}
-	decomposerTimeout := time.Duration(e.Router.ResolveDecomposerTimeout()) * time.Second
-	leaderModel := e.Router.ResolveModel("planner")
-
-	planTasks, complexity, elabDur, decompDur, err := e.decomposePlan(goal, workdir, masterTaskID, leader, decomposerTimeout, leaderModel, preDecomposed...)
-	if err != nil {
-		return nil, err
-	}
-	batches, err := e.createBatchesFromPlan(planTasks, goal, workdir, masterTaskID, complexity)
-	if err != nil {
-		return nil, err
-	}
-
-	// Step 3: Execute batches with topological dependency scheduling —
-	//         independent batches run concurrently; a failed batch blocks its
-	//         downstream while sibling batches continue (Bug 1 + P1-graph).
-	completedBatches := make(map[string]bool)
-	passedBatches := make(map[string]bool)
-	completedBatchOutputs := make(map[string]string)
-	if err := e.runBatchesToCompletion(execCtx, batches, masterTaskID, workdir, decomposerTimeout, leaderModel, completedBatches, passedBatches, completedBatchOutputs); err != nil {
-		e.logRunSummary(runStart, elabDur, decompDur, batches)
-		return batches, err
-	}
-
-	// Step 4: Write final deliverable.md.
-	if delContent := e.Whiteboard.BuildDeliverableContent(batches); delContent != "" {
-		_ = e.Whiteboard.WriteDeliverable(delContent)
-	}
-
-	// Step 5: Leader final summary — collect all outputs and produce
-	// a user-facing summary of what was accomplished.
-	e.assembleParentOutputs(batches)
-	e.writeMasterOutput(goal, batches, workdir)
-
-	e.logRunSummary(runStart, elabDur, decompDur, batches)
-	return batches, nil
-}
-
 // TeamCycle is the TE's execution cycle loop. The Leader decomposes the plan
 // (Cycle 0) and hands it to the TE, which runs one full pass over the batches —
 // a Cycle — and reports back with a plan-level CycleReport. The Leader reviews
@@ -456,7 +373,7 @@ func (e *TeamEngine) createBatchesFromPlan(planTasks []PlanTask, goal, workdir, 
 // continue). Batches already passed in an earlier Cycle pre-complete (incremental
 // re-run) and are not re-executed. Each batch's Status is updated in place.
 // The three progress maps are owned by the caller so they survive across Cycles.
-// Returns nil on success, or a cancellation error. It is shared by PlanAndRun
+// Returns nil on success, or a cancellation error. It is shared by TeamCycle
 // (first pass) and TeamCycle (subsequent Cycles), so both use the same execution
 // substrate.
 func (e *TeamEngine) runBatchesToCompletion(ctx context.Context, batches []*Batch, masterTaskID, workdir string, decomposerTimeout time.Duration, leaderModel string, completedBatches, passedBatches map[string]bool, completedBatchOutputs map[string]string) error {
@@ -775,7 +692,7 @@ func (e *TeamEngine) collectBatchOutputs(batch *Batch) string {
 
 // logRunSummary emits a per-stage timing table to team_engine.log at the end
 // of a run (P2-timing).  It reuses batch.TotalDuration (set in runBatch /
-// runDWCycle) plus the elaborate/decompose timings measured in PlanAndRun, so a
+// runDWCycle) plus the elaborate/decompose timings measured in TeamCycle, so a
 // single glance shows which stage consumed the most wall-clock time.
 func (e *TeamEngine) logRunSummary(runStart time.Time, elabDur, decompDur time.Duration, batches []*Batch) {
 	total := time.Since(runStart).Seconds()
