@@ -838,9 +838,16 @@ func newTeamEngine(dbPath, whiteboardDir, configPath, workdir string) (*team_eng
 		cwd, _ := os.Getwd()
 		dbPath = filepath.Join(cwd, dbPath)
 	}
-	if !filepath.IsAbs(whiteboardDir) {
+	// workdir 是项目交付目录，也是 write 工具的 workspace 边界。让 whiteboardDir
+	// （team 状态目录）和日志都跟随 workdir 而非 cwd，使 verify/ 等状态目录落在
+	// workspace 内——否则 verifier 的 write 工具写 verify/ 会被 "escapes workspace"
+	// 权限拦下，只能退化成静态分析。
+	if !filepath.IsAbs(workdir) {
 		cwd, _ := os.Getwd()
-		whiteboardDir = filepath.Join(cwd, whiteboardDir)
+		workdir = filepath.Join(cwd, workdir)
+	}
+	if !filepath.IsAbs(whiteboardDir) {
+		whiteboardDir = filepath.Join(workdir, whiteboardDir)
 	}
 	if configPath != "" && !filepath.IsAbs(configPath) {
 		cwd, _ := os.Getwd()
@@ -862,9 +869,7 @@ func newTeamEngine(dbPath, whiteboardDir, configPath, workdir string) (*team_eng
 	// (as in tests) does not leak the open file. Must run BEFORE LogSpawnerType
 	// so the spawner-type record is not dropped (defaultTeamLog is nil until
 	// SetLogger runs).
-	if cwd, err := os.Getwd(); err == nil {
-		team_engine.SetLogger(teampglog.NewTeamLog(cwd))
-	}
+	team_engine.SetLogger(teampglog.NewTeamLog(workdir))
 
 	// Prefer the native subagent adapter; fall back to the shell spawner when
 	// no adapter could be wired (e.g. no API key configured).
