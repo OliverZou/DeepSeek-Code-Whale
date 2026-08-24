@@ -47,7 +47,6 @@ func newExecCmd(opts *cliOptions) *cobra.Command {
 	return c
 }
 
-
 func newResumeCmd(opts *cliOptions) *cobra.Command {
 	var last bool
 	c := &cobra.Command{
@@ -225,6 +224,9 @@ func runExec(out io.Writer, errOut io.Writer, in io.Reader, opts *cliOptions, ar
 		return err
 	}
 	start := app.StartOptions{NewSession: true, Worktree: opts.worktreeSession}
+	if sid := strings.TrimSpace(os.Getenv("WHALE_SESSION_ID")); sid != "" {
+		start.SessionID = sid
+	}
 
 	ctx := context.Background()
 	if timeoutSec > 0 {
@@ -270,6 +272,9 @@ func runExec(out io.Writer, errOut io.Writer, in io.Reader, opts *cliOptions, ar
 // to stdout delimited by __WHALE_EOT__.
 func runExecPersist(out io.Writer, errOut io.Writer, in io.Reader, opts *cliOptions) error {
 	start := app.StartOptions{NewSession: true, Worktree: opts.worktreeSession}
+	if sid := strings.TrimSpace(os.Getenv("WHALE_SESSION_ID")); sid != "" {
+		start.SessionID = sid
+	}
 	ctx := context.Background()
 	a, err := app.New(ctx, opts.cfg, start)
 	if err != nil {
@@ -333,7 +338,6 @@ func readPersistPrompt(reader *bufio.Reader) (prompt string, eof bool, err error
 		b.WriteString(line)
 	}
 }
-
 
 func attachmentSourcesFromPaths(paths []string) []attachments.Source {
 	if len(paths) == 0 {

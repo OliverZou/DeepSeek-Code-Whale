@@ -4,15 +4,18 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
 	teampglog "github.com/usewhale/whale/internal/team_engine/log"
+	"github.com/usewhale/whale/internal/telemetry"
 )
 
 // defaultTeamLog is the internal logger.  Set via SetLogger.
@@ -280,6 +283,40 @@ func shellSessionID(pid int) string {
 	return fmt.Sprintf("shell-%d-%d", pid, time.Now().UnixNano())
 }
 
+// newShellSessionID generates a synthetic session identifier before the
+// subprocess is started (so it can be passed via WHALE_SESSION_ID).  It uses
+// the parent pid for stability and nanotime for uniqueness.
+func newShellSessionID() string {
+	return fmt.Sprintf("shell-%d-%d", os.Getpid(), time.Now().UnixNano())
+}
+
+// readShellUsage reads the accumulated prompt/completion tokens for a
+// shell-spawned subprocess session.  The child `whale exec` process inherits
+// WHALE_SESSION_ID and writes its per-turn usage to
+// <usageDir>/<sid>.jsonl; read that file back so the parent reports real
+// token usage instead of zeros.  Returns 0,0 when no usage is found.
+func readShellUsage(sid string) (prompt, completion int) {
+	sid = strings.TrimSpace(sid)
+	if sid == "" {
+		return 0, 0
+	}
+	f, err := os.Open(filepath.Join(telemetry.DefaultUsageLogDir(), sid+".jsonl"))
+	if err != nil {
+		return 0, 0
+	}
+	defer f.Close()
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		var rec telemetry.UsageRecord
+		if err := json.Unmarshal(scanner.Bytes(), &rec); err != nil {
+			continue
+		}
+		prompt += rec.PromptTokens
+		completion += rec.CompletionTokens
+	}
+	return prompt, completion
+}
+
 func (s *ShellSubagentSpawner) SpawnSubagent(ctx context.Context, req SubagentRequest) (SubagentResponse, error) {
 	whaleBin := s.whaleBin
 	if whaleBin == "" {
@@ -311,15 +348,17 @@ func (s *ShellSubagentSpawner) SpawnSubagent(ctx context.Context, req SubagentRe
 		cwd = "."
 	}
 
+	sid := newShellSessionID()
 	cmd := exec.CommandContext(ctx, whaleBin, args...)
 	cmd.Dir = cwd
 	cmd.Env = append(os.Environ(),
 		fmt.Sprintf("WHALE_MAX_TOKENS=%d", req.MaxTokens),
+		fmt.Sprintf("WHALE_SESSION_ID=%s", sid),
 	)
 
 	stdinPipe, err := cmd.StdinPipe()
 	if err != nil {
-		return SubagentResponse{SessionID: shellSessionID(0), SpawnerType: "shell", Diagnostic: "stdin pipe error", ExitCode: -1, Success: false}, nil
+		return SubagentResponse{SessionID: sid, SpawnerType: "shell", Diagnostic: "stdin pipe error", ExitCode: -1, Success: false}, nil
 	}
 
 	var stdout, stderr bytes.Buffer
@@ -327,7 +366,7 @@ func (s *ShellSubagentSpawner) SpawnSubagent(ctx context.Context, req SubagentRe
 	cmd.Stderr = &stderr
 
 	if err := cmd.Start(); err != nil {
-		return SubagentResponse{SessionID: shellSessionID(0), SpawnerType: "shell", Diagnostic: fmt.Sprintf("start error: %v", err), ExitCode: -1, Success: false}, nil
+		return SubagentResponse{SessionID: sid, SpawnerType: "shell", Diagnostic: fmt.Sprintf("start error: %v", err), ExitCode: -1, Success: false}, nil
 	}
 	pid := cmd.Process.Pid
 	if req.OnPID != nil {
@@ -368,13 +407,13 @@ func (s *ShellSubagentSpawner) SpawnSubagent(ctx context.Context, req SubagentRe
 			} else {
 				exitCode = -1
 			}
-			return SubagentResponse{SessionID: shellSessionID(pid), SpawnerType: "shell", Output: stdout.String(), Diagnostic: stderr.String(), ExitCode: exitCode, Success: false, PID: pid}, nil
 		}
-		return SubagentResponse{SessionID: shellSessionID(pid), SpawnerType: "shell", Output: stdout.String(), Diagnostic: stderr.String(), ExitCode: 0, Success: true, PID: pid}, nil
+		usagePrompt, usageCompletion := readShellUsage(sid)
+		return SubagentResponse{SessionID: sid, SpawnerType: "shell", Output: stdout.String(), Diagnostic: stderr.String(), ExitCode: exitCode, Success: waitErr == nil, PID: pid, UsagePrompt: usagePrompt, UsageCompletion: usageCompletion}, nil
 
 	case <-ctx.Done():
 		cmd.Process.Kill()
-		return SubagentResponse{SessionID: shellSessionID(pid), Output: stdout.String(), Diagnostic: stderr.String(), ExitCode: -2, Success: false, PID: pid}, ctx.Err()
+		return SubagentResponse{SessionID: sid, Output: stdout.String(), Diagnostic: stderr.String(), ExitCode: -2, Success: false, PID: pid}, ctx.Err()
 	}
 }
 
@@ -402,7 +441,14 @@ type PersistentSession struct {
 	stderr *bytes.Buffer
 
 	pid int
+	sid string     // session ID passed to the child via WHALE_SESSION_ID (for usage reads)
 	mu  sync.Mutex // serialises writes to stdin
+
+	// lastPrompt/lastCompletion track the cumulative usage read after the
+	// previous turn, so each sendAndReceive reports that turn's delta rather
+	// than the whole session's cumulative total.
+	lastPrompt     int
+	lastCompletion int
 
 	// timeout bounds a single sendAndReceive round-trip.  Applied per call so a
 	// slow verification doesn't kill the process between retries (the old
@@ -444,22 +490,24 @@ func (s *ShellSubagentSpawner) SpawnPersistent(ctx context.Context, req Subagent
 		cwd = "."
 	}
 
+	sid := newShellSessionID()
 	cmd := exec.Command(whaleBin, args...)
 	cmd.Dir = cwd
 	cmd.Env = append(os.Environ(),
 		fmt.Sprintf("WHALE_MAX_TOKENS=%d", req.MaxTokens),
+		fmt.Sprintf("WHALE_SESSION_ID=%s", sid),
 	)
 
 	stdinPipe, err := cmd.StdinPipe()
 	if err != nil {
-		r := SubagentResponse{SessionID: shellSessionID(0), SpawnerType: "shell", ExitCode: -1, Success: false}
+		r := SubagentResponse{SessionID: sid, SpawnerType: "shell", ExitCode: -1, Success: false}
 		return nil, &r
 	}
 
 	stdoutPipe, err := cmd.StdoutPipe()
 	if err != nil {
 		stdinPipe.Close()
-		r := SubagentResponse{SessionID: shellSessionID(0), SpawnerType: "shell", ExitCode: -1, Success: false}
+		r := SubagentResponse{SessionID: sid, SpawnerType: "shell", ExitCode: -1, Success: false}
 		return nil, &r
 	}
 
@@ -467,7 +515,7 @@ func (s *ShellSubagentSpawner) SpawnPersistent(ctx context.Context, req Subagent
 	cmd.Stderr = &sessionStderr
 
 	if err := cmd.Start(); err != nil {
-		r := SubagentResponse{SessionID: shellSessionID(0), SpawnerType: "shell", ExitCode: -1, Success: false}
+		r := SubagentResponse{SessionID: sid, SpawnerType: "shell", ExitCode: -1, Success: false}
 		return nil, &r
 	}
 
@@ -477,6 +525,7 @@ func (s *ShellSubagentSpawner) SpawnPersistent(ctx context.Context, req Subagent
 		stdoutBuf: bufio.NewScanner(stdoutPipe),
 		stderr:    &sessionStderr,
 		pid:       cmd.Process.Pid,
+		sid:       sid,
 		timeout:   req.Timeout,
 	}
 	// Large buffer — agent output can be large.
@@ -523,8 +572,25 @@ func (s *ShellSubagentSpawner) CloseSession(session *PersistentSession) {
 	}
 }
 
-// sendAndReceive writes a prompt + EOP to stdin, then reads stdout until
-// EOT.  Thread-safe via session.mu.
+// usageDelta returns this turn's prompt/completion usage as the difference
+// between the current cumulative usage (read from the child's usage log) and
+// the previous turn's cumulative.  Only call under ps.mu (sendAndReceive holds
+// it), so the lastPrompt/lastCompletion bookkeeping stays race-free.
+func (ps *PersistentSession) usageDelta() (prompt, completion int) {
+	cumPrompt, cumCompletion := readShellUsage(ps.sid)
+	prompt = cumPrompt - ps.lastPrompt
+	completion = cumCompletion - ps.lastCompletion
+	ps.lastPrompt = cumPrompt
+	ps.lastCompletion = cumCompletion
+	if prompt < 0 {
+		prompt = 0
+	}
+	if completion < 0 {
+		completion = 0
+	}
+	return prompt, completion
+}
+
 // sendAndReceive writes a prompt + EOP to stdin, then reads stdout until
 // EOT.  Thread-safe via session.mu.
 func (ps *PersistentSession) sendAndReceive(prompt string) *SubagentResponse {
@@ -578,25 +644,30 @@ func (ps *PersistentSession) sendAndReceive(prompt string) *SubagentResponse {
 				}
 			}
 		}
+		usagePrompt, usageCompletion := ps.usageDelta()
 		return &SubagentResponse{
-			SessionID:   shellSessionID(ps.pid),
-			SpawnerType: "shell",
-			Output:      output,
-			Diagnostic:  ps.stderr.String(),
-			ExitCode:    exitCode,
-			Success:     false,
-			PID:         ps.pid,
+			SessionID:       ps.sid,
+			SpawnerType:     "shell",
+			Output:          output,
+			Diagnostic:      ps.stderr.String(),
+			ExitCode:        exitCode,
+			Success:         false,
+			PID:             ps.pid,
+			UsagePrompt:     usagePrompt,
+			UsageCompletion: usageCompletion,
 		}
 	}
 
-	// Re-generate session ID per call to distinguish retry attempts.
+	usagePrompt, usageCompletion := ps.usageDelta()
 	return &SubagentResponse{
-		SessionID:   shellSessionID(ps.pid),
-		SpawnerType: "shell",
-		Output:      output,
-		ExitCode:    0,
-		Success:     true, // files may have been produced without stdout
-		PID:         ps.pid,
+		SessionID:       ps.sid,
+		SpawnerType:     "shell",
+		Output:          output,
+		ExitCode:        0,
+		Success:         true, // files may have been produced without stdout
+		PID:             ps.pid,
+		UsagePrompt:     usagePrompt,
+		UsageCompletion: usageCompletion,
 	}
 }
 

@@ -554,11 +554,13 @@ func (e *TeamEngine) logRunSummary(runStart time.Time, elabDur, decompDur time.D
 	Log("plan", "=== RUN SUMMARY ===")
 	Log("plan", "elaborate: %.1fs (%.0f%%)", elabDur.Seconds(), pct(elabDur.Seconds()))
 	Log("plan", "decompose: %.1fs (%.0f%%)", decompDur.Seconds(), pct(decompDur.Seconds()))
+	totalTokens := 0
 	for _, b := range batches {
-		Log("plan", "batch %s [%s]: %d tasks, cycles=%d, %.1fs (%.0f%%)",
-			b.LabelOrID(), b.Status, len(b.Tasks), b.CycleCount, b.TotalDuration, pct(b.TotalDuration))
+		totalTokens += b.TotalTokens
+		Log("plan", "batch %s [%s]: %d tasks, cycles=%d, %.1fs (%.0f%%), %d tokens",
+			b.LabelOrID(), b.Status, len(b.Tasks), b.CycleCount, b.TotalDuration, pct(b.TotalDuration), b.TotalTokens)
 	}
-	Log("plan", "TOTAL: %.1fs", total)
+	Log("plan", "TOTAL: %.1fs · %d tokens", total, totalTokens)
 }
 
 // buildStageArtifactContext generates context that injects previous batch
@@ -825,6 +827,7 @@ func (e *TeamEngine) RunBatch(ctx context.Context, batch *Batch) error {
 		err    error
 	}
 	resultCh := make(chan taskResult, len(tasks))
+	beforeTokens := e.tokenTotal()
 
 	for _, task := range tasks {
 		select {
@@ -858,9 +861,9 @@ func (e *TeamEngine) RunBatch(ctx context.Context, batch *Batch) error {
 	for range resultCh {
 	}
 
-	// Estimate batch cost: worker + verifier tokens per task × rounds.
-	for _, t := range batch.Tasks {
-		batch.TotalTokens += (t.RetryCount + 1) * 10000 // ~10K tokens per worker+verifier round
-	}
+	// Real batch cost: tokens accumulated by worker/verifier spawns in RunTask
+	// since this batch started.  The delta snapshot is safe because batches run
+	// serially (P1-graph will introduce concurrent batches and must revisit this).
+	batch.TotalTokens = e.tokenTotal() - beforeTokens
 	return nil
 }

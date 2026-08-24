@@ -86,6 +86,11 @@ type TeamEngine struct {
 
 	mu sync.Mutex
 
+	// totalTokens accumulates real prompt+completion tokens across worker and
+	// verifier spawns, so batch cost is reported from usage rather than the
+	// rough (RetryCount+1)*10k estimate.
+	totalTokens int
+
 	// eventCallbacks — 订阅者列表，状态变化时主动推送
 	eventCallbacks []TaskEventCallback
 
@@ -119,6 +124,24 @@ func (e *TeamEngine) SetTeam(tc *TeamConfig) {
 // Team returns the current team configuration, or nil if none is set.
 func (e *TeamEngine) Team() *TeamConfig {
 	return e.team
+}
+
+// addTokens accumulates real prompt+completion tokens from a worker/verifier
+// spawn.  Safe for concurrent use from the batch's task goroutines.
+func (e *TeamEngine) addTokens(prompt, completion int) {
+	if prompt <= 0 && completion <= 0 {
+		return
+	}
+	e.mu.Lock()
+	e.totalTokens += prompt + completion
+	e.mu.Unlock()
+}
+
+// tokenTotal returns the accumulated token total.  Safe for concurrent use.
+func (e *TeamEngine) tokenTotal() int {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.totalTokens
 }
 
 // New creates a TeamEngine with the given dependencies.

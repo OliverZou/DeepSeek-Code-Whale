@@ -22,6 +22,10 @@ type Verifier struct {
 	agentName  string
 	workdir    string
 	LastPrompt string
+	// LastPromptTokens/LastCompletionTokens record the tokens consumed by the
+	// most recent Verify run (worker+verifier accounting; 0 when unavailable).
+	LastPromptTokens     int
+	LastCompletionTokens int
 }
 
 // NewVerifier creates a Verifier.
@@ -157,6 +161,8 @@ func (v *Verifier) Verify(task *Task) (passed bool, retry bool, feedback string,
 
 	v.LastPrompt = prompt
 	result := v.runner.RunVerifier(prompt, workdir, timeout, vIters, vCalls, vTokens, v.agentName, model)
+	v.LastPromptTokens = result.UsagePrompt
+	v.LastCompletionTokens = result.UsageCompletion
 
 	output := result.Stdout
 
@@ -167,6 +173,8 @@ func (v *Verifier) Verify(task *Task) (passed bool, retry bool, feedback string,
 			"their ACTUAL output. A bare PASS/FAIL without tool output will be rejected again.\n\n" +
 			prompt
 		result2 := v.runner.RunVerifier(hardenedPrompt, workdir, timeout, vIters, vCalls, vTokens, v.agentName, model)
+		v.LastPromptTokens += result2.UsagePrompt
+		v.LastCompletionTokens += result2.UsageCompletion
 		output = result2.Stdout
 	}
 

@@ -115,7 +115,10 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 					DurationSeconds: round(time.Since(workerStart).Seconds(), 2),
 					Success:         resp.Success,
 					PID:             resp.PID,
+					UsagePrompt:     resp.UsagePrompt,
+					UsageCompletion: resp.UsageCompletion,
 				}
+				e.addTokens(resp.UsagePrompt, resp.UsageCompletion)
 				Log("timing", "task %s worker continue done in %.1fs", taskID[:8], time.Since(workerStart).Seconds())
 				if e.Loggers != nil {
 					e.Loggers.Engine("task %s worker CONTINUE DONE in %.1fs (success=%v)", taskID[:8], time.Since(workerStart).Seconds(), resp.Success)
@@ -263,6 +266,8 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 					DurationSeconds: round(time.Since(workerStart).Seconds(), 2),
 					Success:         resp.Success,
 					PID:             resp.PID,
+					UsagePrompt:     resp.UsagePrompt,
+					UsageCompletion: resp.UsageCompletion,
 				}
 			} else if e.shellSpawner != nil {
 				// First attempt: spawn a persistent Worker session.
@@ -293,6 +298,8 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 					DurationSeconds: round(time.Since(workerStart).Seconds(), 2),
 					Success:         resp.Success,
 					PID:             resp.PID,
+					UsagePrompt:     resp.UsagePrompt,
+					UsageCompletion: resp.UsageCompletion,
 				}
 			} else {
 				// Fallback: normal spawn via Runner.
@@ -306,6 +313,7 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 				e.Loggers.Engine("task %s worker DONE in %.1fs (success=%v exit=%d)", taskID[:8], time.Since(workerStart).Seconds(), result.Success, result.ExitCode)
 			}
 			// Clean up nested .whale created by whale exec in the agent sandbox.
+			e.addTokens(result.UsagePrompt, result.UsageCompletion)
 			_ = os.RemoveAll(filepath.Join(agentWorkdir, ".whale"))
 			e.mu.Lock()
 			delete(e.activeCancels, taskID)
@@ -474,6 +482,7 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 			verifyStart := time.Now()
 			vIters, vCalls, vTokens := iterationBudget(task.Complexity, true)
 			vKey := "verifier:" + taskID
+			var verifyPromptTokens, verifyCompletionTokens int
 
 			// Persistent Verifier session: reuse process across retries.
 			if ws := e.persistentSessions[vKey]; ws != nil && e.shellSpawner != nil {
@@ -483,6 +492,7 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 				v = NewVerifier(e.Whiteboard, e.Runner, e.Router, 0, verifierModel).WithAgentName(verifierAgentName).WithWorkdir(verifyWorkdir)
 				prompt := v.BuildPrompt(task)
 				resp := e.shellSpawner.ContinueSession(ws, prompt)
+				verifyPromptTokens, verifyCompletionTokens = resp.UsagePrompt, resp.UsageCompletion
 				verifyDur = time.Since(verifyStart)
 				if resp.Success {
 					passed, _ = parseVerdict(resp.Output)
@@ -520,6 +530,7 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 				if ws != nil {
 					e.persistentSessions[vKey] = ws
 				}
+				verifyPromptTokens, verifyCompletionTokens = resp.UsagePrompt, resp.UsageCompletion
 				verifyDur = time.Since(verifyStart)
 				if resp.Success {
 					passed, _ = parseVerdict(resp.Output)
@@ -541,6 +552,7 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 					e.Loggers.Engine("task %s verifier START agent=%s", taskID[:8], verifierAgentName)
 				}
 				passed, _, feedback, err = v.Verify(task)
+				verifyPromptTokens, verifyCompletionTokens = v.LastPromptTokens, v.LastCompletionTokens
 				verifyDur = time.Since(verifyStart)
 				if err != nil {
 					return false, fmt.Errorf("verifier error: %w", err)
@@ -549,6 +561,7 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 			if e.Loggers != nil {
 				e.Loggers.Engine("task %s verifier DONE in %.1fs (pass=%v)", taskID[:8], verifyDur.Seconds(), passed)
 			}
+			e.addTokens(verifyPromptTokens, verifyCompletionTokens)
 		}
 
 		// Log verifier output for dashboard dialogue.
