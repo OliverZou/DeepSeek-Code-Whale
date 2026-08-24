@@ -311,6 +311,29 @@ func TestVerdictLabel(t *testing.T) {
 	}
 }
 
+func TestHasVerdictMarkers(t *testing.T) {
+	tests := []struct {
+		output string
+		want   bool
+	}{
+		// Spawn-error strings must NOT auto-pass.
+		{"error: unknown flag: --persist", false},
+		{"", false},
+		{"process exited with code 1", false},
+		// Legitimate Verifier output carries at least one format marker.
+		{"VERDICT: PASS\nAll good.", true},
+		{"VERDICT: FAIL\nISSUES:\n- x", true},
+		{"## FINDINGS\n---json\n[]\n---", true},
+		{"---json\n[]\n---", true},
+	}
+	for _, tc := range tests {
+		if got := hasVerdictMarkers(tc.output); got != tc.want {
+			t.Errorf("hasVerdictMarkers(%q) = %v, want %v", tc.output, got, tc.want)
+		}
+	}
+}
+
+
 // ============================================================================
 // Escalator — re-decomposition logic
 

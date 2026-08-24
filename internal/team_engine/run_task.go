@@ -444,8 +444,16 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 				prompt := v.BuildPrompt(task)
 				resp := e.shellSpawner.ContinueSession(ws, prompt)
 				verifyDur = time.Since(verifyStart)
-				passed, _ = parseVerdict(resp.Output)
-				feedback = resp.Output
+				if resp.Success {
+					passed, _ = parseVerdict(resp.Output)
+					feedback = resp.Output
+				} else {
+					passed = false
+					feedback = resp.Diagnostic
+					if feedback == "" {
+						feedback = resp.Output
+					}
+				}
 			} else if e.shellSpawner != nil {
 				if e.Loggers != nil {
 					e.Loggers.Engine("task %s verifier SPAWN persistent agent=%s", taskID[:8], verifierAgentName)
@@ -470,8 +478,16 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 					e.persistentSessions[vKey] = ws
 				}
 				verifyDur = time.Since(verifyStart)
-				passed, _ = parseVerdict(resp.Output)
-				feedback = resp.Output
+				if resp.Success {
+					passed, _ = parseVerdict(resp.Output)
+					feedback = resp.Output
+				} else {
+					passed = false
+					feedback = resp.Diagnostic
+					if feedback == "" {
+						feedback = resp.Output
+					}
+				}
 			} else {
 				// Fallback: normal spawn via Runner.
 				v = NewVerifier(e.Whiteboard, e.Runner, e.Router, 0, verifierModel).WithAgentName(verifierAgentName)
@@ -592,7 +608,7 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 
 		// 0 issues → pass immediately.
 		currCount := len(ParseFindings(feedback))
-		if currCount == 0 {
+		if currCount == 0 && hasVerdictMarkers(feedback) {
 			e.mu.Unlock()
 			e.closePersistentSession("worker:" + taskID)
 			if task.Output != "" {

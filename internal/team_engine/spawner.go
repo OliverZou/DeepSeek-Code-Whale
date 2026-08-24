@@ -502,6 +502,8 @@ func (s *ShellSubagentSpawner) CloseSession(session *PersistentSession) {
 
 // sendAndReceive writes a prompt + EOP to stdin, then reads stdout until
 // EOT.  Thread-safe via session.mu.
+// sendAndReceive writes a prompt + EOP to stdin, then reads stdout until
+// EOT.  Thread-safe via session.mu.
 func (ps *PersistentSession) sendAndReceive(prompt string) *SubagentResponse {
 	ps.mu.Lock()
 	defer ps.mu.Unlock()
@@ -514,14 +516,41 @@ func (ps *PersistentSession) sendAndReceive(prompt string) *SubagentResponse {
 
 	// Read until EOT.
 	var lines []string
+	sawEOT := false
 	for ps.stdoutBuf.Scan() {
 		line := ps.stdoutBuf.Text()
 		if strings.TrimSpace(line) == "__WHALE_EOT__" {
+			sawEOT = true
 			break
 		}
 		lines = append(lines, line)
 	}
 	output := strings.Join(lines, "\n")
+
+	// No EOT means the subprocess died before producing a complete response
+	// (e.g. whale exec rejected an unknown flag).  Surface that as a failure
+	// instead of treating the partial output as success.
+	if !sawEOT {
+		exitCode := 0
+		if ps.cmd.Process != nil {
+			if werr := ps.cmd.Wait(); werr != nil {
+				if ee, ok := werr.(*exec.ExitError); ok {
+					exitCode = ee.ExitCode()
+				} else {
+					exitCode = -1
+				}
+			}
+		}
+		return &SubagentResponse{
+			SessionID:   shellSessionID(ps.pid),
+			SpawnerType: "shell",
+			Output:      output,
+			Diagnostic:  ps.stderr.String(),
+			ExitCode:    exitCode,
+			Success:     false,
+			PID:         ps.pid,
+		}
+	}
 
 	// Re-generate session ID per call to distinguish retry attempts.
 	return &SubagentResponse{
@@ -533,6 +562,7 @@ func (ps *PersistentSession) sendAndReceive(prompt string) *SubagentResponse {
 		PID:         ps.pid,
 	}
 }
+
 
 var _ SubagentSpawner = (*ShellSubagentSpawner)(nil)
 
