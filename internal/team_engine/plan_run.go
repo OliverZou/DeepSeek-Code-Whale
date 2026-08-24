@@ -301,6 +301,11 @@ func (e *TeamEngine) PlanAndRun(ctx context.Context, goal, workdir, masterTaskID
 							e.Loggers.Engine("batch %s: dry after %d cycles", batch.ID, cycle+1)
 						}
 						completedBatches[batch.ID] = true
+						if len(currentFindings.Findings) == 0 {
+							batch.Status = BatchStatusPassed
+						} else {
+							batch.Status = BatchStatusFailed
+						}
 						completedBatchOutputs[batch.ID] = e.collectBatchOutputs(batch)
 						e.saveCheckpoint(masterTaskID, completedBatches, passedBatches, completedBatchOutputs, batches)
 						break batchCycleLoop
@@ -374,6 +379,7 @@ func (e *TeamEngine) PlanAndRun(ctx context.Context, goal, workdir, masterTaskID
 				// Batch done. Verifier already judged every task — skip Leader review.
 				completedBatches[batch.ID] = true
 				passedBatches[batch.ID] = true
+				batch.Status = BatchStatusPassed
 				completedBatchOutputs[batch.ID] = e.collectBatchOutputs(batch)
 				break batchCycleLoop
 			}
@@ -562,6 +568,11 @@ func (e *TeamEngine) runDWCycle(
 					e.Loggers.Engine("DW batch %s: dry after %d cycles", batch.ID, cycle+1)
 				}
 				completedBatches[batch.ID] = true
+				if len(currentFindings.Findings) == 0 {
+					batch.Status = BatchStatusPassed
+				} else {
+					batch.Status = BatchStatusFailed
+				}
 				completedBatchOutputs[batch.ID] = e.collectBatchOutputs(batch)
 				e.saveCheckpoint(masterTaskID, completedBatches, passedBatches, completedBatchOutputs, batches)
 				return
@@ -627,6 +638,7 @@ func (e *TeamEngine) runDWCycle(
 		}
 
 		if allPassed {
+			batch.Status = BatchStatusPassed
 			completedBatches[batch.ID] = true
 			completedBatchOutputs[batch.ID] = e.collectBatchOutputs(batch)
 			e.saveCheckpoint(masterTaskID, completedBatches, passedBatches, completedBatchOutputs, batches)
@@ -635,6 +647,7 @@ func (e *TeamEngine) runDWCycle(
 	}
 
 	// Max cycles reached — auto-accept whatever we have.
+	batch.Status = BatchStatusFailed
 	completedBatches[batch.ID] = true
 	completedBatchOutputs[batch.ID] = e.collectBatchOutputs(batch)
 	e.saveCheckpoint(masterTaskID, completedBatches, passedBatches, completedBatchOutputs, batches)

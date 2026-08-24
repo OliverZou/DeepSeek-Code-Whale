@@ -1032,11 +1032,9 @@ func mustWrite(t *testing.T, dir, name, content string) {
 //
 // Batch 2 depends on Batch 1; Batch 3 depends on Batch 2.
 func TestIntegration_MultiBatchPipeline(t *testing.T) {
-	// Load the real team from the bin/teams directory.
-	tc, err := LoadTeamConfig("../../bin/teams/软件开发团队/team.yaml")
-	if err != nil {
-		t.Skipf("team file not available: %v", err)
-	}
+	// Load the real team if available (team files ship in ~/.whale/teams or a
+	// bundled exe_dir/teams; absence must not skip the pipeline assertions).
+	tc, _ := LoadTeamConfig("../../bin/teams/软件开发团队/team.yaml")
 
 	// The Leader would decompose the goal using team roles.  We simulate
 	// that by providing a pre-decomposed plan that references the team's
@@ -1106,8 +1104,10 @@ In-memory map[string]string with sync.RWMutex for concurrent access.`
 	defer eng.Close()
 
 	// Set the real team on the engine so Leader prompt generation,
-	// role resolution, and team rules are exercised.
-	eng.SetTeam(tc)
+	// role resolution, and team rules are exercised (if available).
+	if tc != nil {
+		eng.SetTeam(tc)
+	}
 
 	workdir := t.TempDir()
 	mustWrite(t, workdir, "go.mod", "module kvstore\n\ngo 1.21")
@@ -1153,6 +1153,9 @@ In-memory map[string]string with sync.RWMutex for concurrent access.`
 	// Verify all tasks completed.
 	for _, b := range batches {
 		t.Logf("Batch %s [%s]: %d tasks", b.LabelOrID(), b.Status, len(b.Tasks))
+		if b.Status != BatchStatusPassed {
+			t.Errorf("batch %s: expected status %s, got %s", b.LabelOrID(), BatchStatusPassed, b.Status)
+		}
 		for _, task := range b.Tasks {
 			t.Logf("  %s [%s] role=%s retries=%d/%d",
 				task.Title, task.State, task.Role, task.RetryCount, task.MaxRetries)
