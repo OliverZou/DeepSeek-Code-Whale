@@ -2,6 +2,8 @@ package team_engine
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -160,5 +162,56 @@ func TestRunTaskWorktreeMergeCleanup(t *testing.T) {
 	branch := "team-" + task.ID[:8]
 	if out := strings.TrimSpace(runGit(t, repo, "branch", "--list", branch)); out != "" {
 		t.Fatalf("branch %s should be deleted after merge, got %q", branch, out)
+	}
+}
+
+// fileWritingSpawner simulates a Worker that writes its deliverable into the
+// sandbox out/ directory (req.Workdir), and a Verifier that always passes.
+// Used to verify RunTask copies sandboxed output back into the task's workdir.
+type fileWritingSpawner struct {
+	workerFile    string
+	workerContent string
+	verifier      string
+}
+
+func (s *fileWritingSpawner) SpawnSubagent(_ context.Context, req SubagentRequest) (SubagentResponse, error) {
+	if req.Role == "verifier" {
+		return SubagentResponse{Output: s.verifier, Success: true, ExitCode: 0}, nil
+	}
+	if err := os.WriteFile(filepath.Join(req.Workdir, s.workerFile), []byte(s.workerContent), 0644); err != nil {
+		return SubagentResponse{}, err
+	}
+	return SubagentResponse{Output: "wrote " + s.workerFile, Success: true, ExitCode: 0}, nil
+}
+
+func TestRunTaskPropagatesOutputToWorkdir(t *testing.T) {
+	workdir := t.TempDir()
+	spawner := &fileWritingSpawner{
+		workerFile:    "main.go",
+		workerContent: "package main\n",
+		verifier:      passVerdict,
+	}
+	eng := newRunTaskEngine(t, spawner)
+	defer eng.Close()
+
+	task, err := eng.CreateTask("Write main.go", "Write a Go file", RoleDeveloper, "", nil, 1, workdir, "", "", "")
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+
+	ok, err := eng.RunTask(context.Background(), task.ID)
+	if err != nil {
+		t.Fatalf("run task: %v", err)
+	}
+	if !ok {
+		t.Fatalf("expected task to reach done, got ok=false")
+	}
+
+	data, err := os.ReadFile(filepath.Join(workdir, "main.go"))
+	if err != nil {
+		t.Fatalf("expected propagated main.go in workdir: %v", err)
+	}
+	if string(data) != "package main\n" {
+		t.Fatalf("propagated main.go content = %q, want %q", string(data), "package main\n")
 	}
 }

@@ -553,6 +553,13 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 				} else {
 					e.cleanupWorktree(taskID)
 				}
+			} else {
+				// Non-worktree: the Worker ran in a sandboxed out/ directory.
+				// Copy its results back into the task's workdir so the user's
+				// project actually reflects the completed work.
+				if err := e.propagateTaskOutput(taskID, task.Workdir); err != nil {
+					Log("task", "task %s output propagation failed: %v", taskID[:8], err)
+				}
 			}
 
 			// Write verify file — file-based completion proof.

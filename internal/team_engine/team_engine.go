@@ -941,6 +941,25 @@ func (e *TeamEngine) ApplyOutput(taskID, targetDir string) error {
 	return copyDir(srcDir, targetDir)
 }
 
+// propagateTaskOutput copies a completed task's sandboxed out/ output back into
+// its declared workdir. Non-worktree tasks run in an out/ sandbox, so their
+// results must be copied to the user's workspace to take effect. Relative
+// workdirs resolve against the process cwd (where `team execute` was invoked).
+// Best-effort: a failure here is logged by the caller, not fatal.
+func (e *TeamEngine) propagateTaskOutput(taskID, workdir string) error {
+	if workdir == "" {
+		workdir = "."
+	}
+	if !filepath.IsAbs(workdir) {
+		abs, err := filepath.Abs(workdir)
+		if err != nil {
+			return err
+		}
+		workdir = abs
+	}
+	return e.ApplyOutput(taskID, workdir)
+}
+
 // copyDir recursively copies a directory tree.
 func copyDir(src, dst string) error {
 	return filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
