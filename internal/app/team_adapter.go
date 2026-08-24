@@ -21,85 +21,99 @@ import (
 // definition and injects its prompt, tools, skills, model, etc. into
 // the SpawnSubagentRequest. This ensures team experts actually use their
 // specialized skills and tool configurations.
-func teamEngineSpawnAdapter(runner *tasks.Runner, library *tasks.AgentDefinitionLibrary) team_engine.SpawnFunc {
+// resolveTeamSpawnRequest builds the native tasks.SpawnSubagentRequest for a
+// team SubagentRequest, resolving the .md agent definition when AgentName is
+// set. Extracted so the SessionOps adapter (TeamRuntime) can record the fully
+// resolved request — including the resolved AgentDefinition — keyed by the
+// session ID, enabling ContinueSubagent to reconstruct the agent on prompt.
+func resolveTeamSpawnRequest(req team_engine.SubagentRequest, library *tasks.AgentDefinitionLibrary) tasks.SpawnSubagentRequest {
+	tasksReq := tasks.SpawnSubagentRequest{
+		Task:         req.Task,
+		Role:         req.Role,
+		Model:        req.Model,
+		MaxToolIters: req.MaxIters,
+		MaxToolCalls: req.MaxCalls,
+		OutputSchema: req.OutputSchema,
+	}
+	if len(req.Tools) > 0 {
+		// req.Tools carries team-engine tool names (ProfileToToolNames),
+		// which the shell spawner understands but the native subagent
+		// does not. Translate them to native capabilities so the child
+		// agent actually receives workspace.write / shell.run / etc.
+		tasksReq.Tools = teamToolsToCapabilities(req.Tools)
+	}
+
+	// Resolve agent definition from .md file when AgentName is set.
+	if req.AgentName != "" && library != nil {
+		// Team-local agent definitions live in the team's agents/ directory,
+		// which is not in the library's default roots (~/.whale/agents +
+		// project .whale/agents). Thread it through as an extra root so a
+		// team role like "software-engineer" resolves to its team definition
+		// instead of falling back to a bare inline definition.
+		lib := library
+		if req.TeamAgentsDir != "" {
+			lib = library.WithExtraRoot(req.TeamAgentsDir, "team", -1)
+		}
+		if def, ok, err := lib.Resolve(req.AgentName); err == nil && ok {
+			tasksReq.Agent = def
+			team_engine.Log("adapter", "resolve agent=%q ok tools=%d promptLen=%d", req.AgentName, len(def.Tools), len(def.Prompt))
+			// The persona is capability context, not the task. Inject it as
+			// the agent's system prompt (via Agent.Prompt, which the runner
+			// renders as its "Agent system prompt" block) — NOT prepended to
+			// the user task. Prepending it to the task put the persona at the
+			// same level as (and ahead of) the task instruction, so a QA
+			// persona's "write tests" SOP overrode the verifier's "do NOT
+			// author a new test suite", and every token was billed twice
+			// (system + user).
+			if def.Prompt != "" {
+				// Strip "团队协作" section — WorkBuddy
+				// SendMessage/shutdown protocols conflict with
+				// Team Engine stdout-capture mode.
+				tasksReq.Agent.Prompt = stripWorkbuddySections(def.Prompt)
+			}
+		} else {
+			team_engine.Log("adapter", "resolve agent=%q MISSING err=%v", req.AgentName, err)
+		}
+	}
+
+	// Fallback: provide inline agent definitions for built-in roles.
+	if tasksReq.Agent.Name == "" {
+		tasksReq.Agent = tasks.AgentDefinition{
+			Name:           req.Role,
+			Description:    "Team engine " + req.Role + " agent",
+			PermissionMode: permissionForRole(req.Role),
+		}
+		// A verifier whose agent definition didn't resolve still needs the
+		// tool-grounded verify profile (read + shell.run + write) so it
+		// can execute tests/linters and drop its black-box test artifacts.
+		if req.Role == "verifier" && len(tasksReq.Tools) == 0 {
+			tasksReq.Tools = teamToolsToCapabilities(team_engine.ProfileToToolNames(team_engine.ProfileVerify))
+		}
+	}
+
+	// An agent resolved from a .md file may omit permission mode, which
+	// normalizes to read-only and would strip workspace.write / shell.run
+	// from workers, leaving them unable to produce artifacts. Default it
+	// by role (read-only roles stay read-only; workers get auto).
+	if tasksReq.Agent.PermissionMode == "" {
+		tasksReq.Agent.PermissionMode = permissionForRole(req.Role)
+	}
+
+	if req.Workdir != "" {
+		tasksReq.Task = fmt.Sprintf("Working directory: %s\n\n%s", req.Workdir, tasksReq.Task)
+	}
+
+	return tasksReq
+}
+
+func teamEngineSpawnAdapter(runner *tasks.Runner, library *tasks.AgentDefinitionLibrary, record func(sessionID string, req tasks.SpawnSubagentRequest)) team_engine.SpawnFunc {
 	return func(ctx context.Context, req team_engine.SubagentRequest) (team_engine.SubagentResponse, error) {
-		tasksReq := tasks.SpawnSubagentRequest{
-			Task:         req.Task,
-			Role:         req.Role,
-			Model:        req.Model,
-			MaxToolIters: req.MaxIters,
-			MaxToolCalls: req.MaxCalls,
-			OutputSchema: req.OutputSchema,
-		}
-		if len(req.Tools) > 0 {
-			// req.Tools carries team-engine tool names (ProfileToToolNames),
-			// which the shell spawner understands but the native subagent
-			// does not. Translate them to native capabilities so the child
-			// agent actually receives workspace.write / shell.run / etc.
-			tasksReq.Tools = teamToolsToCapabilities(req.Tools)
-		}
-
-		// Resolve agent definition from .md file when AgentName is set.
-		if req.AgentName != "" && library != nil {
-			// Team-local agent definitions live in the team's agents/ directory,
-			// which is not in the library's default roots (~/.whale/agents +
-			// project .whale/agents). Thread it through as an extra root so a
-			// team role like "software-engineer" resolves to its team definition
-			// instead of falling back to a bare inline definition.
-			lib := library
-			if req.TeamAgentsDir != "" {
-				lib = library.WithExtraRoot(req.TeamAgentsDir, "team", -1)
-			}
-			if def, ok, err := lib.Resolve(req.AgentName); err == nil && ok {
-				tasksReq.Agent = def
-				team_engine.Log("adapter", "resolve agent=%q ok tools=%d promptLen=%d", req.AgentName, len(def.Tools), len(def.Prompt))
-				// The persona is capability context, not the task. Inject it as
-				// the agent's system prompt (via Agent.Prompt, which the runner
-				// renders as its "Agent system prompt" block) — NOT prepended to
-				// the user task. Prepending it to the task put the persona at the
-				// same level as (and ahead of) the task instruction, so a QA
-				// persona's "write tests" SOP overrode the verifier's "do NOT
-				// author a new test suite", and every token was billed twice
-				// (system + user).
-				if def.Prompt != "" {
-					// Strip "团队协作" section — WorkBuddy
-					// SendMessage/shutdown protocols conflict with
-					// Team Engine stdout-capture mode.
-					tasksReq.Agent.Prompt = stripWorkbuddySections(def.Prompt)
-				}
-			} else {
-				team_engine.Log("adapter", "resolve agent=%q MISSING err=%v", req.AgentName, err)
-			}
-		}
-
-		// Fallback: provide inline agent definitions for built-in roles.
-		if tasksReq.Agent.Name == "" {
-			tasksReq.Agent = tasks.AgentDefinition{
-				Name:           req.Role,
-				Description:    "Team engine " + req.Role + " agent",
-				PermissionMode: permissionForRole(req.Role),
-			}
-			// A verifier whose agent definition didn't resolve still needs the
-			// tool-grounded verify profile (read + shell.run + write) so it
-			// can execute tests/linters and drop its black-box test artifacts.
-			if req.Role == "verifier" && len(tasksReq.Tools) == 0 {
-				tasksReq.Tools = teamToolsToCapabilities(team_engine.ProfileToToolNames(team_engine.ProfileVerify))
-			}
-		}
-
-		// An agent resolved from a .md file may omit permission mode, which
-		// normalizes to read-only and would strip workspace.write / shell.run
-		// from workers, leaving them unable to produce artifacts. Default it
-		// by role (read-only roles stay read-only; workers get auto).
-		if tasksReq.Agent.PermissionMode == "" {
-			tasksReq.Agent.PermissionMode = permissionForRole(req.Role)
-		}
-
-		if req.Workdir != "" {
-			tasksReq.Task = fmt.Sprintf("Working directory: %s\n\n%s", req.Workdir, tasksReq.Task)
-		}
+		tasksReq := resolveTeamSpawnRequest(req, library)
 
 		resp, err := runner.SpawnSubagent(ctx, tasksReq)
+		if record != nil && resp.SessionID != "" {
+			record(resp.SessionID, tasksReq)
+		}
 		if err != nil {
 			return team_engine.SubagentResponse{
 				SessionID: resp.SessionID,
@@ -144,17 +158,20 @@ func teamEngineSpawnAdapter(runner *tasks.Runner, library *tasks.AgentDefinition
 }
 
 // permissionForRole returns the default permission mode for a team role.
-// Read-only roles (planner, reviewer, researcher, …) stay read-only; workers
-// get auto so they can write artifacts and run shell commands. The verifier is
-// special: it needs shell.run to execute tests/linters plus workspace.write to
-// drop its black-box test artifacts (tool-grounded verification), but its
-// toolset is constrained to the verify profile in the adapter fallback, so
-// auto is safe.
+// Read-only roles (reviewer, researcher, …) stay read-only; workers get auto so
+// they can write artifacts and run shell commands. The Leader (planner) is no
+// longer forced read-only — it is a sessioned orchestrating agent that may need
+// write/shell to assemble deliverables, and its resolved AgentDefinition's
+// PermissionMode takes priority; this fallback only applies when the .md omits
+// permissionMode. The verifier is special: it needs shell.run to execute
+// tests/linters plus workspace.write to drop its black-box test artifacts
+// (tool-grounded verification), but its toolset is constrained to the verify
+// profile in the adapter fallback, so auto is safe.
 func permissionForRole(role string) string {
 	switch role {
 	case "verifier":
 		return tasks.AgentPermissionAuto
-	case "planner", "reviewer", "researcher", "evaluator", "synthesizer":
+	case "reviewer", "researcher", "evaluator", "synthesizer":
 		return tasks.AgentPermissionReadOnly
 	default:
 		return tasks.AgentPermissionAuto
@@ -252,5 +269,5 @@ func stripSection(prompt, heading string) string {
 // SpawnFunc that app_runtime_init wires as the package default, so team engine
 // instances built by other entry points get identical AgentName resolution.
 func NewTeamEngineSpawnFunc(runner *tasks.Runner, library *tasks.AgentDefinitionLibrary) team_engine.SpawnFunc {
-	return teamEngineSpawnAdapter(runner, library)
+	return teamEngineSpawnAdapter(runner, library, nil)
 }

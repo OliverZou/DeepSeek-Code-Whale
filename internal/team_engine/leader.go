@@ -87,6 +87,12 @@ func (l *Leader) DecomposeFull(goal string, workdir string, timeout time.Duratio
 	return l.planner.DecomposeFull(goal, workdir, timeout, model...)
 }
 
+// DecomposeSessionID delegates to Planner and returns the Leader subagent
+// session ID from the last successful decompose.
+func (l *Leader) DecomposeSessionID() string {
+	return l.planner.DecomposeSessionID()
+}
+
 // ReviewCycle delegates to Reviewer.
 func (l *Leader) ReviewCycle(goal string, report *CycleReport, workdir string, timeout time.Duration, model ...string) (*CycleReview, error) {
 	return l.reviewer.ReviewCycle(goal, report, workdir, timeout, model...)
@@ -95,6 +101,13 @@ func (l *Leader) ReviewCycle(goal string, report *CycleReport, workdir string, t
 // ReviewCycleFull delegates to Reviewer.
 func (l *Leader) ReviewCycleFull(goal string, report *CycleReport, workdir string, timeout time.Duration, model ...string) (*CycleReview, string, error) {
 	return l.reviewer.ReviewCycleFull(goal, report, workdir, timeout, model...)
+}
+
+// ReviewPlanCycle delegates to Reviewer. It reviews a plan-level CycleReport —
+// the TE's report after one full pass over the plan — and returns the Leader's
+// accept/reject decision for the whole Cycle.
+func (l *Leader) ReviewPlanCycle(goal string, report *PlanCycleReport, workdir string, timeout time.Duration, model ...string) (*CycleReview, error) {
+	return l.reviewer.ReviewPlanCycle(goal, report, workdir, timeout, model...)
 }
 
 // ReviewProgress delegates to Reviewer.

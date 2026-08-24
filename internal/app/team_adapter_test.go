@@ -1,6 +1,8 @@
 package app
 
 import (
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -12,14 +14,17 @@ func TestPermissionForRole(t *testing.T) {
 	// verifier is intentionally auto (not read_only): it needs shell.run to
 	// execute tests/linters for tool-grounded verification. Its toolset is
 	// still constrained to the verify profile (read + shell, no write) in the
-	// adapter fallback.
-	readOnly := []string{"planner", "reviewer", "researcher", "evaluator", "synthesizer"}
+	// adapter fallback. The Leader (planner) is also auto: it is a sessioned
+	// orchestrating agent that may need write/shell to assemble deliverables,
+	// and its resolved AgentDefinition's PermissionMode takes priority — this
+	// fallback only applies when the .md omits permissionMode.
+	readOnly := []string{"reviewer", "researcher", "evaluator", "synthesizer"}
 	for _, role := range readOnly {
 		if got := permissionForRole(role); got != tasks.AgentPermissionReadOnly {
 			t.Errorf("permissionForRole(%q) = %q, want read_only", role, got)
 		}
 	}
-	for _, role := range []string{"worker", "frontend-dev", "developer", "verifier", ""} {
+	for _, role := range []string{"planner", "worker", "frontend-dev", "developer", "verifier", ""} {
 		if got := permissionForRole(role); got != tasks.AgentPermissionAuto {
 			t.Errorf("permissionForRole(%q) = %q, want auto", role, got)
 		}
@@ -71,6 +76,67 @@ func TestTeamToolsToCapabilities(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestLeaderResolvesAgentDefinition(t *testing.T) {
+	// The Leader is a sessioned subagent whose .md definition carries its own
+	// tools and permissionMode. This test exercises the exact resolution path
+	// the adapter uses — WithExtraRoot(TeamAgentsDir, "team", -1).Resolve(name)
+	// — and confirms the resolved leader definition declares write + shell
+	// capability (so the leader can assemble deliverables) rather than being
+	// forced read-only.
+	agentsDir := filepath.Join(t.TempDir(), "agents")
+	if err := os.MkdirAll(agentsDir, 0o755); err != nil {
+		t.Fatalf("mkdir agents dir: %v", err)
+	}
+	md := `---
+name: software-team-lead
+description: Team lead orchestrator
+tools: [read_file, write, shell_run]
+permissionMode: auto
+---
+
+# 主理人
+
+You orchestrate the team and assemble the deliverable.
+`
+	if err := os.WriteFile(filepath.Join(agentsDir, "software-team-lead.md"), []byte(md), 0o644); err != nil {
+		t.Fatalf("write leader md: %v", err)
+	}
+
+	library := tasks.NewAgentDefinitionLibrary("").WithExtraRoot(agentsDir, "team", -1)
+	def, ok, err := library.Resolve("software-team-lead")
+	if err != nil {
+		t.Fatalf("resolve leader: %v", err)
+	}
+	if !ok {
+		t.Fatal("leader definition not found")
+	}
+	if def.Name != "software-team-lead" {
+		t.Errorf("Name = %q, want %q", def.Name, "software-team-lead")
+	}
+	if def.PermissionMode != tasks.AgentPermissionAuto {
+		t.Errorf("PermissionMode = %q, want %q", def.PermissionMode, tasks.AgentPermissionAuto)
+	}
+
+	// The resolved tools must include write and shell capability (workspace.write
+	// + shell.run), so the leader can produce and run commands — not read-only.
+	caps := teamToolsToCapabilities(def.Tools)
+	if !contains(caps, tasks.CapabilityWorkspaceWrite) {
+		t.Errorf("leader tools %v should map to workspace.write (got %v)", def.Tools, caps)
+	}
+	if !contains(caps, tasks.CapabilityShellRun) {
+		t.Errorf("leader tools %v should map to shell.run (got %v)", def.Tools, caps)
+	}
+}
+
+func contains(list []string, want string) bool {
+	for _, s := range list {
+		if s == want {
+			return true
+		}
+	}
+	return false
 }
 
 func TestStripWorkbuddySections(t *testing.T) {

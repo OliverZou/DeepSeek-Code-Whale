@@ -136,7 +136,9 @@ func (a *App) rebuildTaskRuntimeLocked() error {
 		},
 	})
 	a.taskTools = tasks.NewTools(taskRunner)
-	team_engine.SetDefaultSpawnFunc(teamEngineSpawnAdapter(taskRunner, agentLibrary))
+	teamRuntime := NewTeamRuntime(taskRunner, agentLibrary, a.sessionsDir, a.msgStore)
+	team_engine.SetDefaultSpawnFunc(teamRuntime.SpawnFunc())
+	team_engine.SetDefaultSessionOps(teamRuntime)
 	a.workflowManager = nil
 	a.workflowRunner = nil
 	workflowLibrary := workflow.NewLibrary(a.workspaceRoot)

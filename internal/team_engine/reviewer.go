@@ -163,6 +163,82 @@ func (r *Reviewer) ReviewCycleFull(goal string, report *CycleReport, workdir str
 	return r.reviewCycleInternal(goal, report, workdir, timeout, model...)
 }
 
+// PlanCycleReviewPrompt returns the prompt for reviewing a plan-level
+// CycleReport (one full pass over the entire plan). The Leader reviews every
+// batch's outcome at once and decides accept / reject / escalate.
+func PlanCycleReviewPrompt(goal string, report *PlanCycleReport, decomposeContext ...string) string {
+	dc := ""
+	if len(decomposeContext) > 0 {
+		dc = decomposeContext[0]
+	}
+	contextBlock := ""
+	if dc != "" {
+		contextBlock = fmt.Sprintf("\n## 你之前的分解决策\n\n%s\n\n---\n", dc)
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, `You are the Team Leader. Review this plan-level CycleReport and decide the next action.
+
+GOAL:
+%s
+
+%sCYCLE REPORT (Cycle %d, Status %s):
+
+`, goal, contextBlock, report.CycleNumber, report.Status)
+
+	for _, batch := range report.Batches {
+		label := batch.Label
+		if label == "" {
+			label = batch.ID
+		}
+		fmt.Fprintf(&b, "Batch %s [%s]:\n", label, batch.Status)
+		for _, t := range batch.Tasks {
+			status := "✅"
+			if t.State == TaskStateFailed {
+				status = "❌"
+			}
+			fmt.Fprintf(&b, "  %s %s (%s, retries=%d)\n", status, t.Title, t.Role, t.RetryCount)
+		}
+	}
+	b.WriteString(`
+Board: ` + report.BoardPath + `
+
+DECIDE:
+- "accept"     → The plan's results satisfy the goal; deliver.
+- "reject"     → Results need improvement; retry the affected tasks with new feedback.
+- "escalate"   → Need human input (high risk / ambiguous requirements / cost blowup).
+
+Use "feedback" to tell the engine what to fix or change before re-running.
+For a reject, list the specific tasks or concerns to address.
+
+OUTPUT FORMAT (pure JSON, no markdown):
+{"decision": "accept|reject|escalate", "reason": "...", "feedback": "optional improvement suggestions"}
+`)
+	return b.String()
+}
+
+// ReviewPlanCycle reviews a plan-level CycleReport and returns the Leader's
+// decision. It is the same spawn+parse path as ReviewCycle, but against the
+// whole plan rather than a single batch.
+func (r *Reviewer) ReviewPlanCycle(goal string, report *PlanCycleReport, workdir string, timeout time.Duration, model ...string) (*CycleReview, error) {
+	if timeout <= 0 {
+		timeout = 60 * time.Second
+	}
+	prompt := PlanCycleReviewPrompt(goal, report, r.decomposeContext)
+	result := r.runner.RunDecomposer(prompt, workdir, timeout, model...)
+	if !result.Success {
+		return nil, fmt.Errorf("leader review failed (exit %d): %s", result.ExitCode, result.Stderr)
+	}
+	output := strings.TrimSpace(result.Stdout)
+	if output == "" {
+		return nil, fmt.Errorf("leader review returned empty output")
+	}
+	review, err := ParseCycleReview(output)
+	if err != nil {
+		return nil, err
+	}
+	return review, nil
+}
+
 // ProactiveLeaderPrompt returns a prompt for proactively reviewing a task's progress.
 // When decomposeContext is non-empty, it is injected so the Leader can
 // reference its own decomposition decisions.

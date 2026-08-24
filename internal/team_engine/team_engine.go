@@ -98,6 +98,30 @@ type TeamEngine struct {
 	team               *TeamConfig
 	shellSpawner       *ShellSubagentSpawner
 	persistentSessions map[string]*PersistentSession
+
+	// leaderSessionID is the Leader subagent's session ID from the most recent
+	// PlanAndRun decompose, persisted so prompt/fork/summarize can address the
+	// Leader session directly.
+	leaderSessionID string
+
+	// sessionOps lets the engine address member subagent sessions (prompt,
+	// fork, summarize, abort, kill). Nil means shell/standalone fallback mode.
+	sessionOps SessionOps
+}
+
+// SetSessionOps injects the app-layer SessionOps implementation (built on
+// tasks.Runner + JSONLStore + sessionsDir). Without it, the session-addressed
+// channel methods return explicit "not supported" errors.
+func (e *TeamEngine) SetSessionOps(ops SessionOps) {
+	e.mu.Lock()
+	e.sessionOps = ops
+	e.mu.Unlock()
+}
+
+func (e *TeamEngine) getSessionOps() SessionOps {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.sessionOps
 }
 
 // OnEvent 注册一个事件回调函数。

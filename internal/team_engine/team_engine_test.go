@@ -18,12 +18,17 @@ type mockSpawner struct {
 	// for a given role consumes the next string in the sequence.
 	roleSeq   map[string][]string
 	seqCursor map[string]int
+	calls     map[string]int // spawn count by role
 	err       error
 }
 
 func (m *mockSpawner) SpawnSubagent(_ context.Context, req SubagentRequest) (SubagentResponse, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.calls == nil {
+		m.calls = make(map[string]int)
+	}
+	m.calls[req.Role]++
 	if m.err != nil {
 		return SubagentResponse{}, m.err
 	}

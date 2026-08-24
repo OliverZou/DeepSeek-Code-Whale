@@ -327,85 +327,76 @@ func (ar *AgentRunner) RunVerifier(prompt, workdir string, timeout time.Duration
 	}
 }
 
-// RunDecomposer runs a Leader/Planner subagent to decompose a goal into subtasks.
+// RunDecomposer runs the Leader subagent to decompose a goal into subtasks.
+//
+// The Leader is spawned through the native adapter (ar.spawner) with its own
+// agent definition — resolved from the team's agents/<leader-role>.md — exactly
+// like a worker or verifier. This gives the Leader a persistent, forkable JSONL
+// session and its .md persona/tools/permission. The lite (in-process,
+// session-less) path is reserved for RunElaborationStep, never the Leader.
 //
 // For reasoning models (deepseek-v4-pro, etc.) the decomposer gets a larger
 // token budget (defaultMaxTokens) because the planning prompt is significantly
 // longer than a typical task prompt and the model's chain-of-thought can
 // consume 60-80% of the completion budget.
-//
-// When a liteSpawner is configured (in-process LLM call), RunDecomposer uses it
-// instead of shelling out — this avoids subprocess cold-start overhead (~3-5s).
-// In lite mode, tools are skipped (pure reasoning) and OutputSchema is omitted
-// (DeepSeek doesn't support structured output).  The caller parses JSON from
-// the text response.
 func (ar *AgentRunner) RunDecomposer(prompt, workdir string, timeout time.Duration, model ...string) *RunResult {
 	mdl := ""
 	if len(model) > 0 && model[0] != "" {
 		mdl = model[0]
 	}
 
-	// Prefer in-process lite spawner when available — decomposition is a pure
-	// reasoning task that doesn't need tools or multi-turn iteration.
-	spawner := ar.spawner
-	usingLite := ar.liteSpawner != nil
-	if usingLite {
-		spawner = ar.liteSpawner
-		// Default to reasoning model — decomposition benefits from CoT.
-		if mdl == "" {
-			mdl = "deepseek-v4-pro"
-		}
+	// Resolve the Leader's agent name from the team config. Role stays "planner"
+	// (the semantic category, mirroring the verifier's fixed "verifier" role);
+	// the .md definition is resolved via AgentName like worker/verifier.
+	agentName := ""
+	if ar.team != nil {
+		agentName = ar.team.Leader.Role
 	}
 
 	req := SubagentRequest{
-		Task:     prompt,
-		Role:     "planner",
-		Workdir:  workdir,
-		Timeout:  timeout,
-		MaxIters: 15,
-		MaxCalls: 40,
+		Task:          prompt,
+		Role:          "planner",
+		AgentName:     agentName,
+		TeamAgentsDir: teamAgentsDir(ar.team),
+		Workdir:       workdir,
+		Timeout:       timeout,
+		MaxIters:      15,
+		MaxCalls:      40,
 	}
 	if mdl != "" {
 		req.Model = mdl
 	}
+	req.MaxTokens = effectiveMaxTokens(0, mdl)
 
-	// Lite spawner: no tools (pure reasoning), large token budget for CoT.
-	// Shell spawner: include read-only tools, token budget via effectiveMaxTokens.
-	if usingLite {
-		req.Tools = nil
-		req.MaxTokens = defaultMaxTokens
-	} else {
-		req.Tools = ProfileToToolNames(ProfileReadOnly)
-		req.MaxTokens = effectiveMaxTokens(0, mdl)
-
-		// OutputSchema only works with shell spawner + Claude models.
-		if supportsStructuredOutput(mdl) {
-			req.OutputSchema = map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"tasks": map[string]any{
-						"type": "array",
-						"items": map[string]any{
-							"type": "object",
-							"properties": map[string]any{
-								"title":            map[string]any{"type": "string"},
-								"description":      map[string]any{"type": "string"},
-								"role":             map[string]any{"type": "string"},
-								"batch_id":         map[string]any{"type": "string"},
-								"batch_label":      map[string]any{"type": "string"},
-								"depends_on_batch": map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
-								"depends_on_index": map[string]any{"type": "integer"},
-								"verifier_focus":   map[string]any{"type": "string"},
-								"verifier_role":    map[string]any{"type": "string"},
-								"use_dw":           map[string]any{"type": "boolean"},
-								"max_cycles":       map[string]any{"type": "integer"},
-							},
-							"required": []string{"title", "description", "role"},
+	// Structured plan output for Claude models. The native adapter forwards
+	// OutputSchema to the subagent run; DeepSeek models don't support it, so
+	// for them the caller parses JSON from the free-text response.
+	if supportsStructuredOutput(mdl) {
+		req.OutputSchema = map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"tasks": map[string]any{
+					"type": "array",
+					"items": map[string]any{
+						"type": "object",
+						"properties": map[string]any{
+							"title":            map[string]any{"type": "string"},
+							"description":      map[string]any{"type": "string"},
+							"role":             map[string]any{"type": "string"},
+							"batch_id":         map[string]any{"type": "string"},
+							"batch_label":      map[string]any{"type": "string"},
+							"depends_on_batch": map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+							"depends_on_index": map[string]any{"type": "integer"},
+							"verifier_focus":   map[string]any{"type": "string"},
+							"verifier_role":    map[string]any{"type": "string"},
+							"use_dw":           map[string]any{"type": "boolean"},
+							"max_cycles":       map[string]any{"type": "integer"},
 						},
+						"required": []string{"title", "description", "role"},
 					},
 				},
-				"required": []string{"tasks"},
-			}
+			},
+			"required": []string{"tasks"},
 		}
 	}
 
@@ -413,7 +404,7 @@ func (ar *AgentRunner) RunDecomposer(prompt, workdir string, timeout time.Durati
 	defer cancel()
 
 	start := time.Now()
-	resp, err := spawner.SpawnSubagent(ctx, req)
+	resp, err := ar.spawner.SpawnSubagent(ctx, req)
 	elapsed := time.Since(start).Seconds()
 
 	if err != nil {

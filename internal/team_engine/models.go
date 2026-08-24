@@ -373,6 +373,25 @@ type CycleReview struct {
 	PlanChanges string        `json:"plan_changes,omitempty"` // 如果需要改计划
 }
 
+// BatchSummary is a lightweight view of a batch for plan-level cycle reports.
+type BatchSummary struct {
+	ID     string        `json:"id"`
+	Label  string        `json:"label,omitempty"`
+	Status BatchStatus   `json:"status"`
+	Tasks  []TaskSummary `json:"tasks"`
+}
+
+// PlanCycleReport is the report sent to the Leader after one full pass over the
+// entire plan (all non-passed batches). Unlike CycleReport (which is per-batch),
+// this is the plan-level report the Leader reviews to accept or reject a Cycle.
+type PlanCycleReport struct {
+	CycleNumber int            `json:"cycle_number"`
+	Status      BatchStatus    `json:"status"`
+	Batches     []BatchSummary `json:"batches"`
+	BoardPath   string         `json:"board_path,omitempty"`
+	Deliverable string         `json:"deliverable_path,omitempty"`
+}
+
 // ---------------------------------------------------------------------------
 // TaskEvent — 主动事件推送，替代轮询
 // ---------------------------------------------------------------------------

@@ -30,7 +30,6 @@ import (
 // internal decompose step is skipped and the pre-computed plan is used directly.
 func (e *TeamEngine) PlanAndRun(ctx context.Context, goal, workdir, masterTaskID string, preDecomposed ...PlanTask) ([]*Batch, error) {
 	runStart := time.Now()
-	var elabDur, decompDur time.Duration
 
 	// Register a cancel for this execution so the dashboard stop button works.
 	execCtx, execCancel := context.WithCancel(ctx)
@@ -62,6 +61,211 @@ func (e *TeamEngine) PlanAndRun(ctx context.Context, goal, workdir, masterTaskID
 	}
 	decomposerTimeout := time.Duration(e.Router.ResolveDecomposerTimeout()) * time.Second
 	leaderModel := e.Router.ResolveModel("planner")
+
+	planTasks, complexity, elabDur, decompDur, err := e.decomposePlan(goal, workdir, masterTaskID, leader, decomposerTimeout, leaderModel, preDecomposed...)
+	if err != nil {
+		return nil, err
+	}
+	batches, err := e.createBatchesFromPlan(planTasks, goal, workdir, masterTaskID, complexity)
+	if err != nil {
+		return nil, err
+	}
+
+	// Step 3: Execute batches with topological dependency scheduling —
+	//         independent batches run concurrently; a failed batch blocks its
+	//         downstream while sibling batches continue (Bug 1 + P1-graph).
+	completedBatches := make(map[string]bool)
+	passedBatches := make(map[string]bool)
+	completedBatchOutputs := make(map[string]string)
+	if err := e.runBatchesToCompletion(execCtx, batches, masterTaskID, workdir, decomposerTimeout, leaderModel, completedBatches, passedBatches, completedBatchOutputs); err != nil {
+		e.logRunSummary(runStart, elabDur, decompDur, batches)
+		return batches, err
+	}
+
+	// Step 4: Write final deliverable.md.
+	if delContent := e.Whiteboard.BuildDeliverableContent(batches); delContent != "" {
+		_ = e.Whiteboard.WriteDeliverable(delContent)
+	}
+
+	// Step 5: Leader final summary — collect all outputs and produce
+	// a user-facing summary of what was accomplished.
+	e.assembleParentOutputs(batches)
+	e.writeMasterOutput(goal, batches, workdir)
+
+	e.logRunSummary(runStart, elabDur, decompDur, batches)
+	return batches, nil
+}
+
+// TeamCycle is the TE's execution cycle loop. The Leader decomposes the plan
+// (Cycle 0) and hands it to the TE, which runs one full pass over the batches —
+// a Cycle — and reports back with a plan-level CycleReport. The Leader reviews
+// the report and accepts or rejects; on reject the feedback is applied and the
+// next Cycle incrementally re-runs only the not-passed batches. The loop ends
+// on accept, escalation, cancellation, or cycle-budget exhaustion.
+func (e *TeamEngine) TeamCycle(ctx context.Context, goal, workdir, masterTaskID string, preDecomposed ...PlanTask) ([]*Batch, error) {
+	runStart := time.Now()
+
+	// Register a cancel for this execution so the dashboard stop button works.
+	execCtx, execCancel := context.WithCancel(ctx)
+	defer execCancel()
+	e.mu.Lock()
+	e.masterTaskCancels[masterTaskID] = execCancel
+	e.mu.Unlock()
+	defer func() {
+		e.mu.Lock()
+		delete(e.masterTaskCancels, masterTaskID)
+		e.mu.Unlock()
+	}()
+
+	// Scope files and logs under the master task directory.
+	e.Whiteboard.SetMaster(masterTaskID)
+	if e.Loggers != nil {
+		masterDir := filepath.Join(e.Whiteboard.BaseDir(), masterTaskID)
+		if err := e.Loggers.SetBaseDir(masterDir); err != nil {
+			return nil, fmt.Errorf("set log dir: %w", err)
+		}
+	}
+
+	leader := NewLeader(e.Runner).WithLoggers(e.Loggers).WithTeam(e.team).WithOnLog(func() {
+		e.fireEvent(TaskEvent{Type: EventLeaderLog})
+	})
+	decomposerTimeout := time.Duration(e.Router.ResolveDecomposerTimeout()) * time.Second
+	leaderModel := e.Router.ResolveModel("planner")
+
+	// Cycle 0: the Leader decomposes the goal in its own session and hands the
+	// plan to the TE, which turns it into executable batches.
+	planTasks, complexity, elabDur, decompDur, err := e.decomposePlan(goal, workdir, masterTaskID, leader, decomposerTimeout, leaderModel, preDecomposed...)
+	if err != nil {
+		return nil, err
+	}
+	batches, err := e.createBatchesFromPlan(planTasks, goal, workdir, masterTaskID, complexity)
+	if err != nil {
+		return nil, err
+	}
+
+	// Progress maps are owned across Cycles so checkpoints keep the full
+	// history of passed batches (needed for incremental re-run and Resume).
+	completedBatches := make(map[string]bool)
+	passedBatches := make(map[string]bool)
+	completedBatchOutputs := make(map[string]string)
+
+	maxCycles := e.Config.Batch.DefaultMaxCycles
+	if maxCycles <= 0 {
+		maxCycles = 3
+	}
+
+	// Cycle loop: TE runs a pass, reports, Leader decides.
+	for cycle := 1; ; cycle++ {
+		select {
+		case <-execCtx.Done():
+			e.logRunSummary(runStart, elabDur, decompDur, batches)
+			return batches, fmt.Errorf("cancelled: %w", ctx.Err())
+		default:
+		}
+
+		// TE executes one full pass (incremental: passed batches skipped).
+		if err := e.runBatchesToCompletion(execCtx, batches, masterTaskID, workdir, decomposerTimeout, leaderModel, completedBatches, passedBatches, completedBatchOutputs); err != nil {
+			e.logRunSummary(runStart, elabDur, decompDur, batches)
+			return batches, err
+		}
+
+		// TE reports the Cycle back to the Leader.
+		report := e.buildPlanCycleReport(batches, cycle)
+		review, err := leader.ReviewPlanCycle(goal, report, workdir, decomposerTimeout, leaderModel)
+		if err != nil {
+			// The Leader could not produce a decision — escalate so the user
+			// can resolve instead of looping silently.
+			review = &CycleReview{Decision: CycleEscalate, Reason: fmt.Sprintf("plan review failed: %v", err)}
+		}
+		if e.Loggers != nil {
+			e.Loggers.LogLeader("review", fmt.Sprintf("Cycle: %d\nDecision: %s", cycle, review.Decision), review.Reason, decomposerTimeout, nil)
+			e.fireEvent(TaskEvent{Type: EventLeaderLog})
+		}
+
+		switch review.Decision {
+		case CycleAccept:
+			// Deliver.
+			if delContent := e.Whiteboard.BuildDeliverableContent(batches); delContent != "" {
+				_ = e.Whiteboard.WriteDeliverable(delContent)
+			}
+			e.assembleParentOutputs(batches)
+			e.writeMasterOutput(goal, batches, workdir)
+			e.logRunSummary(runStart, elabDur, decompDur, batches)
+			return batches, nil
+
+		case CycleReject:
+			if cycle >= maxCycles {
+				e.escalateFirstOpenBatch(batches, review)
+				e.logRunSummary(runStart, elabDur, decompDur, batches)
+				return batches, nil
+			}
+			// Apply the Leader's feedback to every not-passed batch and
+			// re-run them in the next Cycle.
+			for _, b := range batches {
+				if b.Status == BatchStatusPassed {
+					continue
+				}
+				b.Status = BatchStatusPending
+				for _, t := range b.Tasks {
+					e.SendFeedback(t.ID, review.Feedback)
+					if !t.State.IsTerminal() && t.State != TaskStateSuspended {
+						_ = e.Store.TransitionState(t.ID, TaskStateAssigned, "", "")
+					}
+				}
+			}
+			continue
+
+		case CycleEscalated:
+			if cycle >= maxCycles {
+				e.escalateFirstOpenBatch(batches, review)
+				e.logRunSummary(runStart, elabDur, decompDur, batches)
+				return batches, nil
+			}
+			// Escalation strategy applied (e.g. model/parameters changed):
+			// retry the same Cycle with failed tasks reset.
+			for _, b := range batches {
+				if b.Status == BatchStatusPassed {
+					continue
+				}
+				b.Status = BatchStatusPending
+				for _, t := range b.Tasks {
+					e.SendFeedback(t.ID, review.Feedback)
+					if t.State == TaskStateFailed || t.State == TaskStateSuspended {
+						_ = e.Store.TransitionState(t.ID, TaskStatePending, "escalated retry", "")
+					} else if !t.State.IsTerminal() {
+						_ = e.Store.TransitionState(t.ID, TaskStateAssigned, "", "")
+					}
+				}
+			}
+			continue
+
+		case CycleEscalate:
+			e.escalateFirstOpenBatch(batches, review)
+			e.logRunSummary(runStart, elabDur, decompDur, batches)
+			return batches, nil
+		}
+	}
+}
+
+// escalateFirstOpenBatch escalates on behalf of the first not-passed batch —
+// the plan-level loop has no single batch to attach the escalation to.
+func (e *TeamEngine) escalateFirstOpenBatch(batches []*Batch, review *CycleReview) {
+	for _, b := range batches {
+		if b.Status != BatchStatusPassed {
+			e.handleEscalation(b, review)
+			return
+		}
+	}
+}
+
+// decomposePlan is the Leader's job: elaborate the goal and decompose it into
+// concrete plan tasks (or use the pre-decomposed plan), splitting overloaded
+// "god tasks". The resulting plan is then handed to the TE — createBatchesFromPlan
+// — which turns it into executable batches. Returns the plan tasks, the
+// complexity classification, and the elapsed elaboration/decomposition durations
+// (for run-summary logging).
+func (e *TeamEngine) decomposePlan(goal, workdir, masterTaskID string, leader *Leader, decomposerTimeout time.Duration, leaderModel string, preDecomposed ...PlanTask) ([]PlanTask, string, time.Duration, time.Duration, error) {
+	var elabDur, decompDur time.Duration
 
 	var planTasks []PlanTask
 	var complexity string
@@ -107,13 +311,13 @@ func (e *TeamEngine) PlanAndRun(ctx context.Context, goal, workdir, masterTaskID
 			if defaultTeamLog != nil {
 				Log("plan", "plan: decompose FAIL: %v", err)
 			}
-			return nil, fmt.Errorf("decompose goal: %w", err)
+			return nil, "", elabDur, decompDur, fmt.Errorf("decompose goal: %w", err)
 		}
 		if len(planTasks) == 0 {
 			if defaultTeamLog != nil {
 				Log("plan", "plan: decompose EMPTY")
 			}
-			return nil, fmt.Errorf("plan is empty")
+			return nil, "", elabDur, decompDur, fmt.Errorf("plan is empty")
 		}
 		if defaultTeamLog != nil {
 			Log("plan", "plan: decompose OK: %d tasks in %d batches", len(planTasks), countBatches(planTasks))
@@ -122,12 +326,23 @@ func (e *TeamEngine) PlanAndRun(ctx context.Context, goal, workdir, masterTaskID
 		// Wire decompose context into review prompts so the Leader
 		// references its own decisions during batch review.
 		leader.WithDecomposeContext()
+		// Persist the Leader subagent session so prompt/fork/summarize can
+		// address it later (P0).
+		e.leaderSessionID = leader.DecomposeSessionID()
 	}
 
 	// 后置校验：decompose 可能拆出「上帝任务」（单任务同时承担集成+多端兼容
 	// 等多职责，违反叶子约束，会让单个 worker 触达 tool cap）。检测到就再拆。
 	planTasks = e.splitOverloadedPlanTasks(planTasks, workdir, decomposerTimeout, leaderModel)
 
+	return planTasks, complexity, elabDur, decompDur, nil
+}
+
+// createBatchesFromPlan is the TE's half of plan-and-run: the Leader hands its
+// plan over to the TE, which groups the plan tasks into Batches and creates
+// concrete Tasks in the store. The TE owns batch structure — the Leader never
+// touches Batches directly.
+func (e *TeamEngine) createBatchesFromPlan(planTasks []PlanTask, goal, workdir, masterTaskID, complexity string) ([]*Batch, error) {
 	// Step 1: Group PlanTasks into batches by batch_id.
 	type batchGroup struct {
 		label       string
@@ -232,14 +447,21 @@ func (e *TeamEngine) PlanAndRun(ctx context.Context, goal, workdir, masterTaskID
 	// Notify dashboard that tasks have been created.
 	e.fireEvent(TaskEvent{Type: EventStateChanged})
 
-	// Step 3: Execute batches with topological dependency scheduling —
-	//         independent batches run concurrently; a failed batch blocks its
-	//         downstream while sibling batches continue (Bug 1 + P1-graph).
+	return batches, nil
+}
+
+// runBatchesToCompletion executes one full pass over the plan: every batch runs
+// to completion via topological dependency scheduling (independent batches
+// concurrently; a failed batch blocks its downstream while sibling batches
+// continue). Batches already passed in an earlier Cycle pre-complete (incremental
+// re-run) and are not re-executed. Each batch's Status is updated in place.
+// The three progress maps are owned by the caller so they survive across Cycles.
+// Returns nil on success, or a cancellation error. It is shared by PlanAndRun
+// (first pass) and TeamCycle (subsequent Cycles), so both use the same execution
+// substrate.
+func (e *TeamEngine) runBatchesToCompletion(ctx context.Context, batches []*Batch, masterTaskID, workdir string, decomposerTimeout time.Duration, leaderModel string, completedBatches, passedBatches map[string]bool, completedBatchOutputs map[string]string) error {
 	escalator := NewEscalator().WithLoggers(e.Loggers)
-	completedBatches := make(map[string]bool)
-	passedBatches := make(map[string]bool) // only pass; controls dep gating
-	completedBatchOutputs := make(map[string]string)
-	// stateMu guards the three shared maps above plus saveCheckpoint, and also
+	// stateMu guards the three shared progress maps plus saveCheckpoint, and also
 	// batch.CycleCount / batch.Tasks / board rendering, which saveCheckpoint
 	// and BuildBoardContent read across batches.
 	stateMu := &sync.Mutex{}
@@ -450,7 +672,7 @@ func (e *TeamEngine) PlanAndRun(ctx context.Context, goal, workdir, masterTaskID
 				b := batchByID[id]
 				// Cancel check before starting each batch.
 				select {
-				case <-execCtx.Done():
+				case <-ctx.Done():
 					for _, t := range b.Tasks {
 						if !t.State.IsTerminal() {
 							_ = e.Store.ForceTransitionState(t.ID, TaskStateSuspended, "cancelled-by-user")
@@ -464,7 +686,7 @@ func (e *TeamEngine) PlanAndRun(ctx context.Context, goal, workdir, masterTaskID
 					continue
 				default:
 				}
-				runBatch(execCtx, b)
+				runBatch(ctx, b)
 				stateMu.Lock()
 				passed := passedBatches[id]
 				stateMu.Unlock()
@@ -473,9 +695,21 @@ func (e *TeamEngine) PlanAndRun(ctx context.Context, goal, workdir, masterTaskID
 		}()
 	}
 
-	// Seed the ready queue with in-degree-0 batches.
+	// Incremental re-run (TeamCycle rounds): batches already passed in an
+	// earlier Cycle pre-complete here — they unblock their dependents without
+	// being re-executed, and their remaining-count contribution is consumed.
 	for _, b := range batches {
-		if b.Status != BatchStatusFailed && indeg[b.ID] == 0 {
+		if b.Status == BatchStatusPassed {
+			remaining--
+			for _, down := range dependents[b.ID] {
+				indeg[down]--
+			}
+		}
+	}
+
+	// Seed the ready queue with in-degree-0 batches (passed and failed skipped).
+	for _, b := range batches {
+		if b.Status != BatchStatusFailed && b.Status != BatchStatusPassed && indeg[b.ID] == 0 {
 			workCh <- b.ID
 		}
 	}
@@ -501,7 +735,7 @@ func (e *TeamEngine) PlanAndRun(ctx context.Context, goal, workdir, masterTaskID
 	wg.Wait()
 
 	// Cancellation: suspend any stragglers and report.
-	if execCtx.Err() != nil {
+	if ctx.Err() != nil {
 		for _, b := range batches {
 			for _, t := range b.Tasks {
 				if !t.State.IsTerminal() {
@@ -511,22 +745,9 @@ func (e *TeamEngine) PlanAndRun(ctx context.Context, goal, workdir, masterTaskID
 		}
 		e.saveCheckpoint(masterTaskID, completedBatches, passedBatches, completedBatchOutputs, batches)
 		e.fireEvent(TaskEvent{Type: EventStateChanged})
-		e.logRunSummary(runStart, elabDur, decompDur, batches)
-		return batches, fmt.Errorf("cancelled: %w", ctx.Err())
+		return fmt.Errorf("cancelled: %w", ctx.Err())
 	}
-
-	// Step 4: Write final deliverable.md.
-	if delContent := e.Whiteboard.BuildDeliverableContent(batches); delContent != "" {
-		_ = e.Whiteboard.WriteDeliverable(delContent)
-	}
-
-	// Step 5: Leader final summary — collect all outputs and produce
-	// a user-facing summary of what was accomplished.
-	e.assembleParentOutputs(batches)
-	e.writeMasterOutput(goal, batches, workdir)
-
-	e.logRunSummary(runStart, elabDur, decompDur, batches)
-	return batches, nil
+	return nil
 }
 
 // collectBatchOutputs gathers output summaries from all completed tasks in a batch.
@@ -624,6 +845,48 @@ func (e *TeamEngine) buildCycleReport(batch *Batch, cycleNumber int) *CycleRepor
 		report.Tasks = append(report.Tasks, summary)
 	}
 
+	return report
+}
+
+// buildPlanCycleReport builds a plan-level CycleReport from the full batch list
+// after one pass over the plan. It aggregates every batch's task outcomes into
+// a single report for the Leader's accept/reject decision.
+func (e *TeamEngine) buildPlanCycleReport(batches []*Batch, cycleNumber int) *PlanCycleReport {
+	report := &PlanCycleReport{
+		CycleNumber: cycleNumber,
+		BoardPath:   e.Whiteboard.BoardPath(),
+		Deliverable: e.Whiteboard.DeliverablePath(),
+	}
+	allPassed := true
+	for _, b := range batches {
+		summary := BatchSummary{ID: b.ID, Label: b.Label, Status: b.Status}
+		for _, t := range b.Tasks {
+			ts := TaskSummary{
+				ID:         t.ID,
+				Title:      t.Title,
+				Role:       string(t.Role),
+				State:      t.State,
+				RetryCount: t.RetryCount,
+			}
+			if output, err := e.Whiteboard.ReadOutput(t.ID); err == nil && len(output) > 0 {
+				if len(output) > 100 {
+					ts.OutputBrief = output[:100] + "..."
+				} else {
+					ts.OutputBrief = output
+				}
+			}
+			summary.Tasks = append(summary.Tasks, ts)
+		}
+		if b.Status != BatchStatusPassed {
+			allPassed = false
+		}
+		report.Batches = append(report.Batches, summary)
+	}
+	if allPassed {
+		report.Status = BatchStatusPassed
+	} else {
+		report.Status = BatchStatusFailed
+	}
 	return report
 }
 

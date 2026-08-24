@@ -139,6 +139,17 @@ func (fs *FileTaskStore) readMeta(dir string) (*taskMeta, error) {
 	return &meta, nil
 }
 
+// SessionID returns the member subagent session ID persisted for a task, or ""
+// if none has been recorded yet (the task hasn't run through the native
+// adapter, or ran through the shell spawner which has no session).
+func (fs *FileTaskStore) SessionID(id string) string {
+	meta, err := fs.readMeta(fs.taskDir(id))
+	if err != nil {
+		return ""
+	}
+	return meta.SessionID
+}
+
 func (fs *FileTaskStore) writeGoal(dir, title, role, description, output string) error {
 	goal := fmt.Sprintf("# %s\n\n**角色**: %s\n\n## 任务描述\n\n%s\n\n## 产出\n\n`%s`\n", title, role, description, output)
 	return os.WriteFile(filepath.Join(dir, "goal.md"), []byte(goal), 0644)

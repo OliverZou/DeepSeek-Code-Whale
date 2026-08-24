@@ -28,6 +28,12 @@ func (b *Toolset) teamEngineTools() []core.Tool {
 		b.teamResultTool(),
 		b.teamOutputTool(),
 		b.teamDeleteTool(),
+		b.teamPromptTool(),
+		b.teamSpawnTool(),
+		b.teamAbortTool(),
+		b.teamKillTool(),
+		b.teamSummarizeTool(),
+		b.teamForkTool(),
 		b.agentDefineTool(),
 		b.teamDefineTool(),
 	}
@@ -50,7 +56,16 @@ func (b *Toolset) newTeamEngine() (*team_engine.TeamEngine, error) {
 	} else {
 		team_engine.LogSpawnerType("default", "shell", "", 0)
 	}
-	return team_engine.New(dbPath, wbDir, "", spawner)
+	eng, err := team_engine.New(dbPath, wbDir, "", spawner)
+	if err != nil {
+		return nil, err
+	}
+	// Inject the app-layer SessionOps so the six primitives (prompt/spawn/
+	// abort/kill/summarize/fork) can address member sessions.
+	if ops := team_engine.DefaultSessionOps(); ops != nil {
+		eng.SetSessionOps(ops)
+	}
+	return eng, nil
 }
 
 func toolResult(text string) core.ToolResult {
@@ -281,13 +296,13 @@ func (b *Toolset) runTeamPlan(ctx context.Context, call core.ToolCall, progress 
 		}, nil
 	}
 
-	// Synchronous mode: PlanAndRun handles decompose + execution in one step.
+	// Synchronous mode: TeamCycle handles decompose + execution in one step.
 	var batches []*team_engine.Batch
 	existingTasks, _ := eng.Store.ListTasksByMasterTask(masterTask.ID)
 	if len(existingTasks) > 0 {
 		batches, err = eng.ResumeMasterTask(ctx, masterTask.ID, args.Goal, b.root)
 	} else {
-		batches, err = eng.PlanAndRun(ctx, args.Goal, b.root, masterTask.ID)
+		batches, err = eng.TeamCycle(ctx, args.Goal, b.root, masterTask.ID)
 	}
 	if err != nil {
 		var s string
@@ -1039,6 +1054,265 @@ func (b *Toolset) teamDeleteTool() toolFn {
 				return toolError("delete master: %v", err), nil
 			}
 			return toolResult(fmt.Sprintf("Deleted master task %s and all subtasks.", args.TaskID)), nil
+		},
+	}
+}
+
+// --- team_prompt ---
+
+func (b *Toolset) teamPromptTool() toolFn {
+	return toolFn{
+		name:        "team_prompt",
+		description: "Send a message to a team member's session and wait for its reply (prompt primitive). Works on running or already-finished members; appends a turn to the member's existing session.",
+		parameters: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"task_id": map[string]any{"type": "string", "description": "Member task ID to prompt"},
+				"message": map[string]any{"type": "string", "description": "Message to send"},
+			},
+			"required": []string{"task_id", "message"},
+		},
+		fn: func(ctx context.Context, call core.ToolCall) (core.ToolResult, error) {
+			var args struct {
+				TaskID  string `json:"task_id"`
+				Message string `json:"message"`
+			}
+			if err := json.Unmarshal([]byte(call.Input), &args); err != nil {
+				return toolError("invalid args: %v", err), nil
+			}
+			eng, err := b.newTeamEngine()
+			if err != nil {
+				return toolError("init: %v", err), nil
+			}
+			defer eng.Close()
+
+			reply, err := eng.Prompt(ctx, team_engine.PromptRequest{
+				ToTaskID: args.TaskID,
+				From:     "agent",
+				Content:  args.Message,
+				Sync:     true,
+			})
+			if err != nil {
+				return toolError("prompt: %v", err), nil
+			}
+			if reply == nil {
+				return toolResult("Message delivered (no reply)."), nil
+			}
+			return toolResult(reply.Content), nil
+		},
+	}
+}
+
+// --- team_spawn ---
+
+func (b *Toolset) teamSpawnTool() toolFn {
+	return toolFn{
+		name:        "team_spawn",
+		description: "Spawn a new team member task (spawn primitive).",
+		parameters: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"title":       map[string]any{"type": "string", "description": "Task title"},
+				"description": map[string]any{"type": "string", "description": "Task prompt for the member"},
+				"role":        map[string]any{"type": "string", "description": "Member role", "default": "worker"},
+				"workdir":     map[string]any{"type": "string", "description": "Working directory"},
+				"max_retries": map[string]any{"type": "integer", "description": "Max retries", "default": 3},
+			},
+			"required": []string{"title", "description"},
+		},
+		fn: func(ctx context.Context, call core.ToolCall) (core.ToolResult, error) {
+			var args struct {
+				Title       string `json:"title"`
+				Description string `json:"description"`
+				Role        string `json:"role"`
+				Workdir     string `json:"workdir"`
+				MaxRetries  int    `json:"max_retries"`
+			}
+			if err := json.Unmarshal([]byte(call.Input), &args); err != nil {
+				return toolError("invalid args: %v", err), nil
+			}
+			if args.Role == "" {
+				args.Role = "worker"
+			}
+			if args.MaxRetries <= 0 {
+				args.MaxRetries = 3
+			}
+			eng, err := b.newTeamEngine()
+			if err != nil {
+				return toolError("init: %v", err), nil
+			}
+			defer eng.Close()
+
+			task, err := eng.Spawn(ctx, team_engine.SpawnRequest{
+				Title:       args.Title,
+				Description: args.Description,
+				Role:        team_engine.AgentRole(args.Role),
+				MaxRetries:  args.MaxRetries,
+				Workdir:     args.Workdir,
+				From:        "agent",
+			})
+			if err != nil {
+				return toolError("spawn: %v", err), nil
+			}
+			return toolResult(fmt.Sprintf("Spawned task %s: %s [%s]", task.ID, task.Title, task.State)), nil
+		},
+	}
+}
+
+// --- team_abort ---
+
+func (b *Toolset) teamAbortTool() toolFn {
+	return toolFn{
+		name:        "team_abort",
+		description: "Gracefully stop a running team member task (abort primitive).",
+		parameters: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"task_id": map[string]any{"type": "string", "description": "Task ID to abort"},
+			},
+			"required": []string{"task_id"},
+		},
+		fn: func(ctx context.Context, call core.ToolCall) (core.ToolResult, error) {
+			var args struct {
+				TaskID string `json:"task_id"`
+			}
+			if err := json.Unmarshal([]byte(call.Input), &args); err != nil {
+				return toolError("invalid args: %v", err), nil
+			}
+			eng, err := b.newTeamEngine()
+			if err != nil {
+				return toolError("init: %v", err), nil
+			}
+			defer eng.Close()
+
+			if err := eng.Abort(ctx, args.TaskID); err != nil {
+				return toolError("abort: %v", err), nil
+			}
+			return toolResult("Aborted " + args.TaskID), nil
+		},
+	}
+}
+
+// --- team_kill ---
+
+func (b *Toolset) teamKillTool() toolFn {
+	return toolFn{
+		name:        "team_kill",
+		description: "Forcefully terminate a team member task (kill primitive).",
+		parameters: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"task_id": map[string]any{"type": "string", "description": "Task ID to kill"},
+			},
+			"required": []string{"task_id"},
+		},
+		fn: func(ctx context.Context, call core.ToolCall) (core.ToolResult, error) {
+			var args struct {
+				TaskID string `json:"task_id"`
+			}
+			if err := json.Unmarshal([]byte(call.Input), &args); err != nil {
+				return toolError("invalid args: %v", err), nil
+			}
+			eng, err := b.newTeamEngine()
+			if err != nil {
+				return toolError("init: %v", err), nil
+			}
+			defer eng.Close()
+
+			if err := eng.Kill(ctx, args.TaskID); err != nil {
+				return toolError("kill: %v", err), nil
+			}
+			return toolResult("Killed " + args.TaskID), nil
+		},
+	}
+}
+
+// --- team_summarize ---
+
+func (b *Toolset) teamSummarizeTool() toolFn {
+	return toolFn{
+		name:        "team_summarize",
+		description: "Get a team member's last report/summary (summarize primitive).",
+		readOnly:    true,
+		parameters: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"task_id":    map[string]any{"type": "string", "description": "Member task ID"},
+				"session_id": map[string]any{"type": "string", "description": "Member session ID (alternative to task_id)"},
+			},
+		},
+		fn: func(ctx context.Context, call core.ToolCall) (core.ToolResult, error) {
+			var args struct {
+				TaskID    string `json:"task_id"`
+				SessionID string `json:"session_id"`
+			}
+			if err := json.Unmarshal([]byte(call.Input), &args); err != nil {
+				return toolError("invalid args: %v", err), nil
+			}
+			eng, err := b.newTeamEngine()
+			if err != nil {
+				return toolError("init: %v", err), nil
+			}
+			defer eng.Close()
+
+			sessionID := args.SessionID
+			if sessionID == "" {
+				sessionID = eng.Store.SessionID(args.TaskID)
+			}
+			if sessionID == "" {
+				return toolError("no member session for task %q", args.TaskID), nil
+			}
+			summary, err := eng.Summarize(ctx, sessionID)
+			if err != nil {
+				return toolError("summarize: %v", err), nil
+			}
+			if summary == "" {
+				return toolResult("(no report yet for session " + sessionID + ")"), nil
+			}
+			return toolResult(summary), nil
+		},
+	}
+}
+
+// --- team_fork ---
+
+func (b *Toolset) teamForkTool() toolFn {
+	return toolFn{
+		name:        "team_fork",
+		description: "Clone a team member's session and return the new session ID (fork primitive). The clone continues from the same transcript under a different instruction.",
+		parameters: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"task_id":    map[string]any{"type": "string", "description": "Member task ID"},
+				"session_id": map[string]any{"type": "string", "description": "Member session ID (alternative to task_id)"},
+			},
+		},
+		fn: func(ctx context.Context, call core.ToolCall) (core.ToolResult, error) {
+			var args struct {
+				TaskID    string `json:"task_id"`
+				SessionID string `json:"session_id"`
+			}
+			if err := json.Unmarshal([]byte(call.Input), &args); err != nil {
+				return toolError("invalid args: %v", err), nil
+			}
+			eng, err := b.newTeamEngine()
+			if err != nil {
+				return toolError("init: %v", err), nil
+			}
+			defer eng.Close()
+
+			sessionID := args.SessionID
+			if sessionID == "" {
+				sessionID = eng.Store.SessionID(args.TaskID)
+			}
+			if sessionID == "" {
+				return toolError("no member session for task %q", args.TaskID), nil
+			}
+			newID, err := eng.Fork(ctx, sessionID)
+			if err != nil {
+				return toolError("fork: %v", err), nil
+			}
+			return toolResult("Forked session " + sessionID + " -> " + newID), nil
 		},
 	}
 }

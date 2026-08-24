@@ -16,6 +16,7 @@ import (
 	"github.com/usewhale/whale/internal/defaults"
 	"github.com/usewhale/whale/internal/llm"
 	"github.com/usewhale/whale/internal/llm/deepseek"
+	"github.com/usewhale/whale/internal/store"
 	"github.com/usewhale/whale/internal/tasks"
 	"github.com/usewhale/whale/internal/team_engine"
 	teampglog "github.com/usewhale/whale/internal/team_engine/log"
@@ -312,7 +313,7 @@ Subcommands:
 			})
 			defer cancel()
 
-			batches, err := eng.PlanAndRun(cmd.Context(), goal, workdir, masterTask.ID)
+			batches, err := eng.TeamCycle(cmd.Context(), goal, workdir, masterTask.ID)
 			if err != nil {
 				return fmt.Errorf("plan and run: %w", err)
 			}
@@ -500,6 +501,184 @@ Subcommands:
 			return nil
 		},
 	}
+
+	// --- prompt subcommand — append a turn to a member session (prompt primitive) ---
+	promptCmd := &cobra.Command{
+		Use:   "prompt <task-id> <message>",
+		Short: "Send a message to a team member's session and wait for its reply",
+		Args:  cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			eng, err := newTeamEngine(dbPath, whiteboardDir, configPath, workdir)
+			if err != nil {
+				return fmt.Errorf("init engine: %w", err)
+			}
+			defer eng.Close()
+
+			reply, err := eng.Prompt(cmd.Context(), team_engine.PromptRequest{
+				ToTaskID: args[0],
+				From:     "human",
+				Content:  args[1],
+				Sync:     true,
+			})
+			if err != nil {
+				return fmt.Errorf("prompt: %w", err)
+			}
+			if reply == nil {
+				fmt.Println("Message delivered (no reply).")
+				return nil
+			}
+			fmt.Println(reply.Content)
+			return nil
+		},
+	}
+
+	// --- spawn subcommand — create a new member task (spawn primitive) ---
+	spawnCmd := &cobra.Command{
+		Use:   "spawn --title TITLE --description DESC [--role ROLE] [--workdir DIR]",
+		Short: "Spawn a new team member task",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			spawnTitle, _ := cmd.Flags().GetString("title")
+			spawnDesc, _ := cmd.Flags().GetString("description")
+			spawnRole, _ := cmd.Flags().GetString("role")
+			spawnWorkdir, _ := cmd.Flags().GetString("workdir")
+			spawnMaxRetries, _ := cmd.Flags().GetInt("max-retries")
+			if strings.TrimSpace(spawnTitle) == "" || strings.TrimSpace(spawnDesc) == "" {
+				return fmt.Errorf("--title and --description are required")
+			}
+			if spawnRole == "" {
+				spawnRole = "worker"
+			}
+			if spawnMaxRetries <= 0 {
+				spawnMaxRetries = 3
+			}
+
+			eng, err := newTeamEngine(dbPath, whiteboardDir, configPath, workdir)
+			if err != nil {
+				return fmt.Errorf("init engine: %w", err)
+			}
+			defer eng.Close()
+
+			task, err := eng.Spawn(cmd.Context(), team_engine.SpawnRequest{
+				Title:       spawnTitle,
+				Description: spawnDesc,
+				Role:        team_engine.AgentRole(spawnRole),
+				MaxRetries:  spawnMaxRetries,
+				Workdir:     spawnWorkdir,
+				From:        "human",
+			})
+			if err != nil {
+				return fmt.Errorf("spawn: %w", err)
+			}
+			fmt.Printf("✅ Spawned task %s: %s [%s]\n", task.ID, task.Title, task.State)
+			return nil
+		},
+	}
+	spawnCmd.Flags().String("title", "", "Task title")
+	spawnCmd.Flags().String("description", "", "Task prompt for the member")
+	spawnCmd.Flags().String("role", "worker", "Member role")
+	spawnCmd.Flags().String("workdir", "", "Working directory")
+	spawnCmd.Flags().Int("max-retries", 3, "Max retries")
+
+	// --- abort subcommand — gracefully stop a member (abort primitive) ---
+	abortCmd := &cobra.Command{
+		Use:   "abort <task-id>",
+		Short: "Gracefully stop a team member task",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			eng, err := newTeamEngine(dbPath, whiteboardDir, configPath, workdir)
+			if err != nil {
+				return fmt.Errorf("init engine: %w", err)
+			}
+			defer eng.Close()
+
+			if err := eng.Abort(cmd.Context(), args[0]); err != nil {
+				return fmt.Errorf("abort: %w", err)
+			}
+			fmt.Printf("✅ Task %s aborted\n", args[0])
+			return nil
+		},
+	}
+
+	// --- kill subcommand — forcefully terminate a member (kill primitive) ---
+	killCmd := &cobra.Command{
+		Use:   "kill <task-id>",
+		Short: "Forcefully terminate a team member task",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			eng, err := newTeamEngine(dbPath, whiteboardDir, configPath, workdir)
+			if err != nil {
+				return fmt.Errorf("init engine: %w", err)
+			}
+			defer eng.Close()
+
+			if err := eng.Kill(cmd.Context(), args[0]); err != nil {
+				return fmt.Errorf("kill: %w", err)
+			}
+			fmt.Printf("✅ Task %s killed\n", args[0])
+			return nil
+		},
+	}
+
+	// --- summarize subcommand — read a member's report (summarize primitive) ---
+	summarizeCmd := &cobra.Command{
+		Use:   "summarize <task-id|session-id>",
+		Short: "Print a team member's last report/summary",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			eng, err := newTeamEngine(dbPath, whiteboardDir, configPath, workdir)
+			if err != nil {
+				return fmt.Errorf("init engine: %w", err)
+			}
+			defer eng.Close()
+
+			sessionID := eng.Store.SessionID(args[0])
+			if sessionID == "" {
+				sessionID = args[0] // allow a raw session ID
+			}
+			summary, err := eng.Summarize(cmd.Context(), sessionID)
+			if err != nil {
+				return fmt.Errorf("summarize: %w", err)
+			}
+			if summary == "" {
+				fmt.Printf("(no report yet for session %s)\n", sessionID)
+				return nil
+			}
+			fmt.Println(summary)
+			return nil
+		},
+	}
+
+	// --- fork subcommand — clone a member session (fork primitive) ---
+	forkCmd := &cobra.Command{
+		Use:   "fork <task-id|session-id>",
+		Short: "Clone a team member's session and print the new session ID",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			eng, err := newTeamEngine(dbPath, whiteboardDir, configPath, workdir)
+			if err != nil {
+				return fmt.Errorf("init engine: %w", err)
+			}
+			defer eng.Close()
+
+			sessionID := eng.Store.SessionID(args[0])
+			if sessionID == "" {
+				sessionID = args[0] // allow a raw session ID
+			}
+			newID, err := eng.Fork(cmd.Context(), sessionID)
+			if err != nil {
+				return fmt.Errorf("fork: %w", err)
+			}
+			fmt.Println(newID)
+			return nil
+		},
+	}
+
+	teamCmd.AddCommand(promptCmd)
+	teamCmd.AddCommand(spawnCmd)
+	teamCmd.AddCommand(abortCmd)
+	teamCmd.AddCommand(killCmd)
+	teamCmd.AddCommand(summarizeCmd)
+	teamCmd.AddCommand(forkCmd)
 
 	teamCmd.AddCommand(createCmd)
 	teamCmd.AddCommand(runCmd)
@@ -820,14 +999,23 @@ func ensureTeamEngineSpawnFunc(workdir string) {
 	if toolset, err := tools.NewToolset(workdir); err == nil {
 		parentTools, _ = core.NewToolRegistryChecked(toolset.Tools())
 	}
+	// Member subagent sessions must land on a real JSONLStore + sessions dir so
+	// they are persistent, observable, and forkable — a runner without these
+	// falls back to an InMemoryStore and members become unforkable.
+	sessionsDir := store.DefaultSessionsDir(store.DefaultDataDir())
+	msgStore, _ := store.NewJSONLStore(sessionsDir)
 	runner := tasks.NewRunner(tasks.RunnerConfig{
 		ProviderFactory:  providerFactory,
 		AgentDefinitions: library,
 		WorkspaceRoot:    workdir,
 		DefaultModel:     defaults.DefaultModel,
 		ParentTools:      parentTools,
+		MessageStore:     msgStore,
+		SessionsDir:      sessionsDir,
 	})
-	team_engine.SetDefaultSpawnFunc(app.NewTeamEngineSpawnFunc(runner, library))
+	teamRuntime := app.NewTeamRuntime(runner, library, sessionsDir, msgStore)
+	team_engine.SetDefaultSpawnFunc(teamRuntime.SpawnFunc())
+	team_engine.SetDefaultSessionOps(teamRuntime)
 }
 
 // newTeamEngine creates a TeamEngine with a default shell-based spawner.
@@ -882,7 +1070,17 @@ func newTeamEngine(dbPath, whiteboardDir, configPath, workdir string) (*team_eng
 		team_engine.LogSpawnerType("default", "shell", "", 0)
 	}
 
-	return team_engine.New(dbPath, whiteboardDir, configPath, spawner)
+	eng, err := team_engine.New(dbPath, whiteboardDir, configPath, spawner)
+	if err != nil {
+		return nil, err
+	}
+	// Inject the SessionOps wired by ensureTeamEngineSpawnFunc so the six
+	// primitives (prompt/spawn/abort/kill/summarize/fork) can address member
+	// sessions from the CLI.
+	if ops := team_engine.DefaultSessionOps(); ops != nil {
+		eng.SetSessionOps(ops)
+	}
+	return eng, nil
 }
 
 func printTask(task *team_engine.Task, jsonOutput bool) {

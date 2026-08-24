@@ -45,6 +45,12 @@ type AgentChannel interface {
 	// ResolveEscalation resolves a pending escalation with a decision.
 	// Available to both humans (CLI) and agents (via tools).
 	ResolveEscalation(batchID string, decision EscalationDecision) error
+
+	// Summarize returns the member session's last report/summary text.
+	Summarize(ctx context.Context, sessionID string) (string, error)
+
+	// Fork clones a member session and returns the new session ID.
+	Fork(ctx context.Context, sessionID string) (string, error)
 }
 
 // ---------------------------------------------------------------------------
@@ -53,10 +59,11 @@ type AgentChannel interface {
 
 // PromptRequest carries a message addressed to a specific task/agent.
 type PromptRequest struct {
-	ToTaskID string // Target task / agent
-	From     string // Sender identity: "human", "agent:<task-id>", "system"
-	Content  string // The message body
-	Sync     bool   // If true, wait for a reply; if false, fire-and-forget
+	ToTaskID  string // Target task / agent (addresses via whiteboard inbox)
+	SessionID string // Optional: address a member session directly, bypassing the task inbox
+	From      string // Sender identity: "human", "agent:<task-id>", "system"
+	Content   string // The message body
+	Sync      bool   // If true, wait for a reply; if false, fire-and-forget
 }
 
 // Message is a single unit of agent-to-agent or human-to-agent communication.
@@ -108,6 +115,29 @@ var _ AgentChannel = (*TeamEngine)(nil)
 // Prompt implements AgentChannel. It delivers a message to a task's inbox
 // and, when Sync=true, waits for the agent to produce a reply.
 func (e *TeamEngine) Prompt(ctx context.Context, req PromptRequest) (*Message, error) {
+	// Session-addressed prompt: append a turn to a live member session. When
+	// only ToTaskID is given, resolve that task's persisted member session.
+	sessionID := req.SessionID
+	if sessionID == "" && req.ToTaskID != "" {
+		sessionID = e.Store.SessionID(req.ToTaskID)
+	}
+	if sessionID != "" {
+		if ops := e.getSessionOps(); ops != nil {
+			reply, err := ops.Prompt(ctx, sessionID, req.Content)
+			if err != nil {
+				return nil, fmt.Errorf("prompt session %s: %w", sessionID, err)
+			}
+			return &Message{
+				ID:        uuid.New().String(),
+				From:      "agent:" + sessionID,
+				To:        req.ToTaskID,
+				Content:   reply,
+				CreatedAt: time.Now().UTC().Format(time.RFC3339),
+			}, nil
+		}
+		return nil, fmt.Errorf("session-addressed prompt not supported: no SessionOps configured")
+	}
+
 	task, err := e.Store.GetTask(req.ToTaskID)
 	if err != nil {
 		return nil, fmt.Errorf("get task %s: %w", req.ToTaskID, err)
@@ -165,13 +195,17 @@ func (e *TeamEngine) Spawn(_ context.Context, req SpawnRequest) (*Task, error) {
 }
 
 // Abort implements AgentChannel. Graceful cancel.
-func (e *TeamEngine) Abort(_ context.Context, taskID string) error {
-	return e.CancelTask(taskID)
+func (e *TeamEngine) Abort(ctx context.Context, taskID string) error {
+	if err := e.CancelTask(taskID); err != nil {
+		return err
+	}
+	e.abortSession(ctx, taskID)
+	return nil
 }
 
 // Kill implements AgentChannel. Forceful termination.
 // Transitions the task to suspended so it can be resumed later.
-func (e *TeamEngine) Kill(_ context.Context, taskID string) error {
+func (e *TeamEngine) Kill(ctx context.Context, taskID string) error {
 	task, err := e.Store.GetTask(taskID)
 	if err != nil {
 		return fmt.Errorf("get task: %w", err)
@@ -201,5 +235,51 @@ func (e *TeamEngine) Kill(_ context.Context, taskID string) error {
 	}
 	_ = e.Whiteboard.WriteStatus(taskID, string(TaskStateSuspended))
 	_ = e.Whiteboard.AppendOutput(taskID, "\n[SUSPENDED by user]")
+
+	e.killSession(ctx, taskID)
 	return nil
+}
+
+// abortSession cancels the member subagent turn for a task via SessionOps
+// (graceful). No-op when SessionOps is unset or the task has no session.
+func (e *TeamEngine) abortSession(ctx context.Context, taskID string) {
+	ops := e.getSessionOps()
+	if ops == nil {
+		return
+	}
+	if sid := e.Store.SessionID(taskID); sid != "" {
+		_ = ops.Abort(ctx, sid)
+	}
+}
+
+// killSession cancels the member subagent turn for a task via SessionOps
+// (forceful). No-op when SessionOps is unset or the task has no session.
+func (e *TeamEngine) killSession(ctx context.Context, taskID string) {
+	ops := e.getSessionOps()
+	if ops == nil {
+		return
+	}
+	if sid := e.Store.SessionID(taskID); sid != "" {
+		_ = ops.Kill(ctx, sid)
+	}
+}
+
+// Summarize implements AgentChannel. Returns the member session's last
+// report/summary, or an explicit error when SessionOps is not configured.
+func (e *TeamEngine) Summarize(ctx context.Context, sessionID string) (string, error) {
+	ops := e.getSessionOps()
+	if ops == nil {
+		return "", fmt.Errorf("summarize not supported: no SessionOps configured (shell fallback sessions are not observable)")
+	}
+	return ops.Summarize(ctx, sessionID)
+}
+
+// Fork implements AgentChannel. Clones a member session and returns the new
+// session ID, or an explicit error when SessionOps is not configured.
+func (e *TeamEngine) Fork(ctx context.Context, sessionID string) (string, error) {
+	ops := e.getSessionOps()
+	if ops == nil {
+		return "", fmt.Errorf("fork not supported: no SessionOps configured (shell fallback sessions are not forkable)")
+	}
+	return ops.Fork(ctx, sessionID)
 }

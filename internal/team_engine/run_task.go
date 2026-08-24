@@ -303,11 +303,50 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 					UsageCompletion: resp.UsageCompletion,
 				}
 			} else {
-				// Fallback: normal spawn via Runner.
-				if e.Loggers != nil {
-					e.Loggers.Engine("task %s worker START role=%s", taskID[:8], task.Role)
+				// Native adapter. On retry with a recorded session, prompt the
+				// existing member session with the Verifier feedback instead of
+				// re-spawning — preserves the Worker's failure context (partial
+				// work, exploration state) across retries. First attempt (or no
+				// SessionOps wired) falls through to a fresh spawn.
+				var continued bool
+				if ops := e.getSessionOps(); ops != nil {
+					if sessionID := e.Store.SessionID(taskID); sessionID != "" {
+						continued = true
+						fbPrompt := verifierFeedbackForWorker(task.VerifierFeedback)
+						if e.Loggers != nil {
+							e.Loggers.Engine("task %s worker CONTINUE session %s (retry=%d)", taskID[:8], sessionID, attempt)
+						}
+						resp, err := ops.Continue(taskCtx, sessionID, fbPrompt)
+						if err != nil {
+							result = &RunResult{
+								SessionID: sessionID,
+								ExitCode:  -1,
+								Stderr:    fmt.Sprintf("continue session: %v", err),
+								Success:   false,
+							}
+						} else {
+							result = &RunResult{
+								SessionID:       resp.SessionID,
+								ExitCode:        resp.ExitCode,
+								Stdout:          resp.Output,
+								Stderr:          resp.Diagnostic,
+								DurationSeconds: round(time.Since(workerStart).Seconds(), 2),
+								Success:         resp.Success,
+								UsagePrompt:     resp.UsagePrompt,
+								UsageCompletion: resp.UsageCompletion,
+								SystemPrompt:    resp.SystemPrompt,
+								PID:             resp.PID,
+							}
+						}
+					}
 				}
-				result = e.Runner.RunWithContext(taskCtx, prompt, agentWorkdir, toolsStr, taskTimeout, wIters, wCalls, wTokens, liveOutput, onPID, onStdin)
+				if !continued {
+					// First attempt: normal spawn via Runner.
+					if e.Loggers != nil {
+						e.Loggers.Engine("task %s worker START role=%s", taskID[:8], task.Role)
+					}
+					result = e.Runner.RunWithContext(taskCtx, prompt, agentWorkdir, toolsStr, taskTimeout, wIters, wCalls, wTokens, liveOutput, onPID, onStdin)
+				}
 			}
 			Log("timing", "task %s worker done in %.1fs (success=%v)", taskID[:8], time.Since(workerStart).Seconds(), result.Success)
 			if e.Loggers != nil {

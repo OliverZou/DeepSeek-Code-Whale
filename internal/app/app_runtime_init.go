@@ -141,7 +141,9 @@ func initAppRuntime(cfg Config, sessionInit appSessionInit, toolInit appToolInit
 		ApprovalFunc: approvalFunc,
 	})
 	taskTools := tasks.NewTools(taskRunner)
-	team_engine.SetDefaultSpawnFunc(teamEngineSpawnAdapter(taskRunner, agentLibrary))
+	teamRuntime := NewTeamRuntime(taskRunner, agentLibrary, sessionInit.sessionsDir, sessionInit.msgStore)
+	team_engine.SetDefaultSpawnFunc(teamRuntime.SpawnFunc())
+	team_engine.SetDefaultSessionOps(teamRuntime)
 	goalTools := newGoalTools(cfg.DataDir, sessionInit.sessionsDir, parentSessionIDFunc)
 	var workflowManager *workflow.RunManager
 	var workflowRunner *workflow.ScriptRunner

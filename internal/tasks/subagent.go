@@ -53,24 +53,24 @@ type SpawnSubagentResponse struct {
 	// Summary is a one-line preview of Report for UI/progress/session lists.
 	// It is NOT a substitute for Report and must never be the only thing the
 	// parent agent receives.
-	Summary          string         `json:"summary"`
-	StructuredResult any            `json:"structured_result,omitempty"`
-	Error            string         `json:"error,omitempty"`
-	Truncated        bool           `json:"truncated"`
-	ReportFile       string         `json:"report_file,omitempty"`
-	ToolCalls        []string       `json:"tool_calls,omitempty"`
-	RequestedTools   []string       `json:"requested_tools,omitempty"`
-	ResolvedTools    []string       `json:"resolved_tools,omitempty"`
-	ToolMode         string         `json:"tool_mode,omitempty"`
+	Summary          string   `json:"summary"`
+	StructuredResult any      `json:"structured_result,omitempty"`
+	Error            string   `json:"error,omitempty"`
+	Truncated        bool     `json:"truncated"`
+	ReportFile       string   `json:"report_file,omitempty"`
+	ToolCalls        []string `json:"tool_calls,omitempty"`
+	RequestedTools   []string `json:"requested_tools,omitempty"`
+	ResolvedTools    []string `json:"resolved_tools,omitempty"`
+	ToolMode         string   `json:"tool_mode,omitempty"`
 	// SystemPrompt is the assembled extra system-prompt content injected for
 	// this subagent (agent definition, workflow context, output schema, skills,
 	// memory, hooks). Surfaced so the parent can audit exactly what the child
 	// saw beyond the task prompt — it is not fed back to the model.
-	SystemPrompt     string         `json:"system_prompt,omitempty"`
-	Usage            llm.Usage      `json:"usage,omitempty"`
-	SubagentBudget   SubagentBudget `json:"subagent_budget,omitempty"`
-	DurationMS       int64          `json:"duration_ms"`
-	CompletedAt      string         `json:"completed_at"`
+	SystemPrompt   string         `json:"system_prompt,omitempty"`
+	Usage          llm.Usage      `json:"usage,omitempty"`
+	SubagentBudget SubagentBudget `json:"subagent_budget,omitempty"`
+	DurationMS     int64          `json:"duration_ms"`
+	CompletedAt    string         `json:"completed_at"`
 }
 
 type SubagentBudget struct {
@@ -202,6 +202,25 @@ func childFallbackApproval(permissionMode string) policy.ApprovalDecision {
 }
 
 func (r *Runner) SpawnSubagentWithProgress(ctx context.Context, req SpawnSubagentRequest, progress func(core.ToolProgress)) (SpawnSubagentResponse, error) {
+	return r.runSubagent(ctx, req, progress, r.childSessionID(req.ParentToolCallID), true)
+}
+
+// ContinueSubagent appends a new turn to an existing subagent session. It runs
+// the same spawn pipeline (definition resolution, workspace, tools, provider,
+// agent loop) but reuses the supplied sessionID instead of minting a new child
+// session, and skips the initial saveSubagentMeta — so the existing .meta.json
+// and JSONL transcript are extended in place rather than replaced. This is the
+// "prompt an existing member session" primitive used by the team engine's
+// prompt/fork/summarize surface.
+func (r *Runner) ContinueSubagent(ctx context.Context, req SpawnSubagentRequest, sessionID string) (SpawnSubagentResponse, error) {
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" {
+		return SpawnSubagentResponse{}, errors.New("session_id is required")
+	}
+	return r.runSubagent(ctx, req, nil, sessionID, false)
+}
+
+func (r *Runner) runSubagent(ctx context.Context, req SpawnSubagentRequest, progress func(core.ToolProgress), sessionID string, createMeta bool) (SpawnSubagentResponse, error) {
 	task := strings.TrimSpace(req.Task)
 	if task == "" {
 		return SpawnSubagentResponse{}, errors.New("task is required")
@@ -220,7 +239,6 @@ func (r *Runner) SpawnSubagentWithProgress(ctx context.Context, req SpawnSubagen
 	model := cfg.Model
 	maxToolIters := cfg.MaxToolIters
 	maxToolCalls := cfg.MaxToolCalls
-	sessionID := r.childSessionID(req.ParentToolCallID)
 	workspace, err := r.resolveSubagentWorkspace(cfg, sessionID, role)
 	if err != nil {
 		return SpawnSubagentResponse{}, err
@@ -261,23 +279,25 @@ func (r *Runner) SpawnSubagentWithProgress(ctx context.Context, req SpawnSubagen
 		childStore = store.NewInMemoryStore()
 	}
 	start := time.Now()
-	parentSessionID := r.currentParentSessionID()
-	r.saveSubagentMeta(sessionID, session.SessionMeta{
-		Kind:               "subagent",
-		ParentSessionID:    parentSessionID,
-		Role:               role,
-		Model:              model,
-		Task:               task,
-		Status:             "running",
-		Workspace:          workspace.WorkspaceRoot,
-		WorktreeName:       workspace.WorktreeName,
-		WorktreePath:       workspace.WorktreeRoot,
-		WorktreeBranch:     workspace.WorktreeBranch,
-		OriginalWorkspace:  workspace.OriginalWorkspace,
-		OriginalBranch:     workspace.OriginalBranch,
-		OriginalHeadCommit: workspace.OriginalHeadCommit,
-		StartedAt:          start.UTC(),
-	})
+	if createMeta {
+		parentSessionID := r.currentParentSessionID()
+		r.saveSubagentMeta(sessionID, session.SessionMeta{
+			Kind:               "subagent",
+			ParentSessionID:    parentSessionID,
+			Role:               role,
+			Model:              model,
+			Task:               task,
+			Status:             "running",
+			Workspace:          workspace.WorkspaceRoot,
+			WorktreeName:       workspace.WorktreeName,
+			WorktreePath:       workspace.WorktreeRoot,
+			WorktreeBranch:     workspace.WorktreeBranch,
+			OriginalWorkspace:  workspace.OriginalWorkspace,
+			OriginalBranch:     workspace.OriginalBranch,
+			OriginalHeadCommit: workspace.OriginalHeadCommit,
+			StartedAt:          start.UTC(),
+		})
+	}
 	extraBlocks := []string{agentDefinitionSystemBlock(cfg.Definition, cfg.ToolSelectors, resolvedToolNames, toolMode)}
 	if workflowBlock := workflowContextSystemBlock(req); workflowBlock != "" {
 		extraBlocks = append(extraBlocks, workflowBlock)
