@@ -12,10 +12,11 @@ import (
 
 // Reviewer examines batch execution results and returns accept/reject/escalate decisions.
 type Reviewer struct {
-	runner  *AgentRunner
-	loggers *log.Loggers
-	team    *TeamConfig
-	onLog   func()
+	runner           *AgentRunner
+	loggers          *log.Loggers
+	team             *TeamConfig
+	onLog            func()
+	decomposeContext string // injected into review prompts for context continuity
 }
 
 // NewReviewer creates a Reviewer that uses the given AgentRunner.
@@ -41,14 +42,30 @@ func (r *Reviewer) WithOnLog(fn func()) *Reviewer {
 	return r
 }
 
+// WithDecomposeContext sets the decompose context for review prompts.
+func (r *Reviewer) WithDecomposeContext(dc string) *Reviewer {
+	r.decomposeContext = dc
+	return r
+}
+
 // ReviewCyclePrompt returns the prompt for reviewing a CycleReport.
-func ReviewCyclePrompt(goal string, report *CycleReport) string {
+// When decomposeContext is non-empty, it is injected so the Leader can
+// reference its own decomposition decisions during review.
+func ReviewCyclePrompt(goal string, report *CycleReport, decomposeContext ...string) string {
+	dc := ""
+	if len(decomposeContext) > 0 {
+		dc = decomposeContext[0]
+	}
+	contextBlock := ""
+	if dc != "" {
+		contextBlock = fmt.Sprintf("\n## 你之前的分解决策\n\n%s\n\n---\n", dc)
+	}
 	return fmt.Sprintf(`You are the Team Leader. Review this CycleReport and decide the next action.
 
 GOAL:
 %s
 
-CYCLE REPORT:
+%sCYCLE REPORT:
 Batch:     %s
 Cycle:     %d
 Status:    %s
@@ -56,7 +73,7 @@ Status:    %s
 TASKS:
 | Task | Role | State | Retries |
 |------|------|-------|---------|
-`, goal, report.BatchLabelOrID(), report.CycleNumber, report.Status) +
+`, goal, contextBlock, report.BatchLabelOrID(), report.CycleNumber, report.Status) +
 		buildTaskTable(report.Tasks) + `
 Board: ` + report.BoardPath + `
 
@@ -116,7 +133,7 @@ func (r *Reviewer) reviewCycleInternal(goal string, report *CycleReport, workdir
 	if timeout <= 0 {
 		timeout = 60 * time.Second
 	}
-	prompt := ReviewCyclePrompt(goal, report)
+	prompt := ReviewCyclePrompt(goal, report, r.decomposeContext)
 	result := r.runner.RunDecomposer(prompt, workdir, timeout, model...)
 
 	if !result.Success {
@@ -147,17 +164,27 @@ func (r *Reviewer) ReviewCycleFull(goal string, report *CycleReport, workdir str
 }
 
 // ProactiveLeaderPrompt returns a prompt for proactively reviewing a task's progress.
-func ProactiveLeaderPrompt(goal string, taskTitle string, taskRole string, taskState string, retryCount int, lastOutput string) string {
+// When decomposeContext is non-empty, it is injected so the Leader can
+// reference its own decomposition decisions.
+func ProactiveLeaderPrompt(goal string, taskTitle string, taskRole string, taskState string, retryCount int, lastOutput string, decomposeContext ...string) string {
 	outputPreview := lastOutput
 	if len(outputPreview) > 500 {
 		outputPreview = outputPreview[:500] + "..."
+	}
+	dc := ""
+	if len(decomposeContext) > 0 {
+		dc = decomposeContext[0]
+	}
+	contextBlock := ""
+	if dc != "" {
+		contextBlock = fmt.Sprintf("\n## 你之前的分解决策\n\n%s\n\n---\n", dc)
 	}
 	return fmt.Sprintf(`You are a proactive Team Leader overseeing a running pipeline.
 
 GOAL:
 %s
 
-A task needs your attention:
+%sA task needs your attention:
 
 Task:     %s
 Role:     %s
@@ -174,7 +201,7 @@ Decide if you need to intervene:
 
 OUTPUT FORMAT (pure JSON, no markdown):
 {"action": "none|guidance|redirect", "reason": "...", "feedback": "specific guidance for the worker"}
-`, goal, taskTitle, taskRole, taskState, retryCount, outputPreview)
+`, goal, contextBlock, taskTitle, taskRole, taskState, retryCount, outputPreview)
 }
 
 // ReviewProgress proactively reviews a single task's progress.
@@ -182,7 +209,7 @@ func (r *Reviewer) ReviewProgress(goal, taskTitle, taskRole, taskState string, r
 	if timeout <= 0 {
 		timeout = 60 * time.Second
 	}
-	prompt := ProactiveLeaderPrompt(goal, taskTitle, taskRole, taskState, retryCount, lastOutput)
+	prompt := ProactiveLeaderPrompt(goal, taskTitle, taskRole, taskState, retryCount, lastOutput, r.decomposeContext)
 	result := r.runner.RunDecomposer(prompt, workdir, timeout, model...)
 
 	if !result.Success {

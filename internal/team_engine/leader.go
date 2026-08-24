@@ -56,6 +56,15 @@ func (l *Leader) WithComplexity(c string) *Leader {
 	return l
 }
 
+// WithDecomposeContext reads the Planner's decompose result and passes it
+// to the Reviewer so review prompts include the Leader's own decisions.
+func (l *Leader) WithDecomposeContext() *Leader {
+	if dc := l.planner.DecomposeContext(); dc != "" {
+		l.reviewer.WithDecomposeContext(dc)
+	}
+	return l
+}
+
 // --- Delegated methods ---
 
 // Elaborate delegates to Planner.

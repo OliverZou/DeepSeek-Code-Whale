@@ -740,22 +740,31 @@ func (e *TeamEngine) leaderWatchLoop(ctx context.Context, leader *Leader, master
 		case <-ctx.Done():
 			return
 		case <-heartbeat.C:
-			tasks, err := e.Store.ListTasksByMasterTask(masterTaskID)
-			if err != nil || len(tasks) == 0 {
-				continue
-			}
-			for _, t := range tasks {
-				if t.State.IsTerminal() || t.State == TaskStateSuspended || t.RetryCount <= 1 {
-					continue
-				}
-				output, _ := e.Whiteboard.ReadOutput(t.ID)
-				feedback, err := leader.ReviewProgress(goal, t.Title, string(t.Role), string(t.State), t.RetryCount, output, workdir, 30*time.Second)
-				if err != nil || feedback == "" {
-					continue
-				}
-				_ = e.SendFeedback(t.ID, feedback)
-			}
+			e.reviewStuckTasks(leader, masterTaskID, goal, workdir)
+		case <-eventCh:
+			// Task state changed — immediately check for stuck tasks.
+			e.reviewStuckTasks(leader, masterTaskID, goal, workdir)
 		}
+	}
+}
+
+// reviewStuckTasks checks all tasks for the master task and sends Leader
+// feedback to any task that has been retried more than once.
+func (e *TeamEngine) reviewStuckTasks(leader *Leader, masterTaskID, goal, workdir string) {
+	tasks, err := e.Store.ListTasksByMasterTask(masterTaskID)
+	if err != nil || len(tasks) == 0 {
+		return
+	}
+	for _, t := range tasks {
+		if t.State.IsTerminal() || t.State == TaskStateSuspended || t.RetryCount <= 1 {
+			continue
+		}
+		output, _ := e.Whiteboard.ReadOutput(t.ID)
+		feedback, err := leader.ReviewProgress(goal, t.Title, string(t.Role), string(t.State), t.RetryCount, output, workdir, 30*time.Second)
+		if err != nil || feedback == "" {
+			continue
+		}
+		_ = e.SendFeedback(t.ID, feedback)
 	}
 }
 

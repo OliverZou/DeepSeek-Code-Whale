@@ -56,6 +56,10 @@ func (e *TeamEngine) PlanAndRun(ctx context.Context, goal, workdir, masterTaskID
 	leader := NewLeader(e.Runner).WithLoggers(e.Loggers).WithTeam(e.team).WithOnLog(func() {
 		e.fireEvent(TaskEvent{Type: EventLeaderLog})
 	})
+	// Start Leader real-time oversight — monitors stuck tasks via heartbeat.
+	if e.shellSpawner != nil {
+		go e.leaderWatchLoop(execCtx, leader, masterTaskID, goal, workdir)
+	}
 	decomposerTimeout := time.Duration(e.Router.ResolveDecomposerTimeout()) * time.Second
 	leaderModel := e.Router.ResolveModel("planner")
 
@@ -115,6 +119,9 @@ func (e *TeamEngine) PlanAndRun(ctx context.Context, goal, workdir, masterTaskID
 			Log("plan", "plan: decompose OK: %d tasks in %d batches", len(planTasks), countBatches(planTasks))
 		}
 		e.writePlanJSON(masterTaskID, planTasks)
+		// Wire decompose context into review prompts so the Leader
+		// references its own decisions during batch review.
+		leader.WithDecomposeContext()
 	}
 
 	// 后置校验：decompose 可能拆出「上帝任务」（单任务同时承担集成+多端兼容

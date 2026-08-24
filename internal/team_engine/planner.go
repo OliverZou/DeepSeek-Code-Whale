@@ -13,11 +13,12 @@ import (
 // Planner decomposes goals into structured plans of subtasks.
 // Stateless: all state comes from injected dependencies.
 type Planner struct {
-	runner     *AgentRunner
-	loggers    *log.Loggers
-	team       *TeamConfig
-	onLog      func()
-	complexity string
+	runner              *AgentRunner
+	loggers             *log.Loggers
+	team                *TeamConfig
+	onLog               func()
+	complexity          string
+	lastDecomposeResult string // raw JSON plan from last successful decompose, for review context
 }
 
 // NewPlanner creates a Planner that uses the given AgentRunner.
@@ -374,6 +375,9 @@ func (p *Planner) decomposeInternal(goal string, workdir string, timeout time.Du
 	}
 	prompt := DecomposePrompt(goal, p.complexity)
 	if p.team != nil {
+		if persona := p.team.ReadLeaderPersona(); persona != "" {
+			prompt += "\n\n## Your Persona\n" + persona
+		}
 		prompt = p.team.BuildLeaderPrompt(prompt)
 	}
 	// Team leader model takes priority over router default.
@@ -476,10 +480,17 @@ func (p *Planner) decomposeInternal(goal string, workdir string, timeout time.Du
 		if defaultTeamLog != nil {
 			defaultTeamLog.LeaderDecompose(goal, mdl, attempt+1, 0, result.UsagePrompt, result.UsageCompletion, dur.Seconds(), len(output), false, true)
 		}
+		p.lastDecomposeResult = output
 		return tasks, output, nil
 	}
 
 	return nil, "", fmt.Errorf("leader failed after %d attempts", maxRetries+1)
+}
+
+// DecomposeContext returns the raw JSON output from the last successful
+// decompose, so the Leader can reference its own decisions during review.
+func (p *Planner) DecomposeContext() string {
+	return p.lastDecomposeResult
 }
 
 // Decompose calls a Whale subagent to decompose a goal into subtasks.
