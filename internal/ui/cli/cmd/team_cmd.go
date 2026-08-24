@@ -108,9 +108,13 @@ Subcommands:
 			}
 			defer eng.Close()
 
-			// Enable git worktree isolation for coding tasks when run inside a
-			// git repo (non-git dirs silently fall back to the default mode).
-			if repoRoot, err := whaleworktree.CheckoutRoot(workdir); err == nil {
+			// Opt-in git worktree isolation: enabled only when --worktree is
+			// passed and the working directory is inside a git repository.
+			if useWorktree, _ := cmd.Flags().GetBool("worktree"); useWorktree {
+				repoRoot, err := whaleworktree.CheckoutRoot(workdir)
+				if err != nil {
+					return fmt.Errorf("--worktree requires a git repository: %w", err)
+				}
 				eng.EnableWorktree(repoRoot)
 			}
 
@@ -142,6 +146,7 @@ Subcommands:
 			return nil
 		},
 	}
+	runCmd.Flags().Bool("worktree", false, "Use git worktree isolation for coding tasks")
 
 	// --- spec subcommand ---
 	initCmd := &cobra.Command{
@@ -207,9 +212,13 @@ Subcommands:
 			}
 			defer eng.Close()
 
-			// Enable git worktree isolation for coding tasks when run inside a
-			// git repo (non-git dirs silently fall back to the default mode).
-			if repoRoot, err := whaleworktree.CheckoutRoot(workdir); err == nil {
+			// Opt-in git worktree isolation: enabled only when --worktree is
+			// passed and the working directory is inside a git repository.
+			if useWorktree, _ := cmd.Flags().GetBool("worktree"); useWorktree {
+				repoRoot, err := whaleworktree.CheckoutRoot(workdir)
+				if err != nil {
+					return fmt.Errorf("--worktree requires a git repository: %w", err)
+				}
 				eng.EnableWorktree(repoRoot)
 			}
 
@@ -321,6 +330,7 @@ Subcommands:
 	executeCmd.Flags().String("goal", "", "The goal to decompose into subtasks")
 	executeCmd.Flags().String("team", "", "Team name to use for decomposition")
 	executeCmd.Flags().String("model", "", "Model override for the Leader decomposition step")
+	executeCmd.Flags().Bool("worktree", false, "Use git worktree isolation for coding tasks")
 
 	// --- status subcommand ---
 	statusCmd := &cobra.Command{
