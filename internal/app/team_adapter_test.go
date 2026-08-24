@@ -8,13 +8,17 @@ import (
 )
 
 func TestPermissionForRole(t *testing.T) {
-	readOnly := []string{"planner", "verifier", "reviewer", "researcher", "evaluator", "synthesizer"}
+	// verifier is intentionally auto (not read_only): it needs shell.run to
+	// execute tests/linters for tool-grounded verification. Its toolset is
+	// still constrained to the verify profile (read + shell, no write) in the
+	// adapter fallback.
+	readOnly := []string{"planner", "reviewer", "researcher", "evaluator", "synthesizer"}
 	for _, role := range readOnly {
 		if got := permissionForRole(role); got != tasks.AgentPermissionReadOnly {
 			t.Errorf("permissionForRole(%q) = %q, want read_only", role, got)
 		}
 	}
-	for _, role := range []string{"worker", "frontend-dev", "developer", ""} {
+	for _, role := range []string{"worker", "frontend-dev", "developer", "verifier", ""} {
 		if got := permissionForRole(role); got != tasks.AgentPermissionAuto {
 			t.Errorf("permissionForRole(%q) = %q, want auto", role, got)
 		}

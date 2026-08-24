@@ -64,6 +64,12 @@ func teamEngineSpawnAdapter(runner *tasks.Runner, library *tasks.AgentDefinition
 				Description:    "Team engine " + req.Role + " agent",
 				PermissionMode: permissionForRole(req.Role),
 			}
+			// A verifier whose agent definition didn't resolve still needs the
+			// tool-grounded verify profile (read + shell.run, no write) so it
+			// can execute tests/linters instead of only static review.
+			if req.Role == "verifier" && len(tasksReq.Tools) == 0 {
+				tasksReq.Tools = teamToolsToCapabilities(team_engine.ProfileToToolNames(team_engine.ProfileVerify))
+			}
 		}
 
 		// An agent resolved from a .md file may omit permission mode, which
@@ -122,11 +128,16 @@ func teamEngineSpawnAdapter(runner *tasks.Runner, library *tasks.AgentDefinition
 }
 
 // permissionForRole returns the default permission mode for a team role.
-// Read-only roles (planner, verifier, reviewers) stay read-only; workers get
-// auto so they can write artifacts and run shell commands.
+// Read-only roles (planner, reviewer, researcher, …) stay read-only; workers
+// get auto so they can write artifacts and run shell commands. The verifier is
+// special: it needs shell.run to execute tests/linters (tool-grounded
+// verification), but its toolset is constrained to the verify profile
+// (read + shell, no write) in the adapter fallback, so auto is safe.
 func permissionForRole(role string) string {
 	switch role {
-	case "planner", "verifier", "reviewer", "researcher", "evaluator", "synthesizer":
+	case "verifier":
+		return tasks.AgentPermissionAuto
+	case "planner", "reviewer", "researcher", "evaluator", "synthesizer":
 		return tasks.AgentPermissionReadOnly
 	default:
 		return tasks.AgentPermissionAuto

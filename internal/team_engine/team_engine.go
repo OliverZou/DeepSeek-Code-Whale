@@ -1342,6 +1342,9 @@ func (e *TeamEngine) recordLesson(role AgentRole, title, lesson string) {
 	if e.Store == nil {
 		return
 	}
+	// Flatten newlines so a multi-line verifier report can't corrupt the
+	// markdown line or JSON memory entry.
+	lesson = strings.ReplaceAll(lesson, "\n", " ")
 	// Keep markdown for backward compatibility.
 	line := fmt.Sprintf("- %s: %s — %s\n", time.Now().UTC().Format("2006-01-02"), title, lesson)
 	memDir := filepath.Join(e.Store.baseDir, "memory")

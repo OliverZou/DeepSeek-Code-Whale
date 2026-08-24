@@ -623,7 +623,7 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 					os.WriteFile(filepath.Join(e.Whiteboard.TaskDir(taskID), "verify.md"), []byte(feedback), 0644)
 				}
 				// Record lesson for future agents with the same role.
-				e.recordLesson(task.Role, task.Title, truncateLesson(feedback, 80))
+				e.recordLesson(task.Role, task.Title, truncateLesson(verifierFeedbackForWorker(feedback), 80))
 				return true, nil
 			}
 			// passed=false after mechanical verification: fall through to retry.
@@ -685,7 +685,7 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 			if task.Output != "" {
 				os.WriteFile(filepath.Join(e.Whiteboard.TaskDir(taskID), "verify.md"), []byte(feedback), 0644)
 			}
-			e.recordLesson(task.Role, task.Title, truncateLesson(feedback, 80))
+			e.recordLesson(task.Role, task.Title, truncateLesson(verifierFeedbackForWorker(feedback), 80))
 			return true, nil
 		}
 		// Stagnation: same findings 2 rounds → suspend.
@@ -900,4 +900,3 @@ func (e *TeamEngine) splitTaskIntoChildren(task *Task, childPlan []PlanTask, wor
 	e.fireEvent(TaskEvent{Type: EventStateChanged})
 	return true
 }
-
