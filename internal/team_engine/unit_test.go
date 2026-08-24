@@ -422,3 +422,31 @@ func TestNewTaskWithProfile(t *testing.T) {
 		t.Errorf("master_task_id should be 'mt-1', got %s", task.MasterTaskID)
 	}
 }
+
+func TestTeamMaxAgents(t *testing.T) {
+	eng := newTestEngine(t)
+	defer eng.Close()
+
+	// No team configured → global default (Defaults.Batch.MaxAgents = 9).
+	if got := eng.teamMaxAgents(); got != 9 {
+		t.Fatalf("no team: got %d, want 9", got)
+	}
+
+	// Team without runtime config → still global default.
+	eng.team = &TeamConfig{}
+	if got := eng.teamMaxAgents(); got != 9 {
+		t.Fatalf("team without config: got %d, want 9", got)
+	}
+
+	// Team with max_agents unset (0) → global default.
+	eng.team = &TeamConfig{Config: &TeamRuntimeConfig{MaxAgents: 0}}
+	if got := eng.teamMaxAgents(); got != 9 {
+		t.Fatalf("team max_agents=0: got %d, want 9", got)
+	}
+
+	// Team overrides the global ceiling.
+	eng.team = &TeamConfig{Config: &TeamRuntimeConfig{MaxAgents: 5}}
+	if got := eng.teamMaxAgents(); got != 5 {
+		t.Fatalf("team max_agents=5: got %d, want 5", got)
+	}
+}

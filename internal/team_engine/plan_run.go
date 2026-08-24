@@ -136,7 +136,7 @@ func (e *TeamEngine) PlanAndRun(ctx context.Context, goal, workdir, masterTaskID
 		bg := batchMap[bid]
 		concurrency := bg.concurrency
 		if concurrency <= 0 {
-			concurrency = e.Config.Batch.MaxAgents
+			concurrency = e.teamMaxAgents()
 		}
 		maxCycles := bg.maxCycles
 		if maxCycles <= 0 {
@@ -643,6 +643,16 @@ func (e *TeamEngine) runDWCycle(
 	}
 }
 
+// teamMaxAgents resolves the batch concurrency ceiling.  The team's
+// config.yaml max_agents (when set) overrides the global batch.max_agents;
+// otherwise the global default applies.
+func (e *TeamEngine) teamMaxAgents() int {
+	if e.team != nil && e.team.Config != nil && e.team.Config.MaxAgents > 0 {
+		return e.team.Config.MaxAgents
+	}
+	return e.Config.Batch.MaxAgents
+}
+
 // RunBatch executes all tasks in a batch in parallel, respecting the
 // configured concurrency limit.// RunBatch executes all tasks in a batch in parallel, respecting the
 // configured concurrency limit.
@@ -659,7 +669,7 @@ func (e *TeamEngine) RunBatch(ctx context.Context, batch *Batch) error {
 
 	concurrency := batch.Concurrency
 	if concurrency <= 0 {
-		concurrency = e.Config.Batch.MaxAgents
+		concurrency = e.teamMaxAgents()
 	}
 	if concurrency <= 0 || concurrency > len(tasks) {
 		concurrency = len(tasks) // cap at task count; 0 = unlimited in config
