@@ -68,8 +68,6 @@ func TestElaborateFull_ReturnsComplexity(t *testing.T) {
 
 	eng.Runner.spawner = &mockSpawner{output: `{
 		"verdict": "COMPLETE",
-		"complexity": "simple",
-		"estimated_tasks": 1,
 		"dimensions": [
 			{"name": "scope", "status": "OK", "detail": ""},
 			{"name": "interface", "status": "OK", "detail": ""},
@@ -89,6 +87,8 @@ func TestElaborateFull_ReturnsComplexity(t *testing.T) {
 	if elaborated != goal {
 		t.Errorf("ElaborateFull() = %q, want original goal %q", elaborated, goal)
 	}
+	// Complexity is lexical (deterministic): the short keyword-free goal
+	// yields "simple".
 	if complexity != "simple" {
 		t.Errorf("ElaborateFull() complexity = %q, want %q", complexity, "simple")
 	}

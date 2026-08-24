@@ -730,6 +730,7 @@ func newLiteSpawner(fallbackModel string) team_engine.SubagentSpawner {
 			deepseek.WithModel(mdl),
 			deepseek.WithMaxTokens(maxTok),
 			deepseek.WithThinking(false),
+			deepseek.WithTemperature(0),
 		)
 		if err != nil {
 			return team_engine.SubagentResponse{

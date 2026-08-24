@@ -119,6 +119,55 @@ func TestStreamResponseParsesToolCallAndContent(t *testing.T) {
 	}
 }
 
+func TestStreamResponseIncludesTemperature(t *testing.T) {
+	run := func(t *testing.T, withTemp, wantField bool) {
+		var gotTemp any
+		var gotTempField bool
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			var payload map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Fatalf("decode request body: %v", err)
+			}
+			gotTemp, gotTempField = payload["temperature"]
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\n")
+			_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
+		}))
+		defer srv.Close()
+
+		_ = os.Setenv("DEEPSEEK_API_KEY", "test-key")
+		var c *Client
+		var err error
+		if withTemp {
+			c, err = New(WithBaseURL(srv.URL), WithHTTPClient(srv.Client()), WithTemperature(0))
+		} else {
+			c, err = New(WithBaseURL(srv.URL), WithHTTPClient(srv.Client()))
+		}
+		if err != nil {
+			t.Fatalf("new client: %v", err)
+		}
+		for ev := range c.StreamResponse(context.Background(), []core.Message{{Role: core.RoleUser, Text: "hi"}}, nil) {
+			if ev.Type == llm.EventError {
+				t.Fatalf("provider error: %v", ev.Err)
+			}
+		}
+
+		if wantField {
+			if !gotTempField {
+				t.Fatal("expected temperature field in payload")
+			}
+			if gotTemp != float64(0) {
+				t.Fatalf("temperature = %#v, want 0", gotTemp)
+			}
+		} else if gotTempField {
+			t.Fatalf("expected no temperature field, got %#v", gotTemp)
+		}
+	}
+
+	t.Run("pins zero when set", func(t *testing.T) { run(t, true, true) })
+	t.Run("omits when unset", func(t *testing.T) { run(t, false, false) })
+}
+
 func TestStreamResponseErrorsAfterPartialToolCallWithoutComplete(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")

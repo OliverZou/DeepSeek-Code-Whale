@@ -9,11 +9,9 @@ package team_engine
 // against 6 dimensions and returns a structured verdict: COMPLETE
 // (all OK, skip elaboration) or INCOMPLETE (gaps found + domain facts).
 type CompletenessVerdict struct {
-	Verdict        string          `json:"verdict"`                   // "COMPLETE" or "INCOMPLETE"
-	Dimensions     []DimensionGap  `json:"dimensions"`                // per-dimension status
-	DomainFacts    *DomainResearch `json:"domain_facts,omitempty"`    // filled when INCOMPLETE
-	Complexity     string          `json:"complexity,omitempty"`      // simple/medium/complex — size hint for decompose
-	EstimatedTasks int             `json:"estimated_tasks,omitempty"` // rough task-count estimate
+	Verdict     string          `json:"verdict"`                // "COMPLETE" or "INCOMPLETE"
+	Dimensions  []DimensionGap  `json:"dimensions"`             // per-dimension status
+	DomainFacts *DomainResearch `json:"domain_facts,omitempty"` // filled when INCOMPLETE
 }
 
 // DimensionGap describes the status of a single completeness dimension.

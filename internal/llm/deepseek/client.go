@@ -40,6 +40,7 @@ type Client struct {
 	reasoningEffort         string
 	thinkingEnabled         bool
 	maxTokens               int
+	temperature             *float64 // nil = omit (provider default); non-nil pins sampling temp
 	retryPolicy             llmretry.Policy
 	retrySleeper            llmretry.Sleeper
 	streamMaxAttempts       int
@@ -85,6 +86,10 @@ func WithThinking(enabled bool) Option {
 
 func WithMaxTokens(v int) Option {
 	return func(c *Client) { c.maxTokens = v }
+}
+
+func WithTemperature(v float64) Option {
+	return func(c *Client) { c.temperature = &v }
 }
 
 func WithPrefixCompletion(enabled bool) Option {
@@ -224,6 +229,9 @@ func (c *Client) stream(ctx context.Context, history []core.Message, tools []cor
 	if c.maxTokens > 0 {
 		payload["max_tokens"] = c.maxTokens
 	}
+	if c.temperature != nil {
+		payload["temperature"] = *c.temperature
+	}
 
 	body, err := json.Marshal(payload)
 	if err != nil {
@@ -270,6 +278,9 @@ func (c *Client) streamPrefix(ctx context.Context, history []core.Message, prefi
 	}
 	if c.maxTokens > 0 {
 		payload["max_tokens"] = c.maxTokens
+	}
+	if c.temperature != nil {
+		payload["temperature"] = *c.temperature
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {

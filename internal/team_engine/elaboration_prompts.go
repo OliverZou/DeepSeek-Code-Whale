@@ -29,8 +29,6 @@ func CheckAndResearchPrompt(rawGoal string) string {
 输出严格JSON（无其他文字）：
 {
   "verdict": "COMPLETE",
-  "complexity": "simple",
-  "estimated_tasks": 1,
   "dimensions": [
     {"name":"范围","status":"OK","detail":""},
     {"name":"接口","status":"OK","detail":""},
@@ -48,7 +46,6 @@ func CheckAndResearchPrompt(rawGoal string) string {
   }
 }
 注：verdict=COMPLETE时domain_facts全留空；INCOMPLETE时必须填充。
-complexity评估目标规模：simple(1个文件/单关注点，≤2任务)、medium(多关注点但独立，3-5任务)、complex(多模块/需形式化推理/重构，6+任务)。estimated_tasks给粗略任务数。
 
 目标：%s`, rawGoal)
 }

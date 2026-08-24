@@ -127,7 +127,6 @@ depends_on_batch 只用于「下游任务会修改/覆盖上游任务产出的�
 ]`, goal, sizeGuide)
 }
 
-
 // ---------------------------------------------------------------------------
 // Phase 0: Goal Elaboration
 //
@@ -169,13 +168,10 @@ func (p *Planner) ElaborateFull(rawGoal string, workdir string, timeout time.Dur
 		p.onLog()
 	}
 
-	// Complexity: prefer the flash model's estimate; fall back to lexical.
-	complexity := ""
-	if verdict != nil && verdict.Complexity != "" {
-		complexity = verdict.Complexity
-	} else {
-		complexity = lexicalComplexity(rawGoal)
-	}
+	// Complexity uses the deterministic lexical rule — the flash model's
+	// estimate is a non-deterministic sample that cascades into decompose's
+	// size guide and amplifies task-count variance across identical goals.
+	complexity := lexicalComplexity(rawGoal)
 
 	// If the check failed entirely (nil verdict), treat as incomplete
 	// and proceed to spec production with LLM's built-in domain knowledge.
