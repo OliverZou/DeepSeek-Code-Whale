@@ -631,6 +631,99 @@ func TestStatusReportsMissingWorktree(t *testing.T) {
 	}
 }
 
+func TestMerge(t *testing.T) {
+	repo := newGitRepo(t)
+	sess, err := Start(repo, "merge-basic")
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	write(t, filepath.Join(sess.Path, "feature.txt"), []byte("from worktree\n"))
+
+	if err := Merge(repo, "merge-basic"); err != nil {
+		t.Fatalf("Merge: %v", err)
+	}
+	if got := read(t, filepath.Join(repo, "feature.txt")); !strings.Contains(got, "from worktree") {
+		t.Fatalf("merged file = %q", got)
+	}
+	if got := strings.TrimSpace(gitOut(t, repo, "branch", "--list", "worktree-merge-basic")); got == "" {
+		t.Fatal("expected worktree branch to remain after merge")
+	}
+}
+
+func TestMergeNothingToCommit(t *testing.T) {
+	repo := newGitRepo(t)
+	if _, err := Start(repo, "merge-empty"); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if err := Merge(repo, "merge-empty"); err != nil {
+		t.Fatalf("Merge with no changes: %v", err)
+	}
+}
+
+func TestMergeConflict(t *testing.T) {
+	repo := newGitRepo(t)
+	write(t, filepath.Join(repo, "shared.txt"), []byte("base\n"))
+	run(t, repo, "git", "add", "shared.txt")
+	run(t, repo, "git", "commit", "-m", "add shared")
+
+	sess, err := Start(repo, "merge-conflict")
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	// main checkout diverges on the same file.
+	write(t, filepath.Join(repo, "shared.txt"), []byte("main change\n"))
+	run(t, repo, "git", "add", "shared.txt")
+	run(t, repo, "git", "commit", "-m", "main change")
+
+	// worktree diverges on the same file.
+	write(t, filepath.Join(sess.Path, "shared.txt"), []byte("worktree change\n"))
+
+	if err := Merge(repo, "merge-conflict"); err == nil {
+		t.Fatal("expected merge conflict")
+	}
+	// abort restored a clean main checkout.
+	if got := strings.TrimSpace(gitOut(t, repo, "status", "--porcelain")); got != "" {
+		t.Fatalf("main checkout should be clean after abort, status:\n%s", got)
+	}
+	// worktree still exists.
+	status, err := Status(repo, "merge-conflict")
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if status.Missing {
+		t.Fatal("expected worktree to remain after conflict")
+	}
+}
+
+func TestMergeThenRemove(t *testing.T) {
+	repo := newGitRepo(t)
+	sess, err := Start(repo, "merge-remove")
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	write(t, filepath.Join(sess.Path, "feature.txt"), []byte("from worktree\n"))
+
+	if err := Merge(repo, "merge-remove"); err != nil {
+		t.Fatalf("Merge: %v", err)
+	}
+	// after a successful merge the worktree is clean, so Remove without force works.
+	res, err := Remove(repo, "merge-remove", false)
+	if err != nil {
+		t.Fatalf("Remove after merge: %v", err)
+	}
+	if !res.BranchDeleted {
+		t.Fatalf("expected branch deleted after merge, got %+v", res)
+	}
+	status, err := Status(repo, "merge-remove")
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if !status.Missing {
+		t.Fatal("expected worktree removed after merge")
+	}
+}
+
 func newGitRepo(t *testing.T) string {
 	t.Helper()
 	if _, err := exec.LookPath("git"); err != nil {

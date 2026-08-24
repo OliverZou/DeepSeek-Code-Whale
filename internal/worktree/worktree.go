@@ -361,6 +361,42 @@ func Remove(cwd, name string, force bool) (RemoveResult, error) {
 	return res, nil
 }
 
+// Merge commits any uncommitted changes in the named worktree and merges its
+// branch back into the main checkout rooted at cwd. --no-ff keeps the merge
+// commit so the subagent's work stays traceable. On merge failure it aborts and
+// returns an error; the caller leaves the worktree in place for manual handling.
+// --no-verify skips untrusted hooks (see AGENTS.md).
+func Merge(cwd, name string) error {
+	repoRoot, err := CanonicalRepoRoot(cwd)
+	if err != nil {
+		return err
+	}
+	path := WorktreePath(repoRoot, name)
+	branch := BranchName(name)
+
+	// Commit any uncommitted work in the worktree so the merge carries real
+	// commits (not just a working-tree diff). A "nothing to commit" result means
+	// the subagent already committed its own work, so treat it as success.
+	if isGitWorktree(path) {
+		if err := runGit(path, "add", "-A"); err != nil {
+			return fmt.Errorf("stage worktree changes: %w", err)
+		}
+		commit := exec.Command("git", "commit", "-m", "subagent "+name, "--no-verify")
+		commit.Dir = path
+		out, commitErr := commit.CombinedOutput()
+		if commitErr != nil && !strings.Contains(string(out), "nothing to commit") {
+			return fmt.Errorf("commit worktree changes: %s", strings.TrimSpace(string(out)))
+		}
+	}
+
+	// Merge the branch into the main checkout.
+	if err := runGit(cwd, "merge", branch, "--no-ff", "--no-edit", "-m", "merge subagent "+name); err != nil {
+		_ = runGit(cwd, "merge", "--abort")
+		return fmt.Errorf("merge subagent %s into main checkout: %w", name, err)
+	}
+	return nil
+}
+
 func CanonicalRepoRoot(cwd string) (string, error) {
 	root, err := CheckoutRoot(cwd)
 	if err != nil {

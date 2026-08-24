@@ -2034,8 +2034,13 @@ func TestSpawnSubagentWorktreeIsolationUsesIsolatedWorkspace(t *testing.T) {
 	if toolWorkspace.WorktreeRoot == "" || toolWorkspace.WorkspaceRoot == workspaceRoot {
 		t.Fatalf("expected isolated workspace, got %+v", toolWorkspace)
 	}
-	if _, err := os.Stat(filepath.Join(toolWorkspace.WorkspaceRoot, "README.md")); err != nil {
-		t.Fatalf("isolated workspace missing checked-out file: %v", err)
+	// After a successful run the merge loop cleans up the isolated worktree;
+	// the main workspace keeps its original checkout.
+	if _, err := os.Stat(toolWorkspace.WorkspaceRoot); !os.IsNotExist(err) {
+		t.Fatalf("expected isolated worktree to be cleaned up after completion, stat err=%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(workspaceRoot, "README.md")); err != nil {
+		t.Fatalf("main workspace should keep its checked-out file: %v", err)
 	}
 	meta, err := session.LoadSessionMeta(dir, res.SessionID)
 	if err != nil {

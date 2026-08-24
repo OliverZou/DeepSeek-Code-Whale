@@ -293,6 +293,7 @@ func (r *Runner) SpawnSubagentWithProgress(ctx context.Context, req SpawnSubagen
 	promptHookExecutor := r.hookModelExecutor(model, cfg.Effort, "prompt")
 	agentHookExecutor := r.hookModelExecutor(model, cfg.Effort, "agent")
 	if hookBlock, err := runSubagentStartHooks(ctx, cfg.Hooks, sessionID, workspace.WorkspaceRoot, role, model, cfg.PermissionProfile, prompt, promptHookExecutor, agentHookExecutor); err != nil {
+		r.discardSubagentWorktree(workspace)
 		r.patchSubagentMeta(sessionID, session.SessionMeta{Status: "failed", Error: err.Error(), CompletedAt: time.Now().UTC()})
 		return SpawnSubagentResponse{}, &SpawnSubagentError{SessionID: sessionID, Code: "subagent_start_hook_blocked", Message: err.Error(), Err: err}
 	} else if hookBlock != "" {
@@ -341,6 +342,7 @@ func (r *Runner) SpawnSubagentWithProgress(ctx context.Context, req SpawnSubagen
 			PrefixCompletion: cfg.Generation.PrefixCompletion,
 		})
 		if err != nil {
+			r.discardSubagentWorktree(workspace)
 			r.patchSubagentMeta(sessionID, session.SessionMeta{Status: "failed", Error: err.Error(), CompletedAt: time.Now().UTC()})
 			return SpawnSubagentResponse{}, &SpawnSubagentError{SessionID: sessionID, Code: "spawn_subagent_failed", Message: err.Error(), Err: err}
 		}
@@ -353,6 +355,7 @@ func (r *Runner) SpawnSubagentWithProgress(ctx context.Context, req SpawnSubagen
 		progressCount := 0
 		var progressMessages []core.SubagentStep
 		fail := func(code string, err error) (SpawnSubagentResponse, error) {
+			r.discardSubagentWorktree(workspace)
 			msg := "subagent failed"
 			if code == "cancelled" {
 				msg = "turn cancelled"
@@ -516,6 +519,7 @@ func (r *Runner) SpawnSubagentWithProgress(ctx context.Context, req SpawnSubagen
 					msg = "subagent did not submit valid structured output: " + lastErr
 				}
 				err := errors.New(msg)
+				r.discardSubagentWorktree(workspace)
 				r.patchSubagentMeta(sessionID, session.SessionMeta{Status: "failed", Error: err.Error(), CompletedAt: completedAt})
 				return SpawnSubagentResponse{}, &SpawnSubagentError{SessionID: sessionID, Code: code, Message: err.Error(), Err: err}
 			}
@@ -529,10 +533,18 @@ func (r *Runner) SpawnSubagentWithProgress(ctx context.Context, req SpawnSubagen
 		}
 		summary := subagentSummaryLine(report)
 		if err := runSubagentStopHooks(runCtx, cfg.Hooks, sessionID, workspace.WorkspaceRoot, role, model, cfg.PermissionProfile, report, promptHookExecutor, agentHookExecutor); err != nil {
+			r.discardSubagentWorktree(workspace)
 			r.patchSubagentMeta(sessionID, session.SessionMeta{Status: "failed", Error: err.Error(), CompletedAt: completedAt})
 			return SpawnSubagentResponse{}, &SpawnSubagentError{SessionID: sessionID, Code: "subagent_stop_hook_failed", Message: err.Error(), Err: err}
 		}
 		r.patchSubagentMeta(sessionID, session.SessionMeta{Status: "completed", Report: report, Summary: summary, CompletedAt: completedAt})
+		if workspace.WorktreeRoot != "" {
+			if err := worktree.Merge(workspace.OriginalWorkspace, workspace.WorktreeName); err == nil {
+				_, _ = worktree.Remove(workspace.OriginalWorkspace, workspace.WorktreeName, false)
+			} else {
+				r.patchSubagentMeta(sessionID, session.SessionMeta{Error: "worktree merge failed, kept for manual handling: " + err.Error()})
+			}
+		}
 		return SpawnSubagentResponse{
 			SessionID:         sessionID,
 			Role:              role,
@@ -687,6 +699,16 @@ func (r *Runner) resolveSubagentWorkspace(cfg AgentRuntimeConfig, sessionID, rol
 	workspace.OriginalBranch = sess.OriginalBranch
 	workspace.OriginalHeadCommit = sess.OriginalHeadCommit
 	return workspace, nil
+}
+
+// discardSubagentWorktree removes a failed/cancelled subagent's isolated
+// worktree and branch, discarding its partial changes. Best-effort: cleanup
+// failure never blocks the subagent result.
+func (r *Runner) discardSubagentWorktree(ws ToolWorkspace) {
+	if ws.WorktreeRoot == "" || ws.WorktreeName == "" {
+		return
+	}
+	_, _ = worktree.Remove(ws.OriginalWorkspace, ws.WorktreeName, true)
 }
 
 func (r *Runner) toolsForWorkspace(workspace ToolWorkspace) (*core.ToolRegistry, error) {
