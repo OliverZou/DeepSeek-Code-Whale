@@ -11,9 +11,12 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/usewhale/whale/internal/app"
 	"github.com/usewhale/whale/internal/core"
+	"github.com/usewhale/whale/internal/defaults"
 	"github.com/usewhale/whale/internal/llm"
 	"github.com/usewhale/whale/internal/llm/deepseek"
+	"github.com/usewhale/whale/internal/tasks"
 	"github.com/usewhale/whale/internal/team_engine"
 	teampglog "github.com/usewhale/whale/internal/team_engine/log"
 	whaleworktree "github.com/usewhale/whale/internal/worktree"
@@ -67,7 +70,7 @@ Subcommands:
 				return fmt.Errorf("--title and --description are required")
 			}
 
-			eng, err := newTeamEngine(dbPath, whiteboardDir, configPath)
+			eng, err := newTeamEngine(dbPath, whiteboardDir, configPath, workdir)
 			if err != nil {
 				return fmt.Errorf("init engine: %w", err)
 			}
@@ -103,7 +106,7 @@ Subcommands:
 		Short: "Run a task through the full produce→verify→done lifecycle",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			eng, err := newTeamEngine(dbPath, whiteboardDir, configPath)
+			eng, err := newTeamEngine(dbPath, whiteboardDir, configPath, workdir)
 			if err != nil {
 				return fmt.Errorf("init engine: %w", err)
 			}
@@ -158,7 +161,7 @@ Subcommands:
 			if goal == "" {
 				return fmt.Errorf("--goal is required")
 			}
-			eng, err := newTeamEngine(dbPath, whiteboardDir, configPath)
+			eng, err := newTeamEngine(dbPath, whiteboardDir, configPath, workdir)
 			if err != nil {
 				return fmt.Errorf("init engine: %w", err)
 			}
@@ -207,7 +210,7 @@ Subcommands:
 				return fmt.Errorf("--goal is required")
 			}
 
-			eng, err := newTeamEngine(dbPath, whiteboardDir, configPath)
+			eng, err := newTeamEngine(dbPath, whiteboardDir, configPath, workdir)
 			if err != nil {
 				return fmt.Errorf("init engine: %w", err)
 			}
@@ -350,7 +353,7 @@ Subcommands:
 		Short: "Show task status (all tasks, or one task by ID)",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			eng, err := newTeamEngine(dbPath, whiteboardDir, configPath)
+			eng, err := newTeamEngine(dbPath, whiteboardDir, configPath, workdir)
 			if err != nil {
 				return fmt.Errorf("init engine: %w", err)
 			}
@@ -405,7 +408,7 @@ Subcommands:
 		Short: "Cancel a running task",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			eng, err := newTeamEngine(dbPath, whiteboardDir, configPath)
+			eng, err := newTeamEngine(dbPath, whiteboardDir, configPath, workdir)
 			if err != nil {
 				return fmt.Errorf("init engine: %w", err)
 			}
@@ -425,7 +428,7 @@ Subcommands:
 		Short: "Send human feedback to a task",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			eng, err := newTeamEngine(dbPath, whiteboardDir, configPath)
+			eng, err := newTeamEngine(dbPath, whiteboardDir, configPath, workdir)
 			if err != nil {
 				return fmt.Errorf("init engine: %w", err)
 			}
@@ -446,7 +449,7 @@ Subcommands:
 		Long:  `Resolve a pending escalation for a batch. Valid decisions: continue, retry, abort, modify.`,
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			eng, err := newTeamEngine(dbPath, whiteboardDir, configPath)
+			eng, err := newTeamEngine(dbPath, whiteboardDir, configPath, workdir)
 			if err != nil {
 				return fmt.Errorf("init engine: %w", err)
 			}
@@ -474,7 +477,7 @@ Subcommands:
 		Use:   "escalation",
 		Short: "List pending escalations",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			eng, err := newTeamEngine(dbPath, whiteboardDir, configPath)
+			eng, err := newTeamEngine(dbPath, whiteboardDir, configPath, workdir)
 			if err != nil {
 				return fmt.Errorf("init engine: %w", err)
 			}
@@ -508,7 +511,7 @@ Subcommands:
 		Short: "Show state transition history for a task",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			eng, err := newTeamEngine(dbPath, whiteboardDir, configPath)
+			eng, err := newTeamEngine(dbPath, whiteboardDir, configPath, workdir)
 			if err != nil {
 				return fmt.Errorf("init engine: %w", err)
 			}
@@ -544,7 +547,7 @@ Subcommands:
 		Short: "Export full task session log as JSON",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			eng, err := newTeamEngine(dbPath, whiteboardDir, configPath)
+			eng, err := newTeamEngine(dbPath, whiteboardDir, configPath, workdir)
 			if err != nil {
 				return fmt.Errorf("init engine: %w", err)
 			}
@@ -583,7 +586,7 @@ timeline, output, verifier result, artifacts, and inbox messages.
 Use --json for machine-readable output.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			eng, err := newTeamEngine(dbPath, whiteboardDir, configPath)
+			eng, err := newTeamEngine(dbPath, whiteboardDir, configPath, workdir)
 			if err != nil {
 				return fmt.Errorf("init engine: %w", err)
 			}
@@ -779,9 +782,43 @@ func loadDeepSeekAPIKey() string {
 	return strings.TrimSpace(creds.DeepSeekAPIKey)
 }
 
+// ensureTeamEngineSpawnFunc wires the native subagent adapter via
+// SetDefaultSpawnFunc for the standalone `whale team` CLI. The app runtime
+// normally wires this adapter itself; the CLI has no app runtime, so without
+// this call workers/verifiers would fall back to the shell spawner and drop
+// their AgentName (agent definition persona/tools/permission mode). It is a
+// no-op when no API key is configured, leaving the shell spawner as fallback.
+func ensureTeamEngineSpawnFunc(workdir string) {
+	apiKey := loadDeepSeekAPIKey()
+	if apiKey == "" {
+		return
+	}
+	providerFactory := func(model string, maxTokens int) (llm.Provider, error) {
+		if strings.TrimSpace(model) == "" {
+			model = defaults.DefaultModel
+		}
+		opts := []deepseek.Option{
+			deepseek.WithAPIKey(apiKey),
+			deepseek.WithModel(model),
+		}
+		if maxTokens > 0 {
+			opts = append(opts, deepseek.WithMaxTokens(maxTokens))
+		}
+		return deepseek.New(opts...)
+	}
+	library := tasks.NewAgentDefinitionLibrary(workdir)
+	runner := tasks.NewRunner(tasks.RunnerConfig{
+		ProviderFactory:  providerFactory,
+		AgentDefinitions: library,
+		WorkspaceRoot:    workdir,
+		DefaultModel:     defaults.DefaultModel,
+	})
+	team_engine.SetDefaultSpawnFunc(app.NewTeamEngineSpawnFunc(runner, library))
+}
+
 // newTeamEngine creates a TeamEngine with a default shell-based spawner.
 // The spawner calls the Whale CLI (via `whale exec`) for subagent execution.
-func newTeamEngine(dbPath, whiteboardDir, configPath string) (*team_engine.TeamEngine, error) {
+func newTeamEngine(dbPath, whiteboardDir, configPath, workdir string) (*team_engine.TeamEngine, error) {
 	// Resolve paths.
 	if !filepath.IsAbs(dbPath) {
 		cwd, _ := os.Getwd()
@@ -796,8 +833,25 @@ func newTeamEngine(dbPath, whiteboardDir, configPath string) (*team_engine.TeamE
 		configPath = filepath.Join(cwd, configPath)
 	}
 
-	// Create a SubagentSpawner that calls the Whale CLI.
-	spawner := team_engine.NewShellSubagentSpawner()
+	// The `whale team` CLI is a standalone entry point: no app runtime has
+	// called SetDefaultSpawnFunc, so wire the native subagent adapter here.
+	// This restores AgentName resolution (agent definition persona/tools/
+	// permission) for workers and verifiers instead of degrading to the shell
+	// spawner's bare "[Role: ...]" text.
+	if team_engine.DefaultSpawnFunc() == nil {
+		ensureTeamEngineSpawnFunc(workdir)
+	}
+
+	// Prefer the native subagent adapter; fall back to the shell spawner when
+	// no adapter could be wired (e.g. no API key configured).
+	var spawner team_engine.SubagentSpawner
+	if fn := team_engine.DefaultSpawnFunc(); fn != nil {
+		spawner = team_engine.NewFuncSpawner(fn)
+		team_engine.LogSpawnerType("default", "adapter", "", 0)
+	} else {
+		spawner = team_engine.NewShellSubagentSpawner()
+		team_engine.LogSpawnerType("default", "shell", "", 0)
+	}
 
 	// Wire the team engine logger so team_engine.log lands on disk — the CLI
 	// `team execute` path otherwise leaves it empty. SetLogger closes any

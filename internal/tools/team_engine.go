@@ -40,9 +40,16 @@ func (b *Toolset) teamEnginePaths() (dbPath, wbDir string) {
 
 func (b *Toolset) newTeamEngine() (*team_engine.TeamEngine, error) {
 	dbPath, wbDir := b.teamEnginePaths()
-	// Shell spawner by default — independent OS processes.
-	spawner := team_engine.NewShellSubagentSpawner()
-	team_engine.LogSpawnerType("default", "shell", "", 0)
+	// Prefer the native subagent adapter wired by the app runtime via
+	// SetDefaultSpawnFunc; fall back to the shell spawner in standalone
+	// contexts that have no app runtime.
+	var spawner team_engine.SubagentSpawner = team_engine.NewShellSubagentSpawner()
+	if fn := team_engine.DefaultSpawnFunc(); fn != nil {
+		spawner = team_engine.NewFuncSpawner(fn)
+		team_engine.LogSpawnerType("default", "adapter", "", 0)
+	} else {
+		team_engine.LogSpawnerType("default", "shell", "", 0)
+	}
 	return team_engine.New(dbPath, wbDir, "", spawner)
 }
 

@@ -135,3 +135,12 @@ func stripWorkbuddySections(prompt string) string {
 	}
 	return prompt
 }
+
+// NewTeamEngineSpawnFunc exposes the team-engine subagent adapter for callers
+// outside the app package (e.g. the `whale team` CLI command) that construct
+// their own tasks.Runner and AgentDefinitionLibrary. It returns the same
+// SpawnFunc that app_runtime_init wires as the package default, so team engine
+// instances built by other entry points get identical AgentName resolution.
+func NewTeamEngineSpawnFunc(runner *tasks.Runner, library *tasks.AgentDefinitionLibrary) team_engine.SpawnFunc {
+	return teamEngineSpawnAdapter(runner, library)
+}
