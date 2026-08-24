@@ -130,6 +130,40 @@ func TestRunTaskRetryExhaustedSuspends(t *testing.T) {
 	}
 }
 
+func TestRunTaskVerificationTaskFailSuspendsImmediately(t *testing.T) {
+	// 集成验证任务 FAIL 后不得重试同一 worker：验证者只报告缺陷不修复代码，
+	// 重试只会重复发现同一缺陷（空转）。应立即挂起，保留验证报告。
+	spawner := &mockSpawner{
+		roleOutputs: map[string]string{
+			"worker":   "集成验证报告：发现 4 个 DOM 契约缺陷",
+			"verifier": failVerdict,
+		},
+	}
+	eng := newRunTaskEngine(t, spawner)
+	defer eng.Close()
+
+	task, err := eng.CreateTask("集成验证与端到端验收", "对最终产物做端到端验收", RoleTester, "", nil, 3, ".", "", "", "")
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+
+	ok, err := eng.RunTask(context.Background(), task.ID)
+	if err != nil {
+		t.Fatalf("run task: %v", err)
+	}
+	if ok {
+		t.Fatalf("expected verification task to suspend, got ok=true")
+	}
+
+	got, _ := eng.Store.GetTask(task.ID)
+	if got.State != TaskStateSuspended {
+		t.Fatalf("expected suspended, got %s", got.State)
+	}
+	if got.RetryCount != 0 {
+		t.Fatalf("expected no retry (0), got %d", got.RetryCount)
+	}
+}
+
 func TestRunTaskWorktreeMergeCleanup(t *testing.T) {
 	repo := initGitRepo(t)
 	spawner := &mockSpawner{

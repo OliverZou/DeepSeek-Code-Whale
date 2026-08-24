@@ -939,6 +939,23 @@ func isTestTask(t *Task) bool {
 	return strings.Contains(role, "qa") || strings.Contains(role, "test")
 }
 
+// verificationTitleMarkers 匹配 planner 约定的「集成验证/端到端验收」任务标题
+// （见 DecomposePrompt「跨任务引用闭环与集成验证」段）。
+var verificationTitleMarkers = []string{"集成验证", "端到端验收", "集成验收"}
+
+// isVerificationTask 判断任务是否为「纯验证/验收」任务——其产出是对上游产物的
+// 验证结论（报告），而非可被重做修改的实现。这类任务 FAIL 后重试同一 worker
+// 无意义（验证者不修复被验证对象，只会重复发现同一缺陷），应直接挂起避免空转。
+func isVerificationTask(t *Task) bool {
+	title := strings.ToLower(t.Title)
+	for _, m := range verificationTitleMarkers {
+		if strings.Contains(title, m) {
+			return true
+		}
+	}
+	return false
+}
+
 // decomposeTaskIntoLeaves 把一个（可能超重的）任务描述重新分解为叶子任务。
 // 复用 Leader.Decompose：把任务描述当作新 goal 再走一次分解。
 func (e *TeamEngine) decomposeTaskIntoLeaves(desc, workdir string, timeout time.Duration, model string) ([]PlanTask, error) {

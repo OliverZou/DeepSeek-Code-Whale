@@ -646,6 +646,19 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 			return false, fmt.Errorf("task %q disappeared", taskID)
 		}
 
+		// 纯验证/验收任务的 FAIL 是「被验证对象有缺陷」的有效结论，不是本任务
+		// 交付物本身的问题。重试同一验证 worker 只会重复发现同一缺陷（验证者不
+		// 修复代码），空转浪费 token。直接挂起，保留验证报告与缺陷清单，交
+		// Leader/用户决策修复。
+		if isVerificationTask(task) {
+			if err := e.Store.TransitionState(taskID, TaskStateSuspended, "verification task reported defects — needs upstream fix", feedback); err != nil {
+				e.mu.Unlock()
+				return false, fmt.Errorf("transition to suspended: %w", err)
+			}
+			e.mu.Unlock()
+			return false, nil
+		}
+
 		// Build retry state in local variables — never write the shared *Task
 		// pointer outside the store lock (UpdateTask owns those writes under
 		// fs.mu). prevFeedback captures the previous round's feedback before it
