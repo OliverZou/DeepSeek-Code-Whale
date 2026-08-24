@@ -53,13 +53,19 @@ func teamEngineSpawnAdapter(runner *tasks.Runner, library *tasks.AgentDefinition
 			if def, ok, err := lib.Resolve(req.AgentName); err == nil && ok {
 				tasksReq.Agent = def
 				team_engine.Log("adapter", "resolve agent=%q ok tools=%d promptLen=%d", req.AgentName, len(def.Tools), len(def.Prompt))
-				// Prepend the agent's system prompt to the task so the
-				// subagent inherits the expert's behavioral instructions.
+				// The persona is capability context, not the task. Inject it as
+				// the agent's system prompt (via Agent.Prompt, which the runner
+				// renders as its "Agent system prompt" block) — NOT prepended to
+				// the user task. Prepending it to the task put the persona at the
+				// same level as (and ahead of) the task instruction, so a QA
+				// persona's "write tests" SOP overrode the verifier's "do NOT
+				// author a new test suite", and every token was billed twice
+				// (system + user).
 				if def.Prompt != "" {
 					// Strip "团队协作" section — WorkBuddy
 					// SendMessage/shutdown protocols conflict with
 					// Team Engine stdout-capture mode.
-					tasksReq.Task = stripWorkbuddySections(def.Prompt) + "\n\n---\n\n" + tasksReq.Task
+					tasksReq.Agent.Prompt = stripWorkbuddySections(def.Prompt)
 				}
 			} else {
 				team_engine.Log("adapter", "resolve agent=%q MISSING err=%v", req.AgentName, err)
