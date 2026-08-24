@@ -114,28 +114,21 @@ VERIFICATION METHOD (follow this order — do NOT author a new test suite):
 1. The worker's own automated tests (go test / node --test / npm test) were
    already run by an objective gate. Do NOT write a fresh test suite from
    scratch — it is slow and its expectations are often wrong.
-2. Do a SEMANTIC review: read the deliverable files and check they match the
-   TASK requirements. Look for completeness, correctness, and obvious bugs.
-3. If the task needs a runnable check you can reproduce quickly (e.g. a build
-   or an existing test), run it via shell tools — but do not invent new tests.
-4. Only report issues you can prove with file contents or tool output.
+2. Read the deliverable files and check they match the TASK requirements.
+   Look for completeness, correctness, and obvious bugs.
+3. Only report issues you can prove with file contents or tool output.
 
 OUTPUT FORMAT (REQUIRED):
-TOOLS USED: [list every tool you ran, with 1-line result]
 VERDICT: PASS | FAIL | RETRY
-EVIDENCE: [what your tools proved]
 ISSUES:
 - [specific issues, or "none" if PASS]
 
-## FINDINGS (structured JSON — MUST match your ISSUES list)
+## FINDINGS (structured JSON — only issues that justify FAIL/RETRY)
 ---json
 [
   {"id": "unique", "title": "one-line summary", "severity": "critical|major|minor", "evidence": "tool output"}
 ]
 ---
-
-CRITICAL: If you reported issues above, the FINDINGS JSON array MUST contain
-those issues. An empty [] array means "no issues" and the task will auto-pass.
 `)
 
 	v.LastPrompt = b.String()
@@ -191,14 +184,15 @@ func (v *Verifier) Verify(task *Task) (passed bool, retry bool, feedback string,
 
 func (v *Verifier) isLazyVerdict(output string) bool {
 	trimmed := strings.TrimSpace(output)
-	if len(trimmed) < 100 {
+	if len(trimmed) == 0 {
 		return true
 	}
-	upper := strings.ToUpper(trimmed)
-	if !strings.Contains(upper, "TOOLS USED:") {
-		return true
-	}
-	re := regexp.MustCompile(`TOOLS USED:.*(read_file|list_dir|shell_run|grep|search_files|web_search|web_fetch|fetch)`)
+	// A bare PASS/FAIL with no evidence of having inspected the deliverable is
+	// lazy. Accept any tool name or a concrete file reference as evidence.
+	// No longer require the "TOOLS USED:" label or a minimum length — a short
+	// but tool-backed verdict is legitimate, and the label itself was forcing
+	// verifiers to pad their reports.
+	re := regexp.MustCompile(`(?i)(read_file|list_dir|shell_run|grep|search_files|web_search|web_fetch|fetch|\b[a-zA-Z0-9_./-]+\.(go|js|css|html|py|rs|ts|tsx|java|json|md)\b)`)
 	if !re.MatchString(trimmed) {
 		return true
 	}

@@ -747,6 +747,13 @@ func outDeliverables(outDir, workdir string) (count int, touches bool, err error
 			return err
 		}
 		if info.IsDir() {
+			// .whale is whale's own metadata/log dir (written by `whale exec` in
+			// the sandbox), not a worker deliverable. Its relative path overlaps the
+			// master engine's log under the workspace, so counting it as a touch
+			// would misclassify every pure-new deliverable as high regression risk.
+			if info.Name() == ".whale" {
+				return filepath.SkipDir
+			}
 			return nil
 		}
 		count++

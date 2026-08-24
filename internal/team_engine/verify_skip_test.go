@@ -59,6 +59,41 @@ func TestOutDeliverables(t *testing.T) {
 			t.Fatal("expected no touches for empty out")
 		}
 	})
+
+	t.Run("ignores .whale metadata", func(t *testing.T) {
+		outDir := t.TempDir()
+		workdir := t.TempDir()
+		// whale exec writes its own engine log into out/.whale; the master engine
+		// writes the same relative path under the workspace. This path overlap must
+		// not be treated as a regression touch — .whale is tool metadata, not a
+		// deliverable.
+		metaRel := filepath.Join(".whale", "team_tasks", "logs", "team_engine.log")
+		if err := os.MkdirAll(filepath.Dir(filepath.Join(workdir, metaRel)), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(workdir, metaRel), []byte("master log"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(filepath.Dir(filepath.Join(outDir, metaRel)), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(outDir, metaRel), []byte(""), 0644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(outDir, "game.js"), []byte("// x"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		count, touches, err := outDeliverables(outDir, workdir)
+		if err != nil {
+			t.Fatalf("outDeliverables: %v", err)
+		}
+		if count != 1 {
+			t.Fatalf("expected 1 deliverable (excluding .whale), got %d", count)
+		}
+		if touches {
+			t.Fatal("expected .whale metadata to be ignored, not counted as a touch")
+		}
+	})
 }
 
 func TestShouldSkipVerifier(t *testing.T) {
