@@ -20,7 +20,24 @@ import (
 var defaultTeamLog *teampglog.TeamLog
 
 // SetLogger replaces the engine logger.  Pass nil to disable.
-func SetLogger(tl *teampglog.TeamLog) { defaultTeamLog = tl }
+func SetLogger(tl *teampglog.TeamLog) {
+	if defaultTeamLog != nil {
+		_ = defaultTeamLog.Close()
+	}
+	defaultTeamLog = tl
+}
+
+// CloseLogger closes and clears the engine logger.  Call it when the owning
+// app/process is shutting down so the open team_engine.log file handle is
+// released — Windows locks open files, so tests that build an App inside a
+// temp dir must close it or t.TempDir cleanup fails.
+func CloseLogger() {
+	if defaultTeamLog != nil {
+		_ = defaultTeamLog.Close()
+		defaultTeamLog = nil
+	}
+}
+
 
 // Log writes a diagnostic entry.  Safe when no logger is set.
 func Log(cat, format string, args ...interface{}) {

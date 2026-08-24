@@ -15,6 +15,7 @@ import (
 	"github.com/usewhale/whale/internal/llm"
 	"github.com/usewhale/whale/internal/llm/deepseek"
 	"github.com/usewhale/whale/internal/team_engine"
+	teampglog "github.com/usewhale/whale/internal/team_engine/log"
 	whaleworktree "github.com/usewhale/whale/internal/worktree"
 )
 
@@ -797,6 +798,14 @@ func newTeamEngine(dbPath, whiteboardDir, configPath string) (*team_engine.TeamE
 
 	// Create a SubagentSpawner that calls the Whale CLI.
 	spawner := team_engine.NewShellSubagentSpawner()
+
+	// Wire the team engine logger so team_engine.log lands on disk — the CLI
+	// `team execute` path otherwise leaves it empty. SetLogger closes any
+	// previous logger's file handle first, so repeated engine construction
+	// (as in tests) does not leak the open file.
+	if cwd, err := os.Getwd(); err == nil {
+		team_engine.SetLogger(teampglog.NewTeamLog(cwd))
+	}
 
 	return team_engine.New(dbPath, whiteboardDir, configPath, spawner)
 }

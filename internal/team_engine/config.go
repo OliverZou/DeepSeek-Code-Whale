@@ -32,7 +32,7 @@ type RoutingConfig struct {
 	KeywordRules         []KeywordRule        `yaml:"keyword_rules"`
 	VerifierTools        string               `yaml:"verifier_tools"`
 	DefaultProfile       string               `yaml:"default_profile"`
-	VerifierTimeoutSec   int                  `yaml:"verifier_timeout_sec"`   // 0 = default 300
+	VerifierTimeoutSec   int                  `yaml:"verifier_timeout_sec"`   // 0 = default 900
 	DecomposerTimeoutSec int                  `yaml:"decomposer_timeout_sec"` // 0 = default 180
 }
 
@@ -59,7 +59,7 @@ var Defaults = Config{
 			"synthesizer": {Profile: "read_only", Timeout: 1200, Model: "deepseek-v4-flash"}, // 20 min — merging results
 		},
 		VerifierTools:        "verify",
-		VerifierTimeoutSec:   300, // 5 min — verification is lightweight
+		VerifierTimeoutSec:   900, // 15 min — verifier runs worker tests + semantic review
 		DecomposerTimeoutSec: 300, // 5 min — plan decomposition (v4-pro needs ~90s, v4-flash ~30s)
 	},
 	Batch: BatchConfig{

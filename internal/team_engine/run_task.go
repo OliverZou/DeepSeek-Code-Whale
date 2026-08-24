@@ -441,6 +441,20 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 		}
 		e.mu.Unlock()
 
+		// 客观门（机械）：worker 交付的自动化测试先机械跑一遍。失败则跳过
+		// LLM 验证器直接重试，省掉 300s+ 的验证器开销（验证器超时被杀是复测
+		// 假 FAIL 的主因）。未检测到测试则跳过，交给 LLM 语义审查。
+		if !task.UseDW {
+			if ok, detail := runMechanicalVerify(verifyWorkdir); !ok {
+				passed = false
+				feedback = "交付物的自动化测试未通过（客观门）：\n" + detail
+				if e.Loggers != nil {
+					e.Loggers.Engine("task %s MECHANICAL GATE FAIL (skip LLM verifier)", taskID[:8])
+				}
+				goto verifyFailed
+			}
+		}
+
 		if task.UseDW {
 			// Dynamic Workflow mode: N verifiers in parallel + Synthesizer.
 			passed, _, feedback = e.runDWVerification(task)
@@ -508,6 +522,9 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 					if feedback == "" {
 						feedback = resp.Output
 					}
+					// Session died (timeout/crash) — drop it so the next retry
+					// spawns a fresh verifier session instead of reusing a dead one.
+					e.closePersistentSession(vKey)
 				}
 			} else {
 				// Fallback: normal spawn via Runner.
@@ -601,6 +618,7 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 			// passed=false after mechanical verification: fall through to retry.
 		}
 
+	verifyFailed:
 		// Verification failed — prepare retry.
 		e.mu.Lock()
 		task, err = e.Store.GetTask(taskID)
@@ -722,8 +740,11 @@ func detectTestCommand(workdir string) (name string, args []string) {
 		return "go", []string{"test", "./..."}
 	}
 	// Node 测试文件（test/ 目录或根目录 *.test.js）。
+	// 注意：必须用无参数的 `node --test`，让 Node 自动发现 test/ 与 *.test.js。
+	// 传目录名（如 `node --test test`）会被 Node 26 当作模块路径去 require，
+	// 报 MODULE_NOT_FOUND，导致客观门误判交付物失败。
 	if matches, _ := filepath.Glob(filepath.Join(workdir, "test", "*.test.js")); len(matches) > 0 {
-		return "node", []string{"--test", "test"}
+		return "node", []string{"--test"}
 	}
 	if matches, _ := filepath.Glob(filepath.Join(workdir, "*.test.js")); len(matches) > 0 {
 		return "node", []string{"--test"}

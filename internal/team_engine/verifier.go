@@ -110,6 +110,16 @@ explore — look for recently created/modified files.
 
 	b.WriteString(`
 
+VERIFICATION METHOD (follow this order — do NOT author a new test suite):
+1. The worker's own automated tests (go test / node --test / npm test) were
+   already run by an objective gate. Do NOT write a fresh test suite from
+   scratch — it is slow and its expectations are often wrong.
+2. Do a SEMANTIC review: read the deliverable files and check they match the
+   TASK requirements. Look for completeness, correctness, and obvious bugs.
+3. If the task needs a runnable check you can reproduce quickly (e.g. a build
+   or an existing test), run it via shell tools — but do not invent new tests.
+4. Only report issues you can prove with file contents or tool output.
+
 OUTPUT FORMAT (REQUIRED):
 TOOLS USED: [list every tool you ran, with 1-line result]
 VERDICT: PASS | FAIL | RETRY

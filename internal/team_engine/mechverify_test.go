@@ -22,8 +22,8 @@ func TestDetectTestCommand(t *testing.T) {
 		os.MkdirAll(filepath.Join(dir, "test"), 0755)
 		os.WriteFile(filepath.Join(dir, "test", "game.test.js"), []byte("// x"), 0644)
 		name, args := detectTestCommand(dir)
-		if name != "node" || len(args) != 2 || args[0] != "--test" || args[1] != "test" {
-			t.Fatalf("got %q %v, want node --test test", name, args)
+		if name != "node" || len(args) != 1 || args[0] != "--test" {
+			t.Fatalf("got %q %v, want node --test", name, args)
 		}
 	})
 

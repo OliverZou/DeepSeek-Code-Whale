@@ -7,6 +7,7 @@ import (
 	"github.com/usewhale/whale/internal/defaults"
 	"github.com/usewhale/whale/internal/policy"
 	"github.com/usewhale/whale/internal/session"
+	"github.com/usewhale/whale/internal/team_engine"
 	"strings"
 )
 
@@ -164,6 +165,10 @@ func (a *App) Close() error {
 		return nil
 	}
 	a.resetAgent()
+	// Release the team_engine.log file handle (Windows locks open files, so
+	// tests that build an App inside a temp dir must close it or t.TempDir
+	// cleanup fails). Best-effort; logging is not an error path.
+	team_engine.CloseLogger()
 	var errs []string
 	if a.lspManager != nil {
 		if err := a.lspManager.Close(); err != nil {

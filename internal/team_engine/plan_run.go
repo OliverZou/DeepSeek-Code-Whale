@@ -268,6 +268,7 @@ func (e *TeamEngine) PlanAndRun(ctx context.Context, goal, workdir, masterTaskID
 			// Normal execution with Leader review cycle.
 			var prevFindings *CycleFindingsSet
 			dryCount := 0
+			batchStart := time.Now()
 
 		batchCycleLoop:
 			for cycle := 0; cycle < cycleLimit; cycle++ {
@@ -275,6 +276,7 @@ func (e *TeamEngine) PlanAndRun(ctx context.Context, goal, workdir, masterTaskID
 
 				// Execute all tasks in this batch (parallel if concurrency > 0).
 				if err := e.RunBatch(execCtx, batch); err != nil {
+					BatchDone(batch.ID, string(batch.Status), time.Since(batchStart).Seconds())
 					e.saveCheckpoint(masterTaskID, completedBatches, passedBatches, completedBatchOutputs, batches)
 					return batches, fmt.Errorf("run batch %s cycle %d: %w", batch.ID, cycle, err)
 				}
@@ -308,6 +310,7 @@ func (e *TeamEngine) PlanAndRun(ctx context.Context, goal, workdir, masterTaskID
 						}
 						completedBatchOutputs[batch.ID] = e.collectBatchOutputs(batch)
 						e.saveCheckpoint(masterTaskID, completedBatches, passedBatches, completedBatchOutputs, batches)
+						BatchDone(batch.ID, string(batch.Status), time.Since(batchStart).Seconds())
 						break batchCycleLoop
 					}
 				} else {
@@ -381,6 +384,7 @@ func (e *TeamEngine) PlanAndRun(ctx context.Context, goal, workdir, masterTaskID
 				passedBatches[batch.ID] = true
 				batch.Status = BatchStatusPassed
 				completedBatchOutputs[batch.ID] = e.collectBatchOutputs(batch)
+				BatchDone(batch.ID, string(batch.Status), time.Since(batchStart).Seconds())
 				break batchCycleLoop
 			}
 		}
@@ -532,6 +536,10 @@ func (e *TeamEngine) runDWCycle(
 ) {
 	var prevFindings *CycleFindingsSet
 	dryCount := 0
+	batchStart := time.Now()
+	defer func() {
+		BatchDone(batch.ID, string(batch.Status), time.Since(batchStart).Seconds())
+	}()
 
 	for cycle := 0; cycle < cycleLimit; cycle++ {
 		batch.CycleCount = cycle + 1
@@ -732,11 +740,6 @@ func (e *TeamEngine) RunBatch(ctx context.Context, batch *Batch) error {
 	// Estimate batch cost: worker + verifier tokens per task × rounds.
 	for _, t := range batch.Tasks {
 		batch.TotalTokens += (t.RetryCount + 1) * 10000 // ~10K tokens per worker+verifier round
-	}
-	// Batch status is determined by Leader review in the cycle loop above;
-	// RunBatch only reports whether all tasks ran without errors.
-	if defaultTeamLog != nil {
-		defaultTeamLog.BatchDone(batch.ID, string(batch.Status), 0)
 	}
 	return nil
 }

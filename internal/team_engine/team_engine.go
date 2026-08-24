@@ -624,6 +624,7 @@ func (e *TeamEngine) ResumeMasterTask(ctx context.Context, masterTaskID, goal, w
 			// DW pipeline execution: multi-verifier per task, no Leader review.
 			e.runDWCycle(ctx, batch, cycleLimit, masterTaskID, completedBatches, passedBatches, cp.CompletedOutputs, batches, escalator, workdir, decomposerTimeout, leaderModel)
 		} else {
+			batchStart := time.Now()
 			for cycle := 0; cycle < cycleLimit; cycle++ {
 				batch.CycleCount = cycle + 1
 				if err := e.RunBatch(execCtx, batch); err != nil {
@@ -681,6 +682,7 @@ func (e *TeamEngine) ResumeMasterTask(ctx context.Context, masterTaskID, goal, w
 					break
 				}
 			}
+			BatchDone(batch.ID, string(batch.Status), time.Since(batchStart).Seconds())
 		}
 	}
 
@@ -971,6 +973,12 @@ func copyDir(src, dst string) error {
 	return filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
+		}
+		// Skip Whale's own state dir — a worker subprocess creates .whale/ in its
+		// sandbox (incl. an empty team_engine.log); propagating it would clobber
+		// the master's live team_engine.log with the empty sandbox copy.
+		if info.IsDir() && info.Name() == ".whale" {
+			return filepath.SkipDir
 		}
 		rel, _ := filepath.Rel(src, path)
 		target := filepath.Join(dst, rel)
