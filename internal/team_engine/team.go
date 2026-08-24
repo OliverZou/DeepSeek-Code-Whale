@@ -184,6 +184,16 @@ func (tc *TeamConfig) RoleAgentName(ref string) string {
 	return ref
 }
 
+// teamAgentsDir returns the team's agents/ directory, or "" when the team has
+// no on-disk directory (nil team, inline team, or a flat .yaml team). The
+// adapter uses it to resolve team-local agent definitions.
+func teamAgentsDir(tc *TeamConfig) string {
+	if tc == nil || tc.TeamDir == "" {
+		return ""
+	}
+	return filepath.Join(tc.TeamDir, "agents")
+}
+
 // LoadTeamAgentPrompt reads a team-local agent MD file from the team's agents/ directory.
 // Returns ("", false) if no team-local agent exists.
 func (tc *TeamConfig) LoadTeamAgentPrompt(agentName string) (string, bool) {

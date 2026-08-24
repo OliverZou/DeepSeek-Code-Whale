@@ -113,20 +113,21 @@ type SubagentProgress func(status, summary, toolName string)
 // SubagentRequest is the minimum set of parameters needed to spawn
 // a Whale subagent for a Team Engine task.
 type SubagentRequest struct {
-	Task         string   // The prompt/description for the agent
-	Role         string   // Role name (e.g. "developer", "verifier")
-	AgentName    string   // Agent definition name from .md file (e.g. "backend-engineer")
-	Model        string   // LLM model name; "" = Whale default
-	Tools        []string // Allowed tool names
-	Workdir      string   // Working directory
-	Timeout      time.Duration
-	MaxIters     int
-	MaxCalls     int
-	MaxTokens    int                  // Completion token budget (0 = runner default)
-	OutputSchema map[string]any       // Force structured JSON output (nil = free text)
-	OnProgress   SubagentProgress     // Real-time progress callback (nil = no streaming)
-	OnPID        func(int)            // Called with PID when OS process starts (nil = no-op)
-	OnStdin      func(io.WriteCloser) // Called with stdin pipe for real-time messaging (nil = no-op)
+	Task          string   // The prompt/description for the agent
+	Role          string   // Role name (e.g. "developer", "verifier")
+	AgentName     string   // Agent definition name from .md file (e.g. "backend-engineer")
+	TeamAgentsDir string   // team's agents/ dir (e.g. ~/.whale/teams/<name>/agents); adapter resolves team-local agent definitions from here
+	Model         string   // LLM model name; "" = Whale default
+	Tools         []string // Allowed tool names
+	Workdir       string   // Working directory
+	Timeout       time.Duration
+	MaxIters      int
+	MaxCalls      int
+	MaxTokens     int                  // Completion token budget (0 = runner default)
+	OutputSchema  map[string]any       // Force structured JSON output (nil = free text)
+	OnProgress    SubagentProgress     // Real-time progress callback (nil = no streaming)
+	OnPID         func(int)            // Called with PID when OS process starts (nil = no-op)
+	OnStdin       func(io.WriteCloser) // Called with stdin pipe for real-time messaging (nil = no-op)
 }
 
 // SubagentResponse contains the result of a subagent execution.
@@ -203,17 +204,18 @@ func (ar *AgentRunner) RunWithContext(ctx context.Context, prompt, workdir, tool
 	}
 
 	req := SubagentRequest{
-		Task:       prompt,
-		Role:       role,
-		AgentName:  agentName,
-		Tools:      toolNames,
-		Workdir:    workdir,
-		Timeout:    timeout,
-		MaxIters:   maxIters,
-		MaxCalls:   maxCalls,
-		OnProgress: onProgress,
-		OnPID:      onPID,
-		OnStdin:    onStdin,
+		Task:          prompt,
+		Role:          role,
+		AgentName:     agentName,
+		TeamAgentsDir: teamAgentsDir(ar.team),
+		Tools:         toolNames,
+		Workdir:       workdir,
+		Timeout:       timeout,
+		MaxIters:      maxIters,
+		MaxCalls:      maxCalls,
+		OnProgress:    onProgress,
+		OnPID:         onPID,
+		OnStdin:       onStdin,
 	}
 	if len(model) > 0 && model[0] != "" {
 		req.Model = model[0]
@@ -267,13 +269,14 @@ func (ar *AgentRunner) Run(prompt, workdir, tools string, timeout time.Duration,
 // tests/linters.
 func (ar *AgentRunner) RunVerifier(prompt, workdir string, timeout time.Duration, maxIters, maxCalls, maxTokens int, agentName string, model ...string) *RunResult {
 	req := SubagentRequest{
-		Task:      prompt,
-		Role:      "verifier",
-		AgentName: agentName,
-		Workdir:   workdir,
-		Timeout:   timeout,
-		MaxIters:  maxIters,
-		MaxCalls:  maxCalls,
+		Task:          prompt,
+		Role:          "verifier",
+		AgentName:     agentName,
+		TeamAgentsDir: teamAgentsDir(ar.team),
+		Workdir:       workdir,
+		Timeout:       timeout,
+		MaxIters:      maxIters,
+		MaxCalls:      maxCalls,
 	}
 	// When no agent definition is available, fall back to ProfileVerify tools
 	// so the verifier can at least run tests and read files.

@@ -79,6 +79,27 @@ func NewAgentDefinitionLibraryWithRoots(roots []AgentDefinitionRoot) *AgentDefin
 	return &AgentDefinitionLibrary{Roots: out}
 }
 
+// WithExtraRoot returns a copy of the library with an additional agent root
+// prepended at the given priority rank. It lets callers resolve team-local
+// agent definitions (the team's agents/ directory) without mutating the shared
+// library. Team roots are passed at rank -1 so they take precedence over
+// project (0) and user (1) roots.
+func (l *AgentDefinitionLibrary) WithExtraRoot(path, source string, rank int) *AgentDefinitionLibrary {
+	if strings.TrimSpace(path) == "" {
+		return l
+	}
+	extra := AgentDefinitionRoot{Path: path, Source: source, Rank: rank}
+	if l == nil {
+		return NewAgentDefinitionLibraryWithRoots([]AgentDefinitionRoot{extra})
+	}
+	roots := make([]AgentDefinitionRoot, 0, len(l.Roots)+1)
+	roots = append(roots, extra)
+	roots = append(roots, l.Roots...)
+	out := NewAgentDefinitionLibraryWithRoots(roots)
+	out.Definitions = l.Definitions
+	return out
+}
+
 func ValidAgentDefinitionName(name string) bool {
 	name = strings.TrimSpace(name)
 	return name != "" && len(name) <= 64 && agentDefinitionNamePattern.MatchString(name)

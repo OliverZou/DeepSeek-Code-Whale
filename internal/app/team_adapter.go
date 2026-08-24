@@ -41,7 +41,16 @@ func teamEngineSpawnAdapter(runner *tasks.Runner, library *tasks.AgentDefinition
 
 		// Resolve agent definition from .md file when AgentName is set.
 		if req.AgentName != "" && library != nil {
-			if def, ok, err := library.Resolve(req.AgentName); err == nil && ok {
+			// Team-local agent definitions live in the team's agents/ directory,
+			// which is not in the library's default roots (~/.whale/agents +
+			// project .whale/agents). Thread it through as an extra root so a
+			// team role like "software-engineer" resolves to its team definition
+			// instead of falling back to a bare inline definition.
+			lib := library
+			if req.TeamAgentsDir != "" {
+				lib = library.WithExtraRoot(req.TeamAgentsDir, "team", -1)
+			}
+			if def, ok, err := lib.Resolve(req.AgentName); err == nil && ok {
 				tasksReq.Agent = def
 				team_engine.Log("adapter", "resolve agent=%q ok tools=%d promptLen=%d", req.AgentName, len(def.Tools), len(def.Prompt))
 				// Prepend the agent's system prompt to the task so the

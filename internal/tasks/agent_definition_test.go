@@ -489,6 +489,38 @@ func TestAgentDefinitionLibraryListSkipsMalformedAgents(t *testing.T) {
 	}
 }
 
+func TestAgentDefinitionLibraryWithExtraRootTeamPrecedence(t *testing.T) {
+	writeAgent := func(dir, name, prompt string) {
+		content := "---\nname: " + name + "\ndescription: desc\n---\n\n" + prompt + "\n"
+		if err := os.WriteFile(filepath.Join(dir, name+".md"), []byte(content), 0o644); err != nil {
+			t.Fatalf("write agent %s: %v", name, err)
+		}
+	}
+	userDir := filepath.Join(t.TempDir(), "agents")
+	if err := os.MkdirAll(userDir, 0o755); err != nil {
+		t.Fatalf("mkdir user agents: %v", err)
+	}
+	writeAgent(userDir, "engineer", "generic engineer prompt")
+	teamDir := filepath.Join(t.TempDir(), "agents")
+	if err := os.MkdirAll(teamDir, 0o755); err != nil {
+		t.Fatalf("mkdir team agents: %v", err)
+	}
+	writeAgent(teamDir, "engineer", "team-local engineer prompt")
+
+	// The team root is prepended at rank -1, so it must win over the user root (rank 1).
+	library := NewAgentDefinitionLibraryWithRoots([]AgentDefinitionRoot{
+		{Path: userDir, Source: "user", Rank: 1},
+	}).WithExtraRoot(teamDir, "team", -1)
+
+	def, ok, err := library.Resolve("engineer")
+	if err != nil || !ok {
+		t.Fatalf("Resolve: ok=%v err=%v", ok, err)
+	}
+	if !strings.Contains(def.Prompt, "team-local") {
+		t.Fatalf("expected team-local definition to win, got prompt=%q", def.Prompt)
+	}
+}
+
 func TestAgentDefinitionLibraryResolveFailsMalformedRequestedAgent(t *testing.T) {
 	root := t.TempDir()
 	agentDir := filepath.Join(root, ".whale", "agents")
