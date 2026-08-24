@@ -430,16 +430,9 @@ func (tc *TeamConfig) BuildLeaderPrompt(basePrompt string) string {
 	// If team has roles, strip the generic role list (Rule 5) from the base
 	// prompt and replace it with team-specific roles.
 	if len(tc.Roles) > 0 {
-		// Remove the generic "5. Assign an appropriate ROLE..." section.
+		// Defer the base prompt's role-assignment instructions to the team
+		// role list injected below (handles both old and current formats).
 		basePrompt = stripGenericRoleSection(basePrompt)
-		// DecomposePrompt's 角色分配 bullet tells the leader to invent a
-		// domain-specific role name (e.g. "Go Backend Developer"), which
-		// contradicts Rule 5 below ("use ONLY the team role names"). When team
-		// roles exist, defer role choice to the injected list instead.
-		basePrompt = strings.Replace(basePrompt,
-			"- role：与领域精确匹配的具体角色名（如 \"Go Backend Developer\"）",
-			"- role：从下方 Available Team Roles 列表选择，禁止自造角色名",
-			1)
 	}
 
 	sb.WriteString(basePrompt)
@@ -515,24 +508,31 @@ func (tc *TeamConfig) BuildLeaderPrompt(basePrompt string) string {
 	return sb.String()
 }
 
-// stripGenericRoleSection removes the generic "5. Assign an appropriate ROLE"
-// section from the base decompose prompt so team-specific roles take precedence.
+// stripGenericRoleSection removes or rewrites the base decompose prompt's
+// generic role-assignment instructions so the team-specific role list injected
+// by BuildLeaderPrompt takes over. It handles two historical formats:
+//   - the old numbered "5. Assign an appropriate ROLE ... 6. Group tasks"
+//     section, which is stripped wholesale;
+//   - the current "## 角色分配" `- role:` bullet, which told the leader to
+//     invent a domain-specific name (contradicting Rule 5) and is rewritten to
+//     defer to the injected team role list.
 func stripGenericRoleSection(prompt string) string {
-	// Find "5. Assign an appropriate ROLE" and remove everything up to the
-	// next numbered rule (6. Group tasks into batches) or to the end of the
-	// role list (ends with "- \"synthesizer\" ...").
-	idx := strings.Index(prompt, "5. Assign an appropriate ROLE")
-	if idx < 0 {
-		return prompt
+	// Old numbered rule-5 section: remove it wholesale.
+	if idx := strings.Index(prompt, "5. Assign an appropriate ROLE"); idx >= 0 {
+		endIdx := strings.Index(prompt[idx:], "\n6. Group tasks into **batches**")
+		if endIdx < 0 {
+			// Fallback: find "6. Group" without bold markers.
+			endIdx = strings.Index(prompt[idx:], "\n6. Group tasks into batches")
+		}
+		if endIdx > 0 {
+			prompt = prompt[:idx] + prompt[idx+endIdx:]
+		} else {
+			prompt = prompt[:idx]
+		}
 	}
-	// Find the next rule "6." that starts after the role list.
-	endIdx := strings.Index(prompt[idx:], "\n6. Group tasks into **batches**")
-	if endIdx < 0 {
-		// Fallback: find "6. Group" without bold markers.
-		endIdx = strings.Index(prompt[idx:], "\n6. Group tasks into batches")
-	}
-	if endIdx > 0 {
-		return prompt[:idx] + prompt[idx+endIdx:]
-	}
-	return prompt[:idx]
+	// Current "## 角色分配" role bullet: defer to the team role list.
+	return strings.Replace(prompt,
+		"- role：与领域精确匹配的具体角色名（如 \"Go Backend Developer\"）",
+		"- role：从下方 Available Team Roles 列表选择，禁止自造角色名",
+		1)
 }
