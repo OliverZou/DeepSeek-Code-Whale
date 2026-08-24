@@ -93,6 +93,7 @@ type Task struct {
 	ArtifactPath     string      `json:"artifact_path"`           // 产出文件路径（白板）
 	VerifierFeedback string      `json:"verifier_feedback"`       // Verifier 反馈
 	VerifierFocus    string      `json:"verifier_focus"`          // 验证重点 (correctness,security,sources,plausibility,...)
+	Complexity       string      `json:"complexity,omitempty"`    // 目标规模提示 simple/medium/complex（驱动 worker/verifier 迭代预算）
 	BatchID          string      `json:"batch_id"`                // 所属 Batch（stage）
 	MasterTaskID     string      `json:"master_task_id"`          // 所属总任务
 	UseDW            bool        `json:"use_dw"`                  // use Dynamic Workflow for verification

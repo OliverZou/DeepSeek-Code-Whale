@@ -60,6 +60,7 @@ func (e *TeamEngine) PlanAndRun(ctx context.Context, goal, workdir, masterTaskID
 	leaderModel := e.Router.ResolveModel("planner")
 
 	var planTasks []PlanTask
+	var complexity string
 	if len(preDecomposed) > 0 {
 		planTasks = preDecomposed
 		if defaultTeamLog != nil {
@@ -71,7 +72,9 @@ func (e *TeamEngine) PlanAndRun(ctx context.Context, goal, workdir, masterTaskID
 			Log("plan", "plan: elaborate START model=%s", leaderModel)
 		}
 		elabStart := time.Now()
-		elaboratedGoal, complexity, elabErr := leader.ElaborateFull(goal, workdir, time.Duration(e.Router.ResolveDecomposerTimeout())*time.Second, leaderModel)
+		var elaboratedGoal string
+		var elabErr error
+		elaboratedGoal, complexity, elabErr = leader.ElaborateFull(goal, workdir, time.Duration(e.Router.ResolveDecomposerTimeout())*time.Second, leaderModel)
 		elabDur = time.Since(elabStart)
 		if elabErr != nil {
 			if defaultTeamLog != nil {
@@ -184,6 +187,7 @@ func (e *TeamEngine) PlanAndRun(ctx context.Context, goal, workdir, masterTaskID
 			task.UseDW = pt.UseDW
 			task.VerifierRole = pt.VerifierRole
 			task.MasterTaskID = masterTaskID
+			task.Complexity = complexity
 			e.Store.UpdateTask(task.ID, map[string]interface{}{
 				"batch_id":       bid,
 				"master_task_id": masterTaskID,

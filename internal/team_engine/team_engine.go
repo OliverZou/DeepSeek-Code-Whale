@@ -1073,7 +1073,7 @@ SYNTHESIS: brief explanation
 FINDINGS: key issues consolidated from all verifiers
 `)
 
-	synthOutput := e.Runner.RunVerifier(synthPrompt, task.Workdir, 120*time.Second, "", "")
+	synthOutput := e.Runner.RunVerifier(synthPrompt, task.Workdir, 120*time.Second, 15, 50, 0, "", "")
 	synthVerdict := extractVerdict(synthOutput.Stdout, passCount, len(results))
 
 	// Write DW verification results to whiteboard.

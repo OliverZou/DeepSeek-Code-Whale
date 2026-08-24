@@ -153,9 +153,10 @@ func (v *Verifier) Verify(task *Task) (passed bool, retry bool, feedback string,
 
 	timeout := time.Duration(v.router.ResolveTimeout(task.Role, true)) * time.Second
 	model := v.model
+	vIters, vCalls, vTokens := iterationBudget(task.Complexity, true)
 
 	v.LastPrompt = prompt
-	result := v.runner.RunVerifier(prompt, workdir, timeout, v.agentName, model)
+	result := v.runner.RunVerifier(prompt, workdir, timeout, vIters, vCalls, vTokens, v.agentName, model)
 
 	output := result.Stdout
 
@@ -165,7 +166,7 @@ func (v *Verifier) Verify(task *Task) (passed bool, retry bool, feedback string,
 			"You MUST run at least 2 tools (read_file + shell_run or grep) and report " +
 			"their ACTUAL output. A bare PASS/FAIL without tool output will be rejected again.\n\n" +
 			prompt
-		result2 := v.runner.RunVerifier(hardenedPrompt, workdir, timeout, v.agentName, model)
+		result2 := v.runner.RunVerifier(hardenedPrompt, workdir, timeout, vIters, vCalls, vTokens, v.agentName, model)
 		output = result2.Stdout
 	}
 

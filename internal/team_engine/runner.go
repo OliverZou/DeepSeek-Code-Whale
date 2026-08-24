@@ -25,6 +25,32 @@ func effectiveMaxTokens(requested int, model string) int {
 	return defaultMaxTokens
 }
 
+// iterationBudget resolves a worker/verifier's iteration budget from the goal
+// complexity hint (simple/medium/complex, produced by the elaborate flash call
+// — no extra LLM invocation).  Simple tasks get a tight budget so the subagent
+// finishes fast and cheap instead of treating a large iteration allowance as
+// licence to over-explore; complex or unassessed tasks keep the existing
+// generous defaults.
+func iterationBudget(complexity string, isVerifier bool) (maxIters, maxCalls, maxTokens int) {
+	switch complexity {
+	case "simple":
+		if isVerifier {
+			return 8, 20, 8000
+		}
+		return 20, 50, 16000
+	case "medium":
+		if isVerifier {
+			return 12, 35, 16000
+		}
+		return 50, 120, 24000
+	default: // complex or unassessed — keep existing defaults
+		if isVerifier {
+			return 15, 50, defaultMaxTokens
+		}
+		return 80, 200, defaultMaxTokens
+	}
+}
+
 // isDeepSeekModel returns true for DeepSeek-family models.
 func isDeepSeekModel(model string) bool {
 	lower := strings.ToLower(model)
@@ -154,7 +180,7 @@ func (ar *AgentRunner) SetLiteSpawner(s SubagentSpawner) {
 // IMPORTANT: RunWithContext creates its own derived context with the given
 // timeout.  The `ctx` parameter is used ONLY for cancellation — if the
 // parent context is cancelled (e.g. via Close()), the spawn is aborted.
-func (ar *AgentRunner) RunWithContext(ctx context.Context, prompt, workdir, tools string, timeout time.Duration, onProgress SubagentProgress, onPID func(int), onStdin func(io.WriteCloser), model ...string) *RunResult {
+func (ar *AgentRunner) RunWithContext(ctx context.Context, prompt, workdir, tools string, timeout time.Duration, maxIters, maxCalls, maxTokens int, onProgress SubagentProgress, onPID func(int), onStdin func(io.WriteCloser), model ...string) *RunResult {
 	start := time.Now()
 
 	toolNames := parseToolList(tools)
@@ -183,8 +209,8 @@ func (ar *AgentRunner) RunWithContext(ctx context.Context, prompt, workdir, tool
 		Tools:      toolNames,
 		Workdir:    workdir,
 		Timeout:    timeout,
-		MaxIters:   80,
-		MaxCalls:   200,
+		MaxIters:   maxIters,
+		MaxCalls:   maxCalls,
 		OnProgress: onProgress,
 		OnPID:      onPID,
 		OnStdin:    onStdin,
@@ -192,7 +218,7 @@ func (ar *AgentRunner) RunWithContext(ctx context.Context, prompt, workdir, tool
 	if len(model) > 0 && model[0] != "" {
 		req.Model = model[0]
 	}
-	req.MaxTokens = effectiveMaxTokens(0, req.Model)
+	req.MaxTokens = effectiveMaxTokens(maxTokens, req.Model)
 
 	// Use a derived context so cancellation of the parent context
 	// propagates to the spawn, but the timeout is independent.
@@ -231,7 +257,7 @@ func (ar *AgentRunner) RunWithContext(ctx context.Context, prompt, workdir, tool
 
 // Run is a convenience wrapper for RunWithContext with a background context.
 func (ar *AgentRunner) Run(prompt, workdir, tools string, timeout time.Duration, model ...string) *RunResult {
-	return ar.RunWithContext(context.Background(), prompt, workdir, tools, timeout, nil, nil, nil, model...)
+	return ar.RunWithContext(context.Background(), prompt, workdir, tools, timeout, 80, 200, 0, nil, nil, nil, model...)
 }
 
 // RunVerifier spawns a verifier subagent.  When agentName is set, the
@@ -239,15 +265,15 @@ func (ar *AgentRunner) Run(prompt, workdir, tools string, timeout time.Duration,
 // and skills — no hand-crafted tool list needed.  When agentName is empty,
 // falls back to ProfileVerify tools so the verifier can still run
 // tests/linters.
-func (ar *AgentRunner) RunVerifier(prompt, workdir string, timeout time.Duration, agentName string, model ...string) *RunResult {
+func (ar *AgentRunner) RunVerifier(prompt, workdir string, timeout time.Duration, maxIters, maxCalls, maxTokens int, agentName string, model ...string) *RunResult {
 	req := SubagentRequest{
 		Task:      prompt,
 		Role:      "verifier",
 		AgentName: agentName,
 		Workdir:   workdir,
 		Timeout:   timeout,
-		MaxIters:  15,
-		MaxCalls:  50,
+		MaxIters:  maxIters,
+		MaxCalls:  maxCalls,
 	}
 	// When no agent definition is available, fall back to ProfileVerify tools
 	// so the verifier can at least run tests and read files.
@@ -257,7 +283,7 @@ func (ar *AgentRunner) RunVerifier(prompt, workdir string, timeout time.Duration
 	if len(model) > 0 && model[0] != "" {
 		req.Model = model[0]
 	}
-	req.MaxTokens = effectiveMaxTokens(0, req.Model)
+	req.MaxTokens = effectiveMaxTokens(maxTokens, req.Model)
 
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()

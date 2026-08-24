@@ -217,6 +217,7 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 			// hardcoded default.  Research/deep-analysis roles need more
 			// time (900-1800s) than the default 300s.
 			taskTimeout := time.Duration(e.Router.ResolveTimeout(task.Role, false)) * time.Second
+			wIters, wCalls, wTokens := iterationBudget(task.Complexity, false)
 			// Register a per-task cancel so Close() / Kill() can immediately
 			// abort running subagents instead of waiting for them to finish.
 			taskCtx, taskCancel := context.WithCancel(ctx)
@@ -275,9 +276,9 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 					Tools:     toolNames,
 					Workdir:   agentWorkdir,
 					Timeout:   taskTimeout,
-					MaxIters:  80,
-					MaxCalls:  200,
-					MaxTokens: effectiveMaxTokens(0, ""),
+					MaxIters:  wIters,
+					MaxCalls:  wCalls,
+					MaxTokens: effectiveMaxTokens(wTokens, ""),
 					OnPID:     onPID,
 				}
 				ws, resp := e.shellSpawner.SpawnPersistent(context.Background(), req)
@@ -298,7 +299,7 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 				if e.Loggers != nil {
 					e.Loggers.Engine("task %s worker START role=%s", taskID[:8], task.Role)
 				}
-				result = e.Runner.RunWithContext(taskCtx, prompt, agentWorkdir, toolsStr, taskTimeout, liveOutput, onPID, onStdin)
+				result = e.Runner.RunWithContext(taskCtx, prompt, agentWorkdir, toolsStr, taskTimeout, wIters, wCalls, wTokens, liveOutput, onPID, onStdin)
 			}
 			Log("timing", "task %s worker done in %.1fs (success=%v)", taskID[:8], time.Since(workerStart).Seconds(), result.Success)
 			if e.Loggers != nil {
@@ -471,6 +472,7 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 				verifierModel = e.team.Config.Model.VerifierDefault
 			}
 			verifyStart := time.Now()
+			vIters, vCalls, vTokens := iterationBudget(task.Complexity, true)
 			vKey := "verifier:" + taskID
 
 			// Persistent Verifier session: reuse process across retries.
@@ -507,9 +509,9 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 					AgentName: verifierAgentName,
 					Workdir:   verifyWorkdir,
 					Timeout:   time.Duration(e.Router.ResolveTimeout(task.Role, true)) * time.Second,
-					MaxIters:  15,
-					MaxCalls:  50,
-					MaxTokens: effectiveMaxTokens(0, verifierModel),
+					MaxIters:  vIters,
+					MaxCalls:  vCalls,
+					MaxTokens: effectiveMaxTokens(vTokens, verifierModel),
 				}
 				if verifierModel != "" {
 					req.Model = verifierModel
