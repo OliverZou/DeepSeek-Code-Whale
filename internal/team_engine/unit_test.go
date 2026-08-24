@@ -333,7 +333,6 @@ func TestHasVerdictMarkers(t *testing.T) {
 	}
 }
 
-
 // ============================================================================
 // Escalator — re-decomposition logic
 

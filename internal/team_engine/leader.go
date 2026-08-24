@@ -50,11 +50,22 @@ func (l *Leader) WithOnLog(fn func()) *Leader {
 	return l
 }
 
+// WithComplexity forwards the goal-size hint to the underlying Planner.
+func (l *Leader) WithComplexity(c string) *Leader {
+	l.planner.WithComplexity(c)
+	return l
+}
+
 // --- Delegated methods ---
 
 // Elaborate delegates to Planner.
 func (l *Leader) Elaborate(goal string, workdir string, timeout time.Duration, model ...string) (string, error) {
 	return l.planner.Elaborate(goal, workdir, timeout, model...)
+}
+
+// ElaborateFull delegates to Planner and also returns the goal-size hint.
+func (l *Leader) ElaborateFull(goal string, workdir string, timeout time.Duration, model ...string) (string, string, error) {
+	return l.planner.ElaborateFull(goal, workdir, timeout, model...)
 }
 
 // Decompose delegates to Planner.

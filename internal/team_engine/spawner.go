@@ -38,7 +38,6 @@ func CloseLogger() {
 	}
 }
 
-
 // Log writes a diagnostic entry.  Safe when no logger is set.
 func Log(cat, format string, args ...interface{}) {
 	if defaultTeamLog != nil {

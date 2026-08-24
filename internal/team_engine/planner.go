@@ -13,10 +13,11 @@ import (
 // Planner decomposes goals into structured plans of subtasks.
 // Stateless: all state comes from injected dependencies.
 type Planner struct {
-	runner  *AgentRunner
-	loggers *log.Loggers
-	team    *TeamConfig
-	onLog   func()
+	runner     *AgentRunner
+	loggers    *log.Loggers
+	team       *TeamConfig
+	onLog      func()
+	complexity string
 }
 
 // NewPlanner creates a Planner that uses the given AgentRunner.
@@ -42,8 +43,31 @@ func (p *Planner) WithOnLog(fn func()) *Planner {
 	return p
 }
 
+// WithComplexity sets the goal-size hint (simple/medium/complex) that
+// decompose uses to right-size the number of tasks/batches. Empty string
+// leaves decomposition at its default behavior.
+func (p *Planner) WithComplexity(c string) *Planner {
+	p.complexity = c
+	return p
+}
+
 // DecomposePrompt returns the prompt template for task decomposition.
-func DecomposePrompt(goal string) string {
+func DecomposePrompt(goal string, complexity ...string) string {
+	c := ""
+	if len(complexity) > 0 {
+		c = complexity[0]
+	}
+	sizeGuide := ""
+	switch c {
+	case "simple":
+		sizeGuide = "目标规模评估为 simple（小任务）：尽量合并为 1 个 batch、≤2 个任务，不要为不同文件各建一个任务。"
+	case "complex":
+		sizeGuide = "目标规模评估为 complex（大任务）：可拆成多个 batch 并行，用 depends_on 串联有依赖的阶段。"
+	case "medium":
+		sizeGuide = "目标规模评估为 medium：按关注点正常拆分，相互独立的关注点放入不同 batch 并行。"
+	default:
+		sizeGuide = "目标规模未评估：按关注点正常拆分。"
+	}
 	return fmt.Sprintf(`你是任务分解与角色分配器。将目标一次拆到底，输出的每个任务都必须是叶子
 （单个 Worker 一次可完成，单次输出约 150 行以内）。
 如果某个 concern 仍超出可吞性，在本次调用中继续分解——最终只输出叶子列表。
@@ -51,6 +75,8 @@ func DecomposePrompt(goal string) string {
 目标：%s
 
 ## 分类与分解
+
+%s
 
 先判断结构再分解：
 SINGLE — 单一关注点 → 1 个任务
@@ -77,7 +103,7 @@ MANY   — 大量相同单元 → 每个单元一个任务，相同 role、相�
 
 [
   {"title":"…","description":"≤3句话","output":"产物路径","role":"角色名","verifier_role":"agent名或空","batch_id":"1","batch_label":"阶段名","depends_on_batch":[],"depends_on_index":-1,"verifier_focus":"审查维度","max_cycles":1}
-]`, goal)
+]`, goal, sizeGuide)
 }
 
 // ---------------------------------------------------------------------------
@@ -96,6 +122,14 @@ MANY   — 大量相同单元 → 每个单元一个任务，相同 role、相�
 // elaborated (or original) goal.  Fully-specified goals short-circuit after
 // the merged check+research step, avoiding wasted LLM rounds.
 func (p *Planner) Elaborate(rawGoal string, workdir string, timeout time.Duration, model ...string) (string, error) {
+	goal, _, err := p.ElaborateFull(rawGoal, workdir, timeout, model...)
+	return goal, err
+}
+
+// ElaborateFull is like Elaborate but also returns the goal-size hint
+// (simple/medium/complex) derived from the flash completeness check — used
+// to right-size decomposition without skipping any pipeline stage.
+func (p *Planner) ElaborateFull(rawGoal string, workdir string, timeout time.Duration, model ...string) (string, string, error) {
 	if timeout <= 0 {
 		timeout = 120 * time.Second
 	}
@@ -113,6 +147,14 @@ func (p *Planner) Elaborate(rawGoal string, workdir string, timeout time.Duratio
 		p.onLog()
 	}
 
+	// Complexity: prefer the flash model's estimate; fall back to lexical.
+	complexity := ""
+	if verdict != nil && verdict.Complexity != "" {
+		complexity = verdict.Complexity
+	} else {
+		complexity = lexicalComplexity(rawGoal)
+	}
+
 	// If the check failed entirely (nil verdict), treat as incomplete
 	// and proceed to spec production with LLM's built-in domain knowledge.
 	if verdict == nil {
@@ -121,9 +163,9 @@ func (p *Planner) Elaborate(rawGoal string, workdir string, timeout time.Duratio
 		}
 		elaborated, err := p.produceSpec(rawGoal, workdir, timeout, flashModel, nil, nil)
 		if err != nil || elaborated == "" {
-			return rawGoal, nil
+			return rawGoal, complexity, nil
 		}
-		return elaborated, nil
+		return elaborated, complexity, nil
 	}
 
 	// Early exit: goal is already fully specified.
@@ -131,7 +173,7 @@ func (p *Planner) Elaborate(rawGoal string, workdir string, timeout time.Duratio
 		if p.loggers != nil {
 			p.loggers.Engine("leader.elaborate: SKIP — all 6 dimensions complete, using raw goal")
 		}
-		return rawGoal, nil
+		return rawGoal, complexity, nil
 	}
 
 	gaps := verdict.Gaps()
@@ -145,7 +187,7 @@ func (p *Planner) Elaborate(rawGoal string, workdir string, timeout time.Duratio
 		if defaultTeamLog != nil {
 			defaultTeamLog.LeaderRetry(0, "elaboration spec production failed, using raw goal")
 		}
-		return rawGoal, nil
+		return rawGoal, complexity, nil
 	}
 	if p.onLog != nil {
 		p.onLog()
@@ -160,7 +202,7 @@ func (p *Planner) Elaborate(rawGoal string, workdir string, timeout time.Duratio
 	// Principle: don't ask what the TeamLeader can decide itself.
 	// Only ask when there are ≥2 reasonable options and no industry default.
 
-	return elaborated, nil
+	return elaborated, complexity, nil
 }
 
 // checkAndResearch runs merged Step 1+2: ask a cheap model to judge the
@@ -239,13 +281,31 @@ func gapNames(gaps []DimensionGap) []string {
 	return names
 }
 
+// lexicalComplexity returns a cheap size hint for a goal when the flash
+// completeness check did not produce a complexity estimate. It is only a
+// fallback — the flash model's verdict is preferred when available.
+func lexicalComplexity(goal string) string {
+	g := strings.TrimSpace(goal)
+	for _, k := range complexSignalKeywords {
+		if strings.Contains(g, k) {
+			return "complex"
+		}
+	}
+	if len(g) <= 80 {
+		return "simple"
+	}
+	return "medium"
+}
+
+var complexSignalKeywords = []string{"重构", "迁移", "微服务", "分布式", "高并发", "多模块", "复杂"}
+
 // decomposeInternal runs the leader agent and returns both parsed tasks
 // and the raw AI output text.
 func (p *Planner) decomposeInternal(goal string, workdir string, timeout time.Duration, model ...string) ([]PlanTask, string, error) {
 	if timeout <= 0 {
 		timeout = 180 * time.Second
 	}
-	prompt := DecomposePrompt(goal)
+	prompt := DecomposePrompt(goal, p.complexity)
 	if p.team != nil {
 		prompt = p.team.BuildLeaderPrompt(prompt)
 	}

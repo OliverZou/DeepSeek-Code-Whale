@@ -622,7 +622,9 @@ func (e *TeamEngine) ResumeMasterTask(ctx context.Context, masterTaskID, goal, w
 
 		if batch.UseDW {
 			// DW pipeline execution: multi-verifier per task, no Leader review.
-			e.runDWCycle(ctx, batch, cycleLimit, masterTaskID, completedBatches, passedBatches, cp.CompletedOutputs, batches, escalator, workdir, decomposerTimeout, leaderModel)
+			// Resume runs batches serially — a standalone mutex suffices; the
+			// parameter exists so the shared DW path is concurrency-safe.
+			e.runDWCycle(ctx, batch, cycleLimit, masterTaskID, completedBatches, passedBatches, cp.CompletedOutputs, batches, escalator, workdir, decomposerTimeout, leaderModel, &sync.Mutex{})
 		} else {
 			batchStart := time.Now()
 			for cycle := 0; cycle < cycleLimit; cycle++ {

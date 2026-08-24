@@ -5,11 +5,13 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
 
 // mockSpawner is a minimal SubagentSpawner implementation for testing.
 type mockSpawner struct {
+	mu          sync.Mutex        // guards seqCursor and the sequence cursor state
 	output      string            // default output
 	roleOutputs map[string]string // output by role (planner/verifier/worker)
 	// roleSeq provides per-role output sequences.  Each call to SpawnSubagent
@@ -20,6 +22,8 @@ type mockSpawner struct {
 }
 
 func (m *mockSpawner) SpawnSubagent(_ context.Context, req SubagentRequest) (SubagentResponse, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	if m.err != nil {
 		return SubagentResponse{}, m.err
 	}

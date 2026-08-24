@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -28,6 +29,9 @@ import (
 // PlanAndRun accepts optional pre-decomposed planTasks.  When provided, the
 // internal decompose step is skipped and the pre-computed plan is used directly.
 func (e *TeamEngine) PlanAndRun(ctx context.Context, goal, workdir, masterTaskID string, preDecomposed ...PlanTask) ([]*Batch, error) {
+	runStart := time.Now()
+	var elabDur, decompDur time.Duration
+
 	// Register a cancel for this execution so the dashboard stop button works.
 	execCtx, execCancel := context.WithCancel(ctx)
 	defer execCancel()
@@ -66,7 +70,9 @@ func (e *TeamEngine) PlanAndRun(ctx context.Context, goal, workdir, masterTaskID
 		if defaultTeamLog != nil {
 			Log("plan", "plan: elaborate START model=%s", leaderModel)
 		}
-		elaboratedGoal, elabErr := leader.Elaborate(goal, workdir, time.Duration(e.Router.ResolveDecomposerTimeout())*time.Second, leaderModel)
+		elabStart := time.Now()
+		elaboratedGoal, complexity, elabErr := leader.ElaborateFull(goal, workdir, time.Duration(e.Router.ResolveDecomposerTimeout())*time.Second, leaderModel)
+		elabDur = time.Since(elabStart)
 		if elabErr != nil {
 			if defaultTeamLog != nil {
 				Log("plan", "plan: elaborate FAIL: %v, continuing with raw goal", elabErr)
@@ -83,7 +89,13 @@ func (e *TeamEngine) PlanAndRun(ctx context.Context, goal, workdir, masterTaskID
 			Log("plan", "plan: decompose START model=%s", leaderModel)
 		}
 		var err error
+		if defaultTeamLog != nil {
+			Log("plan", "plan: complexity=%s", complexity)
+		}
+		leader.WithComplexity(complexity)
+		decompStart := time.Now()
 		planTasks, err = leader.Decompose(elaboratedGoal, workdir, decomposerTimeout, leaderModel)
+		decompDur = time.Since(decompStart)
 		if err != nil {
 			if defaultTeamLog != nil {
 				Log("plan", "plan: decompose FAIL: %v", err)
@@ -175,6 +187,7 @@ func (e *TeamEngine) PlanAndRun(ctx context.Context, goal, workdir, masterTaskID
 			e.Store.UpdateTask(task.ID, map[string]interface{}{
 				"batch_id":       bid,
 				"master_task_id": masterTaskID,
+				"output":         pt.Output,
 			})
 			batch.Tasks = append(batch.Tasks, task)
 		}
@@ -202,49 +215,75 @@ func (e *TeamEngine) PlanAndRun(ctx context.Context, goal, workdir, masterTaskID
 	// Notify dashboard that tasks have been created.
 	e.fireEvent(TaskEvent{Type: EventStateChanged})
 
-	// Step 3: Execute batches in order with dependency gating + CycleReport
-	//         + cross-stage artifact passing (场景4).
+	// Step 3: Execute batches with topological dependency scheduling —
+	//         independent batches run concurrently; a failed batch blocks its
+	//         downstream while sibling batches continue (Bug 1 + P1-graph).
 	escalator := NewEscalator().WithLoggers(e.Loggers)
 	completedBatches := make(map[string]bool)
-	passedBatches := make(map[string]bool) // only CycleAccept; controls dep gating
-	// Track completed batch outputs for cross-stage injection.
+	passedBatches := make(map[string]bool) // only pass; controls dep gating
 	completedBatchOutputs := make(map[string]string)
+	// stateMu guards the three shared maps above plus saveCheckpoint, and also
+	// batch.CycleCount / batch.Tasks / board rendering, which saveCheckpoint
+	// and BuildBoardContent read across batches.
+	stateMu := &sync.Mutex{}
 
-	for _, batch := range batches {
-		// Check batch dependencies — use passedBatches so a failed batch
-		// does NOT unblock downstream batches (Bug 1 fix).
-		allDepsPassed := true
-		for _, depID := range batch.DependsOn {
-			if !passedBatches[depID] {
-				allDepsPassed = false
+	// Dependency graph: in-degree over existing deps, plus downstream list.
+	batchByID := make(map[string]*Batch, len(batches))
+	for _, b := range batches {
+		batchByID[b.ID] = b
+	}
+	indeg := make(map[string]int, len(batches))
+	dependents := make(map[string][]string)
+	for _, b := range batches {
+		for _, dep := range b.DependsOn {
+			if _, ok := batchByID[dep]; !ok {
+				continue // dangling dep — handled by markFailed below
+			}
+			indeg[b.ID]++
+			dependents[dep] = append(dependents[dep], b.ID)
+		}
+	}
+
+	// remaining counts batches not yet terminal (passed or failed). markFailed
+	// marks a batch and its transitive downstream failed, so a failed batch
+	// blocks downstream without aborting sibling batches.
+	remaining := len(batches)
+	// failed tracks which batches have had their failure propagated. It is keyed
+	// independently of batch.Status because failure paths (worker cancel, RunBatch
+	// error) set Status=Failed before the dispatcher observes the result — keying
+	// on Status would skip propagation and deadlock the dispatcher on <-doneCh.
+	failed := make(map[string]bool)
+	var markFailed func(id string)
+	markFailed = func(id string) {
+		if failed[id] {
+			return
+		}
+		failed[id] = true
+		if b := batchByID[id]; b != nil {
+			stateMu.Lock()
+			b.Status = BatchStatusFailed
+			stateMu.Unlock()
+		}
+		remaining--
+		for _, down := range dependents[id] {
+			markFailed(down)
+		}
+	}
+
+	// Dangling deps make a batch unsatisfiable — fail it (and downstream).
+	for _, b := range batches {
+		for _, dep := range b.DependsOn {
+			if _, ok := batchByID[dep]; !ok {
+				markFailed(b.ID)
 				break
 			}
 		}
-		if !allDepsPassed {
-			batch.Status = BatchStatusFailed
-			e.saveCheckpoint(masterTaskID, completedBatches, passedBatches, completedBatchOutputs, batches)
-			return batches, fmt.Errorf("batch %s: dependency %v not satisfied", batch.ID, batch.DependsOn)
-		}
+	}
 
-		// Check for cancellation between batches.
-		select {
-		case <-execCtx.Done():
-			// Suspend all non-terminal tasks so the dashboard shows them as
-			// stopped rather than still running.
-			for _, b := range batches {
-				for _, t := range b.Tasks {
-					if !t.State.IsTerminal() {
-						_ = e.Store.ForceTransitionState(t.ID, TaskStateSuspended, "cancelled-by-user")
-					}
-				}
-			}
-			e.saveCheckpoint(masterTaskID, completedBatches, passedBatches, completedBatchOutputs, batches)
-			e.fireEvent(TaskEvent{Type: EventStateChanged})
-			return batches, fmt.Errorf("cancelled: %w", ctx.Err())
-		default:
-		}
-
-		// Run this batch with cycle support.
+	// runBatch runs one batch to completion (DW or normal cycle loop) and
+	// records its pass/fail state.  The scheduler reads passedBatches to decide
+	// which downstream batches to unblock.
+	runBatch := func(execCtx context.Context, batch *Batch) {
 		cycleLimit := batch.MaxCycles
 		if cycleLimit <= 0 {
 			cycleLimit = 1 // at minimum one cycle
@@ -252,8 +291,9 @@ func (e *TeamEngine) PlanAndRun(ctx context.Context, goal, workdir, masterTaskID
 
 		if batch.UseDW {
 			// DW pipeline execution: multi-verifier per task, no Leader review.
-			e.runDWCycle(ctx, batch, cycleLimit, masterTaskID, completedBatches, passedBatches, completedBatchOutputs, batches, escalator, workdir, decomposerTimeout, leaderModel)
+			e.runDWCycle(execCtx, batch, cycleLimit, masterTaskID, completedBatches, passedBatches, completedBatchOutputs, batches, escalator, workdir, decomposerTimeout, leaderModel, stateMu)
 			// Cross-stage artifact passing for completed DW batch.
+			stateMu.Lock()
 			if completedBatches[batch.ID] {
 				completedBatchOutputs[batch.ID] = e.collectBatchOutputs(batch)
 				e.saveCheckpoint(masterTaskID, completedBatches, passedBatches, completedBatchOutputs, batches)
@@ -264,130 +304,198 @@ func (e *TeamEngine) PlanAndRun(ctx context.Context, goal, workdir, masterTaskID
 					}
 				}
 			}
-		} else {
-			// Normal execution with Leader review cycle.
-			var prevFindings *CycleFindingsSet
-			dryCount := 0
-			batchStart := time.Now()
+			stateMu.Unlock()
+			return
+		}
 
-		batchCycleLoop:
-			for cycle := 0; cycle < cycleLimit; cycle++ {
-				batch.CycleCount = cycle + 1
+		// Normal execution with Leader review cycle.
+		batchStart := time.Now()
+		defer func() {
+			batch.TotalDuration = time.Since(batchStart).Seconds()
+		}()
 
-				// Execute all tasks in this batch (parallel if concurrency > 0).
-				if err := e.RunBatch(execCtx, batch); err != nil {
-					BatchDone(batch.ID, string(batch.Status), time.Since(batchStart).Seconds())
-					e.saveCheckpoint(masterTaskID, completedBatches, passedBatches, completedBatchOutputs, batches)
-					return batches, fmt.Errorf("run batch %s cycle %d: %w", batch.ID, cycle, err)
-				}
+		for cycle := 0; cycle < cycleLimit; cycle++ {
+			stateMu.Lock()
+			batch.CycleCount = cycle + 1
+			stateMu.Unlock()
 
-				// Pick up self-split children for the next cycle.
-				for _, t := range batch.Tasks {
-					children, err := e.Store.ListTasksByParent(t.ID)
-					if err == nil && len(children) > 0 {
-						for _, child := range children {
-							if child.State == TaskStatePending || child.State == TaskStateAssigned {
-								_ = e.Store.UpdateTask(child.ID, map[string]interface{}{"batch_id": batch.ID, "master_task_id": t.MasterTaskID})
-								batch.Tasks = append(batch.Tasks, child)
-							}
-						}
-					}
-				}
-
-				// Loop-until-dry: collect findings, exit when no new ones for 2 cycles.
-				currentFindings := e.collectCycleFindings(batch, cycle+1)
-				if prevFindings != nil && !currentFindings.HasNewFindings(prevFindings) {
-					dryCount++
-					if dryCount >= 2 {
-						if e.Loggers != nil {
-							e.Loggers.Engine("batch %s: dry after %d cycles", batch.ID, cycle+1)
-						}
-						completedBatches[batch.ID] = true
-						if len(currentFindings.Findings) == 0 {
-							batch.Status = BatchStatusPassed
-						} else {
-							batch.Status = BatchStatusFailed
-						}
-						completedBatchOutputs[batch.ID] = e.collectBatchOutputs(batch)
-						e.saveCheckpoint(masterTaskID, completedBatches, passedBatches, completedBatchOutputs, batches)
-						BatchDone(batch.ID, string(batch.Status), time.Since(batchStart).Seconds())
-						break batchCycleLoop
-					}
-				} else {
-					dryCount = 0
-				}
-				prevFindings = currentFindings
-
-				// Check for tasks needing re-decomposition (retries exhausted).
-				newTasks, recount := escalator.LogSuspendedTasks(batch, masterTaskID, workdir, decomposerTimeout, leaderModel,
-					func(id string) (*Task, error) { return e.Store.GetTask(id) },
-					func(pt PlanTask, batchID, mtID string, parentIDs []string) (*Task, error) {
-						profile := ToolProfile(pt.Profile)
-						task, err := e.CreateTask(pt.Title, pt.Description, AgentRole(pt.Role), profile, parentIDs, 0, workdir, pt.VerifierFocus, batchID, mtID)
-						if err != nil {
-							return nil, err
-						}
-						task.BatchID = batchID
-						task.UseDW = pt.UseDW
-						task.VerifierRole = pt.VerifierRole
-						_ = e.Store.UpdateTask(task.ID, map[string]interface{}{"batch_id": batchID, "master_task_id": mtID})
-						return task, nil
-					},
-					func(taskID string, state TaskState, reason string) error {
-						return e.Store.ForceTransitionState(taskID, state, reason)
-					},
-				)
-				// Pick up new re-decomposed tasks for the dashboard.
-				if len(newTasks) > 0 {
-					_ = e.Store.Checkpoint()
-				}
-				// Add new child tasks to the batch so RunBatch picks them up.
-				batch.Tasks = append(batch.Tasks, newTasks...)
-				// If new child tasks were created by the escalator, extend the
-				// cycle limit and skip Leader review — child tasks must run
-				// first before the Leader can judge the batch.
-				if recount > 0 {
-					if cycle == cycleLimit-1 {
-						cycleLimit++
-					}
-					continue // skip Leader review, run child tasks next cycle
-				}
-
-				// Write board.md after each batch cycle.
-				if boardContent := e.Whiteboard.BuildBoardContent(batches); boardContent != "" {
-					_ = e.Whiteboard.WriteBoard(boardContent)
-				}
-
-				// Check for self-split children before declaring batch done.
-				anyNew := false
-				for _, t := range batch.Tasks {
-					if children, _ := e.Store.ListTasksByParent(t.ID); len(children) > 0 {
-						for _, c := range children {
-							if c.State == TaskStatePending || c.State == TaskStateAssigned {
-								c.BatchID = batch.ID
-								_ = e.Store.UpdateTask(c.ID, map[string]interface{}{"batch_id": batch.ID, "master_task_id": t.MasterTaskID})
-								batch.Tasks = append(batch.Tasks, c)
-								anyNew = true
-							}
-						}
-					}
-				}
-				if anyNew {
-					if cycle == cycleLimit-1 {
-						cycleLimit++ // extend limit for children
-					}
-					continue // run children in next cycle
-				}
-
-				// Batch done. Verifier already judged every task — skip Leader review.
-				completedBatches[batch.ID] = true
-				passedBatches[batch.ID] = true
-				batch.Status = BatchStatusPassed
-				completedBatchOutputs[batch.ID] = e.collectBatchOutputs(batch)
+			// Execute all tasks in this batch (parallel if concurrency > 0).
+			if err := e.RunBatch(execCtx, batch); err != nil {
 				BatchDone(batch.ID, string(batch.Status), time.Since(batchStart).Seconds())
-				break batchCycleLoop
+				stateMu.Lock()
+				batch.Status = BatchStatusFailed
+				e.saveCheckpoint(masterTaskID, completedBatches, passedBatches, completedBatchOutputs, batches)
+				stateMu.Unlock()
+				return
+			}
+
+			// Pick up self-split children for the next cycle.
+			stateMu.Lock()
+			for _, t := range batch.Tasks {
+				children, err := e.Store.ListTasksByParent(t.ID)
+				if err == nil && len(children) > 0 {
+					for _, child := range children {
+						if child.State == TaskStatePending || child.State == TaskStateAssigned {
+							_ = e.Store.UpdateTask(child.ID, map[string]interface{}{"batch_id": batch.ID, "master_task_id": t.MasterTaskID})
+							batch.Tasks = append(batch.Tasks, child)
+						}
+					}
+				}
+			}
+			stateMu.Unlock()
+
+			// Log suspended tasks (retries exhausted) for user attention.
+			escalator.LogSuspendedTasks(batch, func(id string) (*Task, error) { return e.Store.GetTask(id) })
+
+			// Write board.md after each batch cycle.
+			stateMu.Lock()
+			var boardContent string
+			e.Store.WithReadLock(func() {
+				boardContent = e.Whiteboard.BuildBoardContent(batches)
+			})
+			stateMu.Unlock()
+			if boardContent != "" {
+				_ = e.Whiteboard.WriteBoard(boardContent)
+			}
+
+			// Check for self-split children before declaring batch done.
+			anyNew := false
+			stateMu.Lock()
+			for _, t := range batch.Tasks {
+				if children, _ := e.Store.ListTasksByParent(t.ID); len(children) > 0 {
+					for _, c := range children {
+						if c.State == TaskStatePending || c.State == TaskStateAssigned {
+							c.BatchID = batch.ID
+							_ = e.Store.UpdateTask(c.ID, map[string]interface{}{"batch_id": batch.ID, "master_task_id": t.MasterTaskID})
+							batch.Tasks = append(batch.Tasks, c)
+							anyNew = true
+						}
+					}
+				}
+			}
+			stateMu.Unlock()
+			if anyNew {
+				if cycle == cycleLimit-1 {
+					cycleLimit++ // extend limit for children
+				}
+				continue // run children in next cycle
+			}
+
+			// Batch done. Verifier already judged every task — skip Leader review,
+			// but fail the batch if any task is not Done (retries exhausted →
+			// suspended, or failed).
+			stateMu.Lock()
+			completedBatches[batch.ID] = true
+			batchFailed := false
+			for _, t := range batch.Tasks {
+				st := e.Store.TaskState(t.ID)
+				if st != TaskStateDone {
+					batchFailed = true
+					break
+				}
+			}
+			if batchFailed {
+				batch.Status = BatchStatusFailed
+			} else {
+				batch.Status = BatchStatusPassed
+				passedBatches[batch.ID] = true
+			}
+			completedBatchOutputs[batch.ID] = e.collectBatchOutputs(batch)
+			e.saveCheckpoint(masterTaskID, completedBatches, passedBatches, completedBatchOutputs, batches)
+			stateMu.Unlock()
+			BatchDone(batch.ID, string(batch.Status), time.Since(batchStart).Seconds())
+			return
+		}
+	}
+
+	// Concurrent scheduler: a worker pool drains the ready queue; the main
+	// goroutine owns the queue, in-degrees, and remaining count.
+	type batchResult struct {
+		id     string
+		passed bool
+	}
+	workCh := make(chan string, len(batches))
+	doneCh := make(chan batchResult, len(batches))
+
+	concurrency := e.teamMaxAgents()
+	if concurrency <= 0 || concurrency > len(batches) {
+		concurrency = len(batches)
+	}
+	if concurrency <= 0 {
+		concurrency = 1
+	}
+	var wg sync.WaitGroup
+	for i := 0; i < concurrency; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for id := range workCh {
+				b := batchByID[id]
+				// Cancel check before starting each batch.
+				select {
+				case <-execCtx.Done():
+					for _, t := range b.Tasks {
+						if !t.State.IsTerminal() {
+							_ = e.Store.ForceTransitionState(t.ID, TaskStateSuspended, "cancelled-by-user")
+						}
+					}
+					stateMu.Lock()
+					b.Status = BatchStatusFailed
+					e.saveCheckpoint(masterTaskID, completedBatches, passedBatches, completedBatchOutputs, batches)
+					stateMu.Unlock()
+					doneCh <- batchResult{id: id, passed: false}
+					continue
+				default:
+				}
+				runBatch(execCtx, b)
+				stateMu.Lock()
+				passed := passedBatches[id]
+				stateMu.Unlock()
+				doneCh <- batchResult{id: id, passed: passed}
+			}
+		}()
+	}
+
+	// Seed the ready queue with in-degree-0 batches.
+	for _, b := range batches {
+		if b.Status != BatchStatusFailed && indeg[b.ID] == 0 {
+			workCh <- b.ID
+		}
+	}
+
+	// Dispatch completion events until every batch is terminal. remaining is
+	// decremented exactly once per batch: in the passed branch here, or inside
+	// markFailed (which covers the failed batch and its blocked downstream).
+	for remaining > 0 {
+		res := <-doneCh
+		if res.passed {
+			remaining--
+			for _, down := range dependents[res.id] {
+				indeg[down]--
+				if indeg[down] == 0 && !failed[down] {
+					workCh <- down
+				}
+			}
+		} else {
+			markFailed(res.id)
+		}
+	}
+	close(workCh)
+	wg.Wait()
+
+	// Cancellation: suspend any stragglers and report.
+	if execCtx.Err() != nil {
+		for _, b := range batches {
+			for _, t := range b.Tasks {
+				if !t.State.IsTerminal() {
+					_ = e.Store.ForceTransitionState(t.ID, TaskStateSuspended, "cancelled-by-user")
+				}
 			}
 		}
+		e.saveCheckpoint(masterTaskID, completedBatches, passedBatches, completedBatchOutputs, batches)
+		e.fireEvent(TaskEvent{Type: EventStateChanged})
+		e.logRunSummary(runStart, elabDur, decompDur, batches)
+		return batches, fmt.Errorf("cancelled: %w", ctx.Err())
 	}
 
 	// Step 4: Write final deliverable.md.
@@ -400,6 +508,7 @@ func (e *TeamEngine) PlanAndRun(ctx context.Context, goal, workdir, masterTaskID
 	e.assembleParentOutputs(batches)
 	e.writeMasterOutput(goal, batches, workdir)
 
+	e.logRunSummary(runStart, elabDur, decompDur, batches)
 	return batches, nil
 }
 
@@ -424,6 +533,28 @@ func (e *TeamEngine) collectBatchOutputs(batch *Batch) string {
 		b.WriteString(fmt.Sprintf("\nArtifacts: %v\n", artifacts))
 	}
 	return b.String()
+}
+
+// logRunSummary emits a per-stage timing table to team_engine.log at the end
+// of a run (P2-timing).  It reuses batch.TotalDuration (set in runBatch /
+// runDWCycle) plus the elaborate/decompose timings measured in PlanAndRun, so a
+// single glance shows which stage consumed the most wall-clock time.
+func (e *TeamEngine) logRunSummary(runStart time.Time, elabDur, decompDur time.Duration, batches []*Batch) {
+	total := time.Since(runStart).Seconds()
+	pct := func(d float64) float64 {
+		if total <= 0 {
+			return 0
+		}
+		return d / total * 100
+	}
+	Log("plan", "=== RUN SUMMARY ===")
+	Log("plan", "elaborate: %.1fs (%.0f%%)", elabDur.Seconds(), pct(elabDur.Seconds()))
+	Log("plan", "decompose: %.1fs (%.0f%%)", decompDur.Seconds(), pct(decompDur.Seconds()))
+	for _, b := range batches {
+		Log("plan", "batch %s [%s]: %d tasks, cycles=%d, %.1fs (%.0f%%)",
+			b.LabelOrID(), b.Status, len(b.Tasks), b.CycleCount, b.TotalDuration, pct(b.TotalDuration))
+	}
+	Log("plan", "TOTAL: %.1fs", total)
 }
 
 // buildStageArtifactContext generates context that injects previous batch
@@ -533,16 +664,20 @@ func (e *TeamEngine) runDWCycle(
 	workdir string,
 	decomposerTimeout time.Duration,
 	leaderModel string,
+	stateMu *sync.Mutex,
 ) {
 	var prevFindings *CycleFindingsSet
 	dryCount := 0
 	batchStart := time.Now()
 	defer func() {
-		BatchDone(batch.ID, string(batch.Status), time.Since(batchStart).Seconds())
+		batch.TotalDuration = time.Since(batchStart).Seconds()
+		BatchDone(batch.ID, string(batch.Status), batch.TotalDuration)
 	}()
 
 	for cycle := 0; cycle < cycleLimit; cycle++ {
+		stateMu.Lock()
 		batch.CycleCount = cycle + 1
+		stateMu.Unlock()
 
 		// Check cancellation between cycles.
 		select {
@@ -559,7 +694,9 @@ func (e *TeamEngine) runDWCycle(
 
 		// Execute all tasks in parallel (each with DW verification if task.UseDW).
 		if err := e.RunBatch(ctx, batch); err != nil {
+			stateMu.Lock()
 			e.saveCheckpoint(masterTaskID, completedBatches, passedBatches, completedBatchOutputs, batches)
+			stateMu.Unlock()
 			return
 		}
 
@@ -575,14 +712,17 @@ func (e *TeamEngine) runDWCycle(
 				if e.Loggers != nil {
 					e.Loggers.Engine("DW batch %s: dry after %d cycles", batch.ID, cycle+1)
 				}
+				stateMu.Lock()
 				completedBatches[batch.ID] = true
 				if len(currentFindings.Findings) == 0 {
 					batch.Status = BatchStatusPassed
+					passedBatches[batch.ID] = true
 				} else {
 					batch.Status = BatchStatusFailed
 				}
 				completedBatchOutputs[batch.ID] = e.collectBatchOutputs(batch)
 				e.saveCheckpoint(masterTaskID, completedBatches, passedBatches, completedBatchOutputs, batches)
+				stateMu.Unlock()
 				return
 			}
 		} else {
@@ -590,75 +730,52 @@ func (e *TeamEngine) runDWCycle(
 		}
 		prevFindings = currentFindings
 
-		// Escalator: re-decompose stuck tasks (retries exhausted).
-		newTasks, recount := escalator.LogSuspendedTasks(batch, masterTaskID, workdir, decomposerTimeout, leaderModel,
-			func(id string) (*Task, error) { return e.Store.GetTask(id) },
-			func(pt PlanTask, batchID, mtID string, parentIDs []string) (*Task, error) {
-				profile := ToolProfile(pt.Profile)
-				task, err := e.CreateTask(pt.Title, pt.Description, AgentRole(pt.Role), profile, parentIDs, 0, workdir, pt.VerifierFocus, batchID, mtID)
-				if err != nil {
-					return nil, err
-				}
-				task.BatchID = batchID
-				task.UseDW = pt.UseDW
-				task.VerifierRole = pt.VerifierRole
-				_ = e.Store.UpdateTask(task.ID, map[string]interface{}{"batch_id": batchID, "master_task_id": mtID})
-				return task, nil
-			},
-			func(taskID string, state TaskState, reason string) error {
-				return e.Store.ForceTransitionState(taskID, state, reason)
-			},
-		)
-		batch.Tasks = append(batch.Tasks, newTasks...)
-		// Flush WAL so dashboard sees new re-decomposed tasks.
-		if len(newTasks) > 0 {
-			_ = e.Store.Checkpoint()
-		}
-		if recount > 0 {
-			if cycle == cycleLimit-1 {
-				cycleLimit++
-			}
-			continue // skip further processing, run child tasks next cycle
-		}
+		// Log suspended tasks (retries exhausted) for user attention.
+		escalator.LogSuspendedTasks(batch, func(id string) (*Task, error) { return e.Store.GetTask(id) })
 
 		// Write board after each cycle.
-		if boardContent := e.Whiteboard.BuildBoardContent(batches); boardContent != "" {
+		stateMu.Lock()
+		var boardContent string
+		e.Store.WithReadLock(func() {
+			boardContent = e.Whiteboard.BuildBoardContent(batches)
+		})
+		stateMu.Unlock()
+		if boardContent != "" {
 			_ = e.Whiteboard.WriteBoard(boardContent)
 		}
 
-		// Check if all tasks passed.  Only retry failed tasks (not suspended —
-		// those are handled by Escalator).
+		// Check if all tasks passed.  Only retry failed tasks; suspended tasks
+		// (retries exhausted) fail the batch, not pass it.
 		allPassed := true
 		for _, t := range batch.Tasks {
-			current, err := e.Store.GetTask(t.ID)
-			if err != nil {
-				continue
-			}
-			if current == nil {
-				continue
-			}
-			if current.State == TaskStateFailed {
+			state := e.Store.TaskState(t.ID)
+			if state == TaskStateFailed {
 				allPassed = false
 				_ = e.Store.ForceTransitionState(t.ID, TaskStateAssigned, "dw-retry")
-			} else if current.State != TaskStateDone && current.State != TaskStateSuspended {
+			} else if state != TaskStateDone {
 				allPassed = false
 			}
 		}
 
 		if allPassed {
+			stateMu.Lock()
 			batch.Status = BatchStatusPassed
 			completedBatches[batch.ID] = true
+			passedBatches[batch.ID] = true
 			completedBatchOutputs[batch.ID] = e.collectBatchOutputs(batch)
 			e.saveCheckpoint(masterTaskID, completedBatches, passedBatches, completedBatchOutputs, batches)
+			stateMu.Unlock()
 			return
 		}
 	}
 
 	// Max cycles reached — auto-accept whatever we have.
+	stateMu.Lock()
 	batch.Status = BatchStatusFailed
 	completedBatches[batch.ID] = true
 	completedBatchOutputs[batch.ID] = e.collectBatchOutputs(batch)
 	e.saveCheckpoint(masterTaskID, completedBatches, passedBatches, completedBatchOutputs, batches)
+	stateMu.Unlock()
 	if e.Loggers != nil {
 		e.Loggers.Engine("DW batch %s: max cycles (%d) reached, auto-accepting", batch.ID, cycleLimit)
 	}

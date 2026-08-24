@@ -55,22 +55,24 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 		return true, nil
 	}
 
-	// Guard: only start from PENDING, ASSIGNED, or PRODUCED.
-	if task.State != TaskStatePending && task.State != TaskStateAssigned && task.State != TaskStateProduced {
+	// Guard: only start from PENDING, ASSIGNED, or PRODUCED. Read the derived
+	// file state, not the shared *Task.State field, so this read never races
+	// with a concurrent refreshState write.
+	if state != TaskStatePending && state != TaskStateAssigned && state != TaskStateProduced {
 		e.mu.Unlock()
-		return false, fmt.Errorf("task %q is in state %s; can only run from pending/assigned/produced", taskID, task.State)
+		return false, fmt.Errorf("task %q is in state %s; can only run from pending/assigned/produced", taskID, state)
 	}
 
 	// When resuming with existing output, skip produce and go straight to verification.
-	skipProduce := task.State == TaskStateProduced
+	skipProduce := state == TaskStateProduced
 
-	// Step 1: Assign (only for pending tasks).
-	if task.State == TaskStatePending {
+	// Step 1: Assign (only for pending tasks). AssignTask transitions the
+	// store's in-memory state under fs.mu, so no direct field write here.
+	if state == TaskStatePending {
 		if err := e.AssignTask(taskID); err != nil {
 			e.mu.Unlock()
 			return false, fmt.Errorf("assign task: %w", err)
 		}
-		task.State = TaskStateAssigned
 	}
 	e.mu.Unlock()
 
@@ -89,22 +91,9 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 		// Build inbox.md with file-path references, not inline content.
 		// Agent reads inbox.md → does work → writes output file.
 
-		// Collect upstream output file references from parent tasks.
-		var upstreamRefs []UpstreamRef
-		for _, pid := range task.ParentIDs {
-			if pt, ptErr := e.Store.GetTask(pid); ptErr == nil && pt != nil && pt.Output != "" {
-				upstreamRefs = append(upstreamRefs, UpstreamRef{Name: pt.Title, Path: pt.Output})
-			}
-		}
-		// Also include done same-batch task outputs.
-		if task.BatchID != "" && task.MasterTaskID != "" {
-			batchTasks, _ := e.Store.ListTasksByMasterTask(task.MasterTaskID)
-			for _, bt := range batchTasks {
-				if bt.BatchID == task.BatchID && bt.ID != task.ID && bt.State == TaskStateDone && bt.Output != "" {
-					upstreamRefs = append(upstreamRefs, UpstreamRef{Name: bt.Title, Path: bt.Output})
-				}
-			}
-		}
+		// Collect upstream output file references (parents + done same-batch
+		// siblings) as a lock-held value snapshot — see Store.UpstreamOutputs.
+		upstreamRefs := e.Store.UpstreamOutputs(task)
 
 		// ---- Phase 1: Producing (skip if resuming with existing output) --
 		workerKey := "worker:" + taskID
@@ -422,6 +411,7 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 		var feedback string
 		var verifyDur time.Duration
 		var v *Verifier
+		var skipVerifier bool
 
 		// Non-worktree: the Worker produced in its sandbox out/ directory, but
 		// task.Workdir still points at the original workspace (output is only
@@ -455,7 +445,23 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 			}
 		}
 
-		if task.UseDW {
+		// 回归风险抽样：机械客观门通过后，纯新建独立文件（未触及任何已存在
+		// workspace 文件）且无关键 verifier 角色的任务跳过 LLM 语义 verifier，
+		// 避免为独立页面文件付 worker+verifier 双份 LLM。客观门每次都跑。
+		skipVerifier = e.shouldSkipVerifier(task, verifyWorkdir)
+
+		if skipVerifier {
+			passed = true
+			feedback = "mechanical gate only（客观门通过，交付物为新建独立文件，跳过语义审查）"
+			if e.Loggers != nil {
+				e.Loggers.Engine("task %s verifier SKIP (mechanical gate only, low regression risk)", taskID[:8])
+			}
+			// 写 verifier.md 以驱动 file-based state 到 done —— 等价于 verifier.Verify
+			// 内部的 WriteVerifier 行为：跳过语义审查只是不付 LLM，产出证据照写。
+			if err := e.Whiteboard.WriteVerifier(taskID, feedback); err != nil {
+				Log("task", "task %s write verifier marker failed: %v", taskID[:8], err)
+			}
+		} else if task.UseDW {
 			// Dynamic Workflow mode: N verifiers in parallel + Synthesizer.
 			passed, _, feedback = e.runDWVerification(task)
 		} else {
@@ -631,12 +637,17 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 			return false, fmt.Errorf("task %q disappeared", taskID)
 		}
 
-		task.RetryCount = attempt + 1
-		task.VerifierFeedback = feedback
+		// Build retry state in local variables — never write the shared *Task
+		// pointer outside the store lock (UpdateTask owns those writes under
+		// fs.mu). prevFeedback captures the previous round's feedback before it
+		// is overwritten, so stagnation detection compares two distinct rounds.
+		newRetryCount := attempt + 1
+		prevFeedback := task.VerifierFeedback
+		desc := task.Description
 		// Strip any previous verifier feedback blocks to prevent
 		// prompt bloat across retries (context grows unboundedly).
-		if idx := strings.Index(task.Description, "\n\n[VERIFIER FEEDBACK"); idx >= 0 {
-			task.Description = task.Description[:idx]
+		if idx := strings.Index(desc, "\n\n[VERIFIER FEEDBACK"); idx >= 0 {
+			desc = desc[:idx]
 		}
 		// Guard: empty feedback from a lazy verifier wastes Worker time.
 		// Generate a meaningful default so the Worker knows what to fix.
@@ -647,14 +658,14 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 				"complete — no truncated code, all functions implemented, " +
 				"and the deliverable compiles or passes basic checks."
 		}
-		task.Description += fmt.Sprintf(
+		desc += fmt.Sprintf(
 			"\n\n[VERIFIER FEEDBACK - Attempt %d]\n%s",
-			task.RetryCount, feedback,
+			newRetryCount, feedback,
 		)
 
 		if err := e.Store.UpdateTask(taskID, map[string]interface{}{
-			"retry_count":       task.RetryCount,
-			"description":       task.Description,
+			"retry_count":       newRetryCount,
+			"description":       desc,
 			"verifier_feedback": feedback,
 		}); err != nil {
 			e.mu.Unlock()
@@ -674,7 +685,7 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 		}
 		// Stagnation: same findings 2 rounds → suspend.
 		if attempt >= 2 {
-			prevFindings := ParseFindings(task.VerifierFeedback)
+			prevFindings := ParseFindings(prevFeedback)
 			currFindings := ParseFindings(feedback)
 			if findingsAreSame(prevFindings, currFindings) {
 				if err := e.Store.TransitionState(taskID, TaskStateSuspended, "same findings 2 rounds — early re-decomposition", feedback); err != nil {
@@ -686,7 +697,7 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 			}
 		}
 
-		if task.RetryCount >= task.MaxRetries {
+		if newRetryCount >= task.MaxRetries {
 			// Don't fail — the leader should re-decompose just this task.
 			if err := e.Store.TransitionState(taskID, TaskStateSuspended, "retries exhausted — needs re-decomposition", feedback); err != nil {
 				e.mu.Unlock()
@@ -696,14 +707,13 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 			return false, nil
 		}
 
-		// Reset state back to assigned for retry.
+		// Reset state back to assigned for retry. TransitionState updates the
+		// store's in-memory state under fs.mu, so no direct field write here.
 		if err := e.Store.TransitionState(taskID, TaskStateAssigned, "", ""); err != nil {
 			e.mu.Unlock()
 			return false, fmt.Errorf("transition to assigned for retry: %w", err)
 		}
 		e.mu.Unlock()
-
-		task.State = TaskStateAssigned
 	}
 
 	return false, nil
@@ -725,6 +735,59 @@ func runMechanicalVerify(workdir string) (passed bool, detail string) {
 		return false, fmt.Sprintf("%s %s\n%s", name, strings.Join(args, " "), string(out))
 	}
 	return true, ""
+}
+
+// outDeliverables walks outDir and reports how many files the worker produced
+// and whether any of them already exist at the corresponding path in workdir —
+// i.e. the worker modified an existing workspace file rather than creating a
+// brand-new standalone deliverable.
+func outDeliverables(outDir, workdir string) (count int, touches bool, err error) {
+	walkErr := filepath.Walk(outDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.IsDir() {
+			return nil
+		}
+		count++
+		rel, relErr := filepath.Rel(outDir, path)
+		if relErr != nil {
+			return relErr
+		}
+		if _, statErr := os.Stat(filepath.Join(workdir, rel)); statErr == nil {
+			touches = true
+		}
+		return nil
+	})
+	return count, touches, walkErr
+}
+
+// shouldSkipVerifier decides whether the LLM semantic verifier can be skipped
+// after the mechanical gate passes. It is conservative: only brand-new
+// standalone deliverables (touching no pre-existing workspace file) from
+// mechanical roles are eligible. The mechanical gate (automated tests) always
+// runs regardless; worktree and DW modes never skip.
+func (e *TeamEngine) shouldSkipVerifier(task *Task, verifyWorkdir string) bool {
+	if task.UseDW {
+		return false
+	}
+	// Worktree mode edits the repo in place via a branch; regression assessment
+	// needs a git diff — be conservative and always verify.
+	if e.activeBranch(task.ID) != "" {
+		return false
+	}
+	// Subjective/key roles (architecture, security, docs) always verify.
+	if task.VerifierRole != "" {
+		return false
+	}
+	// High regression risk: the deliverable touches an existing workspace file.
+	// An empty out/ (worker produced nothing) also verifies — a missing
+	// deliverable is not a low-risk standalone file.
+	count, touches, err := outDeliverables(verifyWorkdir, task.Workdir)
+	if err != nil || touches || count == 0 {
+		return false
+	}
+	return true
 }
 
 // detectTestCommand 在 workdir 检测标准自动化测试/构建命令，返回命令名与参数。

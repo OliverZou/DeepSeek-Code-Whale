@@ -322,9 +322,9 @@ func (fs *FileTaskStore) InsertTask(task *Task) error {
 }
 
 func (fs *FileTaskStore) GetTask(id string) (*Task, error) {
-	fs.mu.RLock()
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
 	t, ok := fs.tasks[id]
-	fs.mu.RUnlock()
 	if !ok {
 		return nil, nil
 	}
@@ -333,8 +333,8 @@ func (fs *FileTaskStore) GetTask(id string) (*Task, error) {
 }
 
 func (fs *FileTaskStore) ListTasks() ([]*Task, error) {
-	fs.mu.RLock()
-	defer fs.mu.RUnlock()
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
 	result := make([]*Task, 0, len(fs.tasks))
 	for _, t := range fs.tasks {
 		fs.refreshState(t)
@@ -344,8 +344,8 @@ func (fs *FileTaskStore) ListTasks() ([]*Task, error) {
 }
 
 func (fs *FileTaskStore) ListTasksByMasterTask(masterID string) ([]*Task, error) {
-	fs.mu.RLock()
-	defer fs.mu.RUnlock()
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
 	var result []*Task
 	for _, t := range fs.tasks {
 		if t.MasterTaskID == masterID {
@@ -357,8 +357,8 @@ func (fs *FileTaskStore) ListTasksByMasterTask(masterID string) ([]*Task, error)
 }
 
 func (fs *FileTaskStore) ListTasksByParent(parentID string) ([]*Task, error) {
-	fs.mu.RLock()
-	defer fs.mu.RUnlock()
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
 	var result []*Task
 	for _, t := range fs.tasks {
 		for _, pid := range t.ParentIDs {
@@ -373,8 +373,8 @@ func (fs *FileTaskStore) ListTasksByParent(parentID string) ([]*Task, error) {
 }
 
 func (fs *FileTaskStore) ListTasksByState(state TaskState) ([]*Task, error) {
-	fs.mu.RLock()
-	defer fs.mu.RUnlock()
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
 	var result []*Task
 	for _, t := range fs.tasks {
 		fs.refreshState(t)
@@ -383,6 +383,57 @@ func (fs *FileTaskStore) ListTasksByState(state TaskState) ([]*Task, error) {
 		}
 	}
 	return result, nil
+}
+
+// WithReadLock runs fn while holding the store's read lock. Callers that read
+// Task fields (State, RetryCount, …) outside a store write method must hold
+// this lock so concurrent writers (refreshState, TransitionState, UpdateTask)
+// are serialized against the read.
+func (fs *FileTaskStore) WithReadLock(fn func()) {
+	fs.mu.RLock()
+	defer fs.mu.RUnlock()
+	fn()
+}
+
+// TaskState returns the derived state of a task as a value, without leaking the
+// shared *Task pointer. Callers that only need the state use this instead of
+// GetTask so they never read a shared Task field outside the store lock.
+func (fs *FileTaskStore) TaskState(id string) TaskState {
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+	t, ok := fs.tasks[id]
+	if !ok {
+		return ""
+	}
+	fs.refreshState(t)
+	return t.State
+}
+
+// UpstreamOutputs returns named output references for a task's parents and its
+// done same-batch siblings. Reads happen under the store lock and the result is
+// a value snapshot — no shared *Task pointer escapes, so callers never race with
+// refreshState/UpdateTask writers.
+func (fs *FileTaskStore) UpstreamOutputs(task *Task) []UpstreamRef {
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+	var refs []UpstreamRef
+	for _, pid := range task.ParentIDs {
+		if pt, ok := fs.tasks[pid]; ok && pt.Output != "" {
+			fs.refreshState(pt)
+			refs = append(refs, UpstreamRef{Name: pt.Title, Path: pt.Output})
+		}
+	}
+	if task.BatchID != "" && task.MasterTaskID != "" {
+		for _, bt := range fs.tasks {
+			if bt.MasterTaskID == task.MasterTaskID && bt.BatchID == task.BatchID && bt.ID != task.ID {
+				fs.refreshState(bt)
+				if bt.State == TaskStateDone && bt.Output != "" {
+					refs = append(refs, UpstreamRef{Name: bt.Title, Path: bt.Output})
+				}
+			}
+		}
+	}
+	return refs
 }
 
 // UpdateTask updates structural fields only. State and RetryCount are runtime-only.
@@ -408,6 +459,10 @@ func (fs *FileTaskStore) UpdateTask(id string, fields map[string]interface{}) er
 	if v, ok := fields["description"]; ok {
 		meta.Description = fmt.Sprint(v)
 		t.Description = meta.Description
+	}
+	if v, ok := fields["output"]; ok {
+		meta.Output = fmt.Sprint(v)
+		t.Output = meta.Output
 	}
 	if v, ok := fields["batch_id"]; ok {
 		meta.BatchID = fmt.Sprint(v)
