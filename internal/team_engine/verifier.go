@@ -22,6 +22,9 @@ type Verifier struct {
 	agentName  string
 	workdir    string
 	LastPrompt string
+	// LastSystemPrompt captures the assembled extra system-prompt content the
+	// verifier ran with (adapter only; "" for shell) — logged for auditability.
+	LastSystemPrompt string
 	// LastPromptTokens/LastCompletionTokens record the tokens consumed by the
 	// most recent Verify run (worker+verifier accounting; 0 when unavailable).
 	LastPromptTokens     int
@@ -88,16 +91,14 @@ WORKER OUTPUT (%d chars):
 %s
 `, desc, len(workerOutput), truncateStr(workerOutput, 3000)))
 
-	// Only include inbox when it carries upstream outputs, templates,
-	// or memory — not when it's just a duplicate of the TASK section.
-	if inbox != "" && (strings.Contains(inbox, "## 📥") ||
-		strings.Contains(inbox, "## 📄") ||
-		strings.Contains(inbox, "## 🧠") ||
-		strings.Contains(inbox, "## 🔄")) {
+	// Only include the upstream-output section (## 📥) — the verifier needs to
+	// know which upstream files to check for integration, but not the worker's
+	// template (## 📄), role memory (## 🧠), or retry feedback (## 🔄).
+	if upstream := extractUpstreamSection(inbox); upstream != "" {
 		b.WriteString(fmt.Sprintf(`
 UPSTREAM CONTEXT:
 %s
-`, inbox))
+`, upstream))
 	}
 
 	if task.VerifierFocus != "" {
@@ -163,6 +164,7 @@ func (v *Verifier) Verify(task *Task) (passed bool, retry bool, feedback string,
 	result := v.runner.RunVerifier(prompt, workdir, timeout, vIters, vCalls, vTokens, v.agentName, model)
 	v.LastPromptTokens = result.UsagePrompt
 	v.LastCompletionTokens = result.UsageCompletion
+	v.LastSystemPrompt = result.SystemPrompt
 
 	output := result.Stdout
 
@@ -350,6 +352,25 @@ func ExtractSection(content, sectionTitle string) string {
 	nextSection := regexp.MustCompile(`\n## `).FindStringIndex(body)
 	if nextSection != nil {
 		body = body[:nextSection[0]]
+	}
+	return strings.TrimSpace(body)
+}
+
+// extractUpstreamSection pulls only the "## 📥 上游产出" block out of an inbox
+// document, discarding the task description, template, memory, and retry-feedback
+// sections.  The verifier only needs the upstream file list to check integration;
+// everything else in the inbox is worker-scoped context it should not re-read.
+func extractUpstreamSection(inbox string) string {
+	if inbox == "" {
+		return ""
+	}
+	idx := strings.Index(inbox, "## 📥")
+	if idx < 0 {
+		return ""
+	}
+	body := inbox[idx:]
+	if next := regexp.MustCompile(`\n## `).FindStringIndex(body); next != nil {
+		body = body[:next[0]]
 	}
 	return strings.TrimSpace(body)
 }

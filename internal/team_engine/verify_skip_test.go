@@ -3,6 +3,7 @@ package team_engine
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -189,7 +190,7 @@ func TestUpstreamOutputs_CrossBatch(t *testing.T) {
 	}
 
 	// batch2 任务：应能拿到跨 batch 前置任务的产出（绝对路径）。
-	taskB := &Task{ID: "bbb", Title: "接线", Output: "game.js", Workdir: ws, MasterTaskID: "m1", BatchID: "2"}
+	taskB := &Task{ID: "bbb", Title: "接线", Output: "game.js", Workdir: ws, MasterTaskID: "m1", BatchID: "2", UpstreamBatches: []string{"1"}}
 	if err := store.InsertTask(taskB); err != nil {
 		t.Fatal(err)
 	}
@@ -203,5 +204,54 @@ func TestUpstreamOutputs_CrossBatch(t *testing.T) {
 	}
 	if want := filepath.Join(ws, "game.js"); refs[0].Path != want {
 		t.Fatalf("expected absolute path %q, got %q", want, refs[0].Path)
+	}
+}
+
+func TestUpstreamOutputs_NoDependencySkipsUnrelated(t *testing.T) {
+	store, err := NewFileTaskStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	ws := t.TempDir()
+
+	// 同 master 下另一个已完成的任务，但当前任务不依赖它。
+	taskA := &Task{ID: "aaa", Title: "无关前置", Output: "other.js", Workdir: ws, MasterTaskID: "m1", BatchID: "1"}
+	if err := store.InsertTask(taskA); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"output.md", "verify.md"} {
+		if err := os.WriteFile(filepath.Join(store.taskDir("aaa"), name), []byte("x"), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// 当前任务没有任何上游 batch 依赖 → 不应看到无关任务的产出。
+	taskB := &Task{ID: "bbb", Title: "独立任务", Output: "app.js", Workdir: ws, MasterTaskID: "m1", BatchID: "2"}
+	if err := store.InsertTask(taskB); err != nil {
+		t.Fatal(err)
+	}
+
+	refs := store.UpstreamOutputs(taskB)
+	if len(refs) != 0 {
+		t.Fatalf("expected 0 upstream refs for a task with no dependency, got %d", len(refs))
+	}
+}
+
+func TestExtractUpstreamSection(t *testing.T) {
+	inbox := "# 任务\n\n## 📋 任务描述\n\ndo the thing\n\n## 📥 上游产出（请先阅读）\n\n- [核心逻辑](/ws/game.js)\n\n## 📄 产出模板\n\nwrite js\n\n## 🧠 团队记忆\n\nrole memory\n\n## 🔄 上一轮审查反馈\n\nretry this\n"
+	got := extractUpstreamSection(inbox)
+	if !strings.Contains(got, "上游产出") {
+		t.Fatalf("expected upstream section, got %q", got)
+	}
+	if strings.Contains(got, "产出模板") || strings.Contains(got, "团队记忆") || strings.Contains(got, "审查反馈") {
+		t.Fatalf("leaked non-upstream section into verifier context: %q", got)
+	}
+	if !strings.Contains(got, "/ws/game.js") {
+		t.Fatalf("expected upstream file ref, got %q", got)
+	}
+	if got2 := extractUpstreamSection("no upstream here"); got2 != "" {
+		t.Fatalf("expected empty for missing upstream section, got %q", got2)
 	}
 }

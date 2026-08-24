@@ -87,6 +87,7 @@ type RunResult struct {
 	UsagePrompt     int     `json:"-"` // prompt tokens (0 if unavailable)
 	UsageCompletion int     `json:"-"` // completion tokens (0 if unavailable)
 	SpawnerType     string  `json:"-"` // "adapter" or "shell" — which spawner was used
+	SystemPrompt    string  `json:"-"` // assembled extra system-prompt content (adapter only; "" for shell)
 	PID             int     `json:"-"` // OS process ID (0 if in-process)
 }
 
@@ -141,6 +142,7 @@ type SubagentResponse struct {
 	UsagePrompt     int    // prompt tokens consumed
 	UsageCompletion int    // completion tokens consumed
 	Diagnostic      string // detailed debug info (tool resolution, status, errors)
+	SystemPrompt    string // assembled extra system-prompt content (adapter only; "" for shell)
 	PID             int    // OS process ID (0 if in-process adapter)
 }
 
@@ -253,6 +255,7 @@ func (ar *AgentRunner) RunWithContext(ctx context.Context, prompt, workdir, tool
 		Structured:      resp.Structured,
 		UsagePrompt:     resp.UsagePrompt,
 		UsageCompletion: resp.UsageCompletion,
+		SystemPrompt:    resp.SystemPrompt,
 		PID:             resp.PID,
 	}
 }
@@ -318,6 +321,7 @@ func (ar *AgentRunner) RunVerifier(prompt, workdir string, timeout time.Duration
 		Structured:      resp.Structured,
 		UsagePrompt:     resp.UsagePrompt,
 		UsageCompletion: resp.UsageCompletion,
+		SystemPrompt:    resp.SystemPrompt,
 		PID:             resp.PID,
 	}
 }
@@ -434,6 +438,7 @@ func (ar *AgentRunner) RunDecomposer(prompt, workdir string, timeout time.Durati
 		Structured:      resp.Structured,
 		UsagePrompt:     resp.UsagePrompt,
 		UsageCompletion: resp.UsageCompletion,
+		SystemPrompt:    resp.SystemPrompt,
 	}
 }
 
@@ -499,6 +504,7 @@ func (ar *AgentRunner) RunElaborationStep(prompt, workdir string, timeout time.D
 		Structured:      resp.Structured,
 		UsagePrompt:     resp.UsagePrompt,
 		UsageCompletion: resp.UsageCompletion,
+		SystemPrompt:    resp.SystemPrompt,
 	}
 }
 

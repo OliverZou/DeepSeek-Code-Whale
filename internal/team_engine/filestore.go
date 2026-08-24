@@ -113,6 +113,7 @@ type taskMeta struct {
 	WorkspacePath    string   `json:"workspace_path,omitempty"`
 	Output           string   `json:"output"`
 	ParentIDs        []string `json:"parent_ids,omitempty"`
+	UpstreamBatches  []string `json:"upstream_batches,omitempty"`
 	BatchID          string   `json:"batch_id,omitempty"`
 	MasterTaskID     string   `json:"master_task_id,omitempty"`
 	VerifierFocus    string   `json:"verifier_focus,omitempty"`
@@ -151,6 +152,7 @@ func (fs *FileTaskStore) taskFromMeta(meta *taskMeta) *Task {
 		Role:             AgentRole(meta.Role),
 		Output:           meta.Output,
 		ParentIDs:        meta.ParentIDs,
+		UpstreamBatches:  meta.UpstreamBatches,
 		BatchID:          meta.BatchID,
 		MasterTaskID:     meta.MasterTaskID,
 		VerifierFocus:    meta.VerifierFocus,
@@ -305,7 +307,7 @@ func (fs *FileTaskStore) InsertTask(task *Task) error {
 	meta := &taskMeta{
 		ID: task.ID, Title: task.Title, Description: task.Description,
 		Role: string(task.Role), Output: task.Output,
-		ParentIDs: task.ParentIDs, BatchID: task.BatchID, MasterTaskID: task.MasterTaskID,
+		ParentIDs: task.ParentIDs, UpstreamBatches: task.UpstreamBatches, BatchID: task.BatchID, MasterTaskID: task.MasterTaskID,
 		VerifierFocus: task.VerifierFocus, MaxRetries: task.MaxRetries,
 		CreatedAt: time.Now().UTC().Format(time.RFC3339),
 	}
@@ -432,12 +434,19 @@ func (fs *FileTaskStore) UpstreamOutputs(task *Task) []UpstreamRef {
 			add(pt)
 		}
 	}
-	// 同 master 下所有已完成的其他任务（同 batch 兄弟 + 跨 batch 前置）。
-	// 跨 batch 依赖使后续 batch 的 worker 能读到前置 batch 的产出文件，
-	// 避免 worker 因拿不到上游文件而整段重写（2048 batch2 接线 worker 718s 的根因）。
-	if task.MasterTaskID != "" {
+	// 上游 batch 的产出（精准）：只收集 task 声明依赖的 batch（UpstreamBatches）
+	// 里已完成的任务。无依赖则不看任何同 master 产出，避免把无关任务的文件
+	// 路径也塞给 worker 造成信息过载。
+	if task.MasterTaskID != "" && len(task.UpstreamBatches) > 0 {
+		upstream := make(map[string]bool, len(task.UpstreamBatches))
+		for _, bid := range task.UpstreamBatches {
+			upstream[bid] = true
+		}
 		for _, bt := range fs.tasks {
 			if bt.MasterTaskID != task.MasterTaskID || bt.ID == task.ID {
+				continue
+			}
+			if !upstream[bt.BatchID] {
 				continue
 			}
 			fs.refreshState(bt)
@@ -754,15 +763,22 @@ func (fs *FileTaskStore) GetMemories(role AgentRole, key string) ([]MemoryEntry,
 	if err != nil {
 		return nil, nil
 	}
+	// Match on the decoded Key field, not the filename prefix. Filenames embed
+	// the raw key, so a prefix match on "game" would wrongly also return keys
+	// like "game_logic" or "game2".
 	var memories []MemoryEntry
-	prefix := fmt.Sprintf("%s_%s_", role, key)
+	prefix := string(role) + "_"
 	for _, e := range entries {
-		if strings.HasPrefix(e.Name(), prefix) && strings.HasSuffix(e.Name(), ".json") {
-			data, _ := os.ReadFile(filepath.Join(memDir, e.Name()))
-			var mem MemoryEntry
-			if json.Unmarshal(data, &mem) == nil {
-				memories = append(memories, mem)
-			}
+		if !strings.HasPrefix(e.Name(), prefix) || !strings.HasSuffix(e.Name(), ".json") {
+			continue
+		}
+		data, _ := os.ReadFile(filepath.Join(memDir, e.Name()))
+		var mem MemoryEntry
+		if json.Unmarshal(data, &mem) != nil {
+			continue
+		}
+		if mem.Key == key {
+			memories = append(memories, mem)
 		}
 	}
 	return memories, nil

@@ -1383,16 +1383,25 @@ func (e *TeamEngine) BuildMemoryContext(role AgentRole, key string) (string, err
 	if e.Store == nil {
 		return "", nil
 	}
+	// Cap injected lessons tightly: a worker needs a focused hint, not a dump
+	// of unrelated history that dilutes the actual task.
+	const maxInjected = 3
+
 	var memories []MemoryEntry
-	var err error
 	if key != "" {
-		memories, err = e.Store.GetMemories(role, key)
-	} else {
-		memories, err = e.Store.GetRecentMemories(role, 10)
+		memories, _ = e.Store.GetMemories(role, key)
 	}
-	if err != nil || len(memories) == 0 {
-		// Fallback: read legacy markdown file for backward compatibility.
-		return e.buildMemoryContextFromMarkdown(role)
+	// No key match (or no key given) → fall back to the role's most recent
+	// lessons, still capped, rather than surfacing a wall of history.
+	if len(memories) == 0 {
+		memories, _ = e.Store.GetRecentMemories(role, maxInjected)
+	}
+	if len(memories) == 0 {
+		// Legacy markdown file for upgrades from pre-JSON versions.
+		return e.buildMemoryContextFromMarkdown(role, maxInjected)
+	}
+	if len(memories) > maxInjected {
+		memories = memories[:maxInjected]
 	}
 	var b strings.Builder
 	b.WriteString("\n\n## 🧠 历史经验（同角色）\n")
@@ -1407,15 +1416,15 @@ func (e *TeamEngine) BuildMemoryContext(role AgentRole, key string) (string, err
 // buildMemoryContextFromMarkdown reads the legacy markdown memory file.
 // This is a fallback for deployments that have .md files from before the
 // JSON memory store was introduced.
-func (e *TeamEngine) buildMemoryContextFromMarkdown(role AgentRole) (string, error) {
+func (e *TeamEngine) buildMemoryContextFromMarkdown(role AgentRole, limit int) (string, error) {
 	path := filepath.Join(e.Store.baseDir, "memory", string(role)+".md")
 	data, err := os.ReadFile(path)
 	if err != nil || len(data) == 0 {
 		return "", nil
 	}
 	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
-	if len(lines) > 10 {
-		lines = lines[len(lines)-10:]
+	if len(lines) > limit {
+		lines = lines[len(lines)-limit:]
 	}
 	var b strings.Builder
 	b.WriteString("\n\n## 🧠 历史经验（同角色）\n")

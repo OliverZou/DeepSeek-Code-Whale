@@ -138,6 +138,7 @@ func teamEngineSpawnAdapter(runner *tasks.Runner, library *tasks.AgentDefinition
 			UsagePrompt:     resp.Usage.PromptTokens,
 			UsageCompletion: resp.Usage.CompletionTokens,
 			Diagnostic:      diag,
+			SystemPrompt:    resp.SystemPrompt,
 		}, nil
 	}
 }

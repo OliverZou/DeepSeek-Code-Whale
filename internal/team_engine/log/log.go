@@ -128,7 +128,7 @@ func (l *Loggers) nextLeaderSeq() int {
 //
 //	LogAgent("worker", taskID, round, prompt, response, exitCode, dur, err)
 //	→ logs/tasks/<taskID>/worker_001.md
-func (l *Loggers) LogAgent(role, taskID string, round int, prompt, response string, exitCode int, dur time.Duration, err error) {
+func (l *Loggers) LogAgent(role, taskID string, round int, prompt, systemPrompt, response string, exitCode int, dur time.Duration, err error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
@@ -155,6 +155,11 @@ func (l *Loggers) LogAgent(role, taskID string, round int, prompt, response stri
 	if err != nil {
 		sb.WriteString(fmt.Sprintf("**Error**: %v\n", err))
 	}
+	if systemPrompt != "" {
+		sb.WriteString("\n## System Prompt\n\n```\n")
+		sb.WriteString(truncateForLog(systemPrompt, 32000))
+		sb.WriteString("\n```\n")
+	}
 	sb.WriteString("\n## Prompt\n\n```\n")
 	sb.WriteString(truncateForLog(prompt, 32000))
 	sb.WriteString("\n```\n\n## Response\n\n")
@@ -170,7 +175,7 @@ func (l *Loggers) LogAgent(role, taskID string, round int, prompt, response stri
 
 // LogLeader is a convenience wrapper for leader agent logs.
 func (l *Loggers) LogLeader(kind, prompt, response string, dur time.Duration, err error) {
-	l.LogAgent("leader", kind, 0, prompt, response, 0, dur, err)
+	l.LogAgent("leader", kind, 0, prompt, "", response, 0, dur, err)
 }
 
 // LogTaskFeedback writes leader/verifier feedback into the task's dialogue directory

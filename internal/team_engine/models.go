@@ -90,6 +90,7 @@ type Task struct {
 	RetryCount       int         `json:"retry_count"`             // 已重试次数
 	Workdir          string      `json:"workdir"`                 // 工作目录
 	ParentIDs        []string    `json:"parent_ids"`              // 依赖的上游任务
+	UpstreamBatches  []string    `json:"upstream_batches,omitempty"` // 所在 batch 依赖的上游 batch（精准注入上游产出）
 	ArtifactPath     string      `json:"artifact_path"`           // 产出文件路径（白板）
 	VerifierFeedback string      `json:"verifier_feedback"`       // Verifier 反馈
 	VerifierFocus    string      `json:"verifier_focus"`          // 验证重点 (correctness,security,sources,plausibility,...)

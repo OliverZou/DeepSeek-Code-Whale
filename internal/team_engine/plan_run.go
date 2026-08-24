@@ -192,6 +192,7 @@ func (e *TeamEngine) PlanAndRun(ctx context.Context, goal, workdir, masterTaskID
 			task.VerifierRole = pt.VerifierRole
 			task.MasterTaskID = masterTaskID
 			task.Complexity = complexity
+			task.UpstreamBatches = batch.DependsOn
 			e.Store.UpdateTask(task.ID, map[string]interface{}{
 				"batch_id":       bid,
 				"master_task_id": masterTaskID,

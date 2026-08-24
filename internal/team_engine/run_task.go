@@ -388,7 +388,7 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 
 			// Log worker output for dashboard dialogue.
 			if e.Loggers != nil {
-				e.Loggers.LogAgent("worker", taskID, attempt+1, prompt, result.Stdout, result.ExitCode, time.Duration(result.DurationSeconds)*time.Second, nil)
+				e.Loggers.LogAgent("worker", taskID, attempt+1, prompt, result.SystemPrompt, result.Stdout, result.ExitCode, time.Duration(result.DurationSeconds)*time.Second, nil)
 				e.fireEvent(TaskEvent{Type: EventAgentLog, TaskID: taskID})
 			}
 
@@ -560,13 +560,14 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 			if !passed {
 				verdict = "FAIL"
 			}
-			var verifierPrompt string
+			var verifierPrompt, verifierSystemPrompt string
 			if v != nil {
 				verifierPrompt = v.LastPrompt
+				verifierSystemPrompt = v.LastSystemPrompt
 			} else {
 				verifierPrompt = "mechanical"
 			}
-			e.Loggers.LogAgent("verifier", taskID, attempt+1, verifierPrompt, fmt.Sprintf("[%s] %s", verdict, feedback), 0, verifyDur, nil)
+			e.Loggers.LogAgent("verifier", taskID, attempt+1, verifierPrompt, verifierSystemPrompt, fmt.Sprintf("[%s] %s", verdict, feedback), 0, verifyDur, nil)
 			e.fireEvent(TaskEvent{Type: EventAgentLog, TaskID: taskID})
 		}
 
@@ -881,6 +882,7 @@ func (e *TeamEngine) splitTaskIntoChildren(task *Task, childPlan []PlanTask, wor
 		child.Output = pt.Output
 		child.BatchID = task.BatchID
 		child.MasterTaskID = task.MasterTaskID
+		child.UpstreamBatches = task.UpstreamBatches
 		_ = e.Store.UpdateTask(child.ID, map[string]interface{}{"batch_id": task.BatchID, "master_task_id": task.MasterTaskID})
 		createdChildren = append(createdChildren, child)
 		if defaultTeamLog != nil {

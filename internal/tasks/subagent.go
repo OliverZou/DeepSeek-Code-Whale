@@ -62,6 +62,11 @@ type SpawnSubagentResponse struct {
 	RequestedTools   []string       `json:"requested_tools,omitempty"`
 	ResolvedTools    []string       `json:"resolved_tools,omitempty"`
 	ToolMode         string         `json:"tool_mode,omitempty"`
+	// SystemPrompt is the assembled extra system-prompt content injected for
+	// this subagent (agent definition, workflow context, output schema, skills,
+	// memory, hooks). Surfaced so the parent can audit exactly what the child
+	// saw beyond the task prompt — it is not fed back to the model.
+	SystemPrompt     string         `json:"system_prompt,omitempty"`
 	Usage            llm.Usage      `json:"usage,omitempty"`
 	SubagentBudget   SubagentBudget `json:"subagent_budget,omitempty"`
 	DurationMS       int64          `json:"duration_ms"`
@@ -299,6 +304,7 @@ func (r *Runner) SpawnSubagentWithProgress(ctx context.Context, req SpawnSubagen
 	} else if hookBlock != "" {
 		extraBlocks = append(extraBlocks, hookBlock)
 	}
+	systemPrompt := strings.Join(extraBlocks, "\n\n---\n\n")
 	newChild := func(registry *core.ToolRegistry, maxIters int) *agent.Agent {
 		return agent.NewAgentWithRegistry(provider, childStore, registry,
 			agent.WithSessionMode(childSessionMode(cfg.PermissionProfile)),
@@ -560,6 +566,7 @@ func (r *Runner) SpawnSubagentWithProgress(ctx context.Context, req SpawnSubagen
 			RequestedTools:    cloneStrings(cfg.ToolSelectors),
 			ResolvedTools:     cloneStrings(resolvedToolNames),
 			ToolMode:          toolMode,
+			SystemPrompt:      systemPrompt,
 			Usage:             usage,
 			DurationMS:        time.Since(start).Milliseconds(),
 			CompletedAt:       completedAt.Format(time.RFC3339),
