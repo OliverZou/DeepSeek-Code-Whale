@@ -239,12 +239,6 @@ func (r *Reviewer) ReviewPlanCycle(goal string, report *PlanCycleReport, workdir
 	return review, nil
 }
 
-// ProactiveLeaderPrompt returns a prompt for proactively reviewing a task's progress.
-// When decomposeContext is non-empty, it is injected so the Leader can
-// reference its own decomposition decisions.
-
-// ReviewProgress proactively reviews a single task's progress.
-
 // BatchLabelOrID returns the batch label if set, otherwise the batch ID.
 func (r *CycleReport) BatchLabelOrID() string {
 	if r.BatchLabel != "" {

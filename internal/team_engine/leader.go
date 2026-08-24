@@ -109,5 +109,3 @@ func (l *Leader) ReviewCycleFull(goal string, report *CycleReport, workdir strin
 func (l *Leader) ReviewPlanCycle(goal string, report *PlanCycleReport, workdir string, timeout time.Duration, model ...string) (*CycleReview, error) {
 	return l.reviewer.ReviewPlanCycle(goal, report, workdir, timeout, model...)
 }
-
-// ReviewProgress delegates to Reviewer.
