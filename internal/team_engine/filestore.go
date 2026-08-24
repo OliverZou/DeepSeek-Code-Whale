@@ -417,23 +417,46 @@ func (fs *FileTaskStore) UpstreamOutputs(task *Task) []UpstreamRef {
 	fs.mu.Lock()
 	defer fs.mu.Unlock()
 	var refs []UpstreamRef
+	seen := make(map[string]bool)
+	add := func(t *Task) {
+		if t.Output == "" || seen[t.ID] {
+			return
+		}
+		seen[t.ID] = true
+		refs = append(refs, UpstreamRef{Name: t.Title, Path: fs.absOutputPath(t)})
+	}
+	// 父任务（self-split 子任务）。
 	for _, pid := range task.ParentIDs {
-		if pt, ok := fs.tasks[pid]; ok && pt.Output != "" {
+		if pt, ok := fs.tasks[pid]; ok {
 			fs.refreshState(pt)
-			refs = append(refs, UpstreamRef{Name: pt.Title, Path: pt.Output})
+			add(pt)
 		}
 	}
-	if task.BatchID != "" && task.MasterTaskID != "" {
+	// 同 master 下所有已完成的其他任务（同 batch 兄弟 + 跨 batch 前置）。
+	// 跨 batch 依赖使后续 batch 的 worker 能读到前置 batch 的产出文件，
+	// 避免 worker 因拿不到上游文件而整段重写（2048 batch2 接线 worker 718s 的根因）。
+	if task.MasterTaskID != "" {
 		for _, bt := range fs.tasks {
-			if bt.MasterTaskID == task.MasterTaskID && bt.BatchID == task.BatchID && bt.ID != task.ID {
-				fs.refreshState(bt)
-				if bt.State == TaskStateDone && bt.Output != "" {
-					refs = append(refs, UpstreamRef{Name: bt.Title, Path: bt.Output})
-				}
+			if bt.MasterTaskID != task.MasterTaskID || bt.ID == task.ID {
+				continue
+			}
+			fs.refreshState(bt)
+			if bt.State == TaskStateDone {
+				add(bt)
 			}
 		}
 	}
 	return refs
+}
+
+// absOutputPath returns the absolute path of a task's deliverable after
+// propagation to the workspace. Workers run in their own out/ sandbox, so a
+// bare relative Output ("game.js") is useless for reading upstream files.
+func (fs *FileTaskStore) absOutputPath(t *Task) string {
+	if t.Workdir == "" {
+		return t.Output
+	}
+	return filepath.Join(t.Workdir, t.Output)
 }
 
 // UpdateTask updates structural fields only. State and RetryCount are runtime-only.

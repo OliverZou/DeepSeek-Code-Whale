@@ -151,3 +151,41 @@ func TestShouldSkipVerifier(t *testing.T) {
 		}
 	})
 }
+
+func TestUpstreamOutputs_CrossBatch(t *testing.T) {
+	store, err := NewFileTaskStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	ws := t.TempDir() // workspace 根
+
+	// batch1 前置任务：产出 game.js，已 Done。
+	taskA := &Task{ID: "aaa", Title: "核心逻辑", Output: "game.js", Workdir: ws, MasterTaskID: "m1", BatchID: "1"}
+	if err := store.InsertTask(taskA); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"output.md", "verify.md"} {
+		if err := os.WriteFile(filepath.Join(store.taskDir("aaa"), name), []byte("x"), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// batch2 任务：应能拿到跨 batch 前置任务的产出（绝对路径）。
+	taskB := &Task{ID: "bbb", Title: "接线", Output: "game.js", Workdir: ws, MasterTaskID: "m1", BatchID: "2"}
+	if err := store.InsertTask(taskB); err != nil {
+		t.Fatal(err)
+	}
+
+	refs := store.UpstreamOutputs(taskB)
+	if len(refs) != 1 {
+		t.Fatalf("expected 1 cross-batch upstream ref, got %d", len(refs))
+	}
+	if refs[0].Name != "核心逻辑" {
+		t.Fatalf("expected upstream name 核心逻辑, got %q", refs[0].Name)
+	}
+	if want := filepath.Join(ws, "game.js"); refs[0].Path != want {
+		t.Fatalf("expected absolute path %q, got %q", want, refs[0].Path)
+	}
+}
