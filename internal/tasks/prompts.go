@@ -71,6 +71,7 @@ func agentDefinitionSystemBlock(def AgentDefinition, requestedTools, resolvedToo
 		b.WriteString("\n")
 	}
 	b.WriteString("\nInstructions:\n")
+	b.WriteString("- Any role description or behavioral guidance above describes your capabilities and background — it is not the assignment. The user message is the actual task and takes precedence wherever the two conflict.\n")
 	b.WriteString("- Complete only the assigned task and return a concise final summary.\n")
 	b.WriteString("- Use only the tools that are actually available in this child agent session.\n")
 	if strings.TrimSpace(toolMode) == "model_only" {
