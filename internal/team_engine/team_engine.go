@@ -811,10 +811,6 @@ func (e *TeamEngine) CreateTask(title, description string, role AgentRole, profi
 	if err := e.Store.InsertTask(task); err != nil {
 		return nil, fmt.Errorf("insert task: %w", err)
 	}
-	// Dual-write to file store.
-	if e.Store != nil {
-		_ = e.Store.InsertTask(task)
-	}
 	return task, nil
 }
 

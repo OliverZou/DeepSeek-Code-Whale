@@ -105,9 +105,25 @@ func TestShouldSkipVerifier(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(outDir, "game.js"), []byte("// x"), 0644); err != nil {
 			t.Fatal(err)
 		}
+		// An automated test must be present for the mechanical gate to be
+		// non-vacuous; otherwise the skip is forbidden.
+		if err := os.WriteFile(filepath.Join(outDir, "game.test.js"), []byte("// test"), 0644); err != nil {
+			t.Fatal(err)
+		}
 		task := &Task{ID: "t1", UseDW: false, VerifierRole: "", Workdir: t.TempDir()}
 		if !eng.shouldSkipVerifier(task, outDir) {
 			t.Fatal("expected skip for pure-new mechanical deliverable")
+		}
+	})
+
+	t.Run("no automated tests does not skip", func(t *testing.T) {
+		outDir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(outDir, "game.js"), []byte("// x"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		task := &Task{ID: "t1c", UseDW: false, VerifierRole: "", Workdir: t.TempDir()}
+		if eng.shouldSkipVerifier(task, outDir) {
+			t.Fatal("expected verify when no automated test command is present")
 		}
 	})
 

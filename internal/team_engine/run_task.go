@@ -809,6 +809,12 @@ func (e *TeamEngine) shouldSkipVerifier(task *Task, verifyWorkdir string) bool {
 	if err != nil || touches || count == 0 {
 		return false
 	}
+	// No automated test command means the mechanical gate ran nothing — it
+	// trivially "passes" and would release the deliverable with zero objective
+	// check. Never skip semantic verification in that case.
+	if name, _ := detectTestCommand(verifyWorkdir); name == "" {
+		return false
+	}
 	return true
 }
 
