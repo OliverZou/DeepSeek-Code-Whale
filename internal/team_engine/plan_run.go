@@ -140,7 +140,7 @@ func (e *TeamEngine) PlanAndRun(ctx context.Context, goal, workdir, masterTaskID
 		if _, ok := batchMap[batchID]; !ok {
 			batchMap[batchID] = &batchGroup{
 				label:       pt.BatchLabel,
-				dependsOn:   pt.DependsOnBatch,
+				dependsOn:   []string(pt.DependsOnBatch),
 				concurrency: pt.Concurrency,
 				maxCycles:   pt.MaxCycles,
 			}
@@ -825,46 +825,68 @@ func (e *TeamEngine) RunBatch(ctx context.Context, batch *Batch) error {
 		concurrency = len(tasks) // cap at task count; 0 = unlimited in config
 	}
 
-	// Use a semaphore channel to limit concurrency.
-	sem := make(chan struct{}, concurrency)
-	type taskResult struct {
-		taskID string
-		ok     bool
-		err    error
-	}
-	resultCh := make(chan taskResult, len(tasks))
 	beforeTokens := e.tokenTotal()
 
-	for _, task := range tasks {
-		select {
-		case <-ctx.Done():
-			// Suspend all not-yet-launched tasks.
-			for _, t := range tasks {
-				if !t.State.IsTerminal() {
-					_ = e.Store.ForceTransitionState(t.ID, TaskStateSuspended, "cancelled-by-user")
-				}
-			}
-			batch.Status = BatchStatusFailed
-			e.fireEvent(TaskEvent{Type: EventStateChanged})
-			return ctx.Err()
-		default:
+	// runGroup 并行执行一组任务，受 concurrency 限流；ctx 取消时挂起未启动任务。
+	runGroup := func(group []*Task) error {
+		if len(group) == 0 {
+			return nil
 		}
-		sem <- struct{}{} // acquire semaphore (blocks if at limit)
-		go func(t *Task) {
-			defer func() { <-sem }() // release semaphore
-			ok, err := e.RunTask(ctx, t.ID)
-			resultCh <- taskResult{taskID: t.ID, ok: ok, err: err}
-		}(task)
+		sem := make(chan struct{}, concurrency)
+		type taskResult struct {
+			taskID string
+			ok     bool
+			err    error
+		}
+		resultCh := make(chan taskResult, len(group))
+		for _, task := range group {
+			select {
+			case <-ctx.Done():
+				// Suspend all not-yet-launched tasks.
+				for _, t := range group {
+					if !t.State.IsTerminal() {
+						_ = e.Store.ForceTransitionState(t.ID, TaskStateSuspended, "cancelled-by-user")
+					}
+				}
+				batch.Status = BatchStatusFailed
+				e.fireEvent(TaskEvent{Type: EventStateChanged})
+				return ctx.Err()
+			default:
+			}
+			sem <- struct{}{} // acquire semaphore (blocks if at limit)
+			go func(t *Task) {
+				defer func() { <-sem }() // release semaphore
+				ok, err := e.RunTask(ctx, t.ID)
+				resultCh <- taskResult{taskID: t.ID, ok: ok, err: err}
+			}(task)
+		}
+		// Drain the semaphore (wait for all goroutines to finish).
+		for i := 0; i < cap(sem); i++ {
+			sem <- struct{}{}
+		}
+		// Drain result channel to unblock goroutines.
+		close(resultCh)
+		for range resultCh {
+		}
+		return nil
 	}
 
-	// Drain the semaphore (wait for all goroutines to finish).
-	for i := 0; i < cap(sem); i++ {
-		sem <- struct{}{}
+	// 两阶段执行：先跑非测试任务（实现/产出），再跑测试任务。planner 偶尔会把
+	// 「实现 + 单元测试」拆成同 batch 的并行任务，测试任务会因实现产出尚未就绪
+	// 而空转撞 tool cap；串行兜底消除这类空转。
+	var implGroup, testGroup []*Task
+	for _, t := range tasks {
+		if isTestTask(t) {
+			testGroup = append(testGroup, t)
+		} else {
+			implGroup = append(implGroup, t)
+		}
 	}
-
-	// Drain result channel to unblock goroutines.
-	close(resultCh)
-	for range resultCh {
+	if err := runGroup(implGroup); err != nil {
+		return err
+	}
+	if err := runGroup(testGroup); err != nil {
+		return err
 	}
 
 	// Real batch cost: tokens accumulated by worker/verifier spawns in RunTask
@@ -900,6 +922,21 @@ func isOverloadedTask(desc string) bool {
 		}
 	}
 	return false
+}
+
+// isTestTask 判断任务是否为「测试/验证类」任务，用于 RunBatch 的两阶段执行：
+// 测试任务依赖实现产出，若与实现并行会因产出未就绪而空转撞 tool cap。
+// 依据产出路径命名（.test./.spec./_test、test/ 前缀）或角色（qa/test）识别。
+func isTestTask(t *Task) bool {
+	out := strings.ToLower(t.Output)
+	if strings.Contains(out, ".test.") || strings.Contains(out, ".spec.") || strings.Contains(out, "_test") {
+		return true
+	}
+	if strings.HasPrefix(out, "test/") || strings.HasPrefix(out, "tests/") || strings.HasPrefix(out, "test_") {
+		return true
+	}
+	role := strings.ToLower(string(t.Role))
+	return strings.Contains(role, "qa") || strings.Contains(role, "test")
 }
 
 // decomposeTaskIntoLeaves 把一个（可能超重的）任务描述重新分解为叶子任务。

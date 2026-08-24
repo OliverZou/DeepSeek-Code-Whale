@@ -33,7 +33,7 @@ func TestTopologicalScheduling_FailedBatchDoesNotAbortSiblings(t *testing.T) {
 	plan := []PlanTask{
 		{Title: "A", Description: "independent A", Output: "a.go", Role: "software-engineer", BatchID: "batch-a", BatchLabel: "A", MaxCycles: 1},
 		{Title: "B", Description: "independent B", Output: "b.go", Role: "software-architect", BatchID: "batch-b", BatchLabel: "B", MaxCycles: 1},
-		{Title: "C", Description: "depends on missing batch", Output: "c.go", Role: "software-engineer", BatchID: "batch-c", BatchLabel: "C", DependsOnBatch: []string{"ghost"}, MaxCycles: 1},
+		{Title: "C", Description: "depends on missing batch", Output: "c.go", Role: "software-engineer", BatchID: "batch-c", BatchLabel: "C", DependsOnBatch: FlexibleStringSlice{"ghost"}, MaxCycles: 1},
 	}
 
 	batches, err := eng.PlanAndRun(context.Background(), "three batches", workdir, mt.ID, plan...)

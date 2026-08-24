@@ -1726,7 +1726,7 @@ func (e *TeamEngine) writePlanJSON(masterTaskID string, planTasks []PlanTask) {
 			Role:               pt.Role,
 			Output:             pt.Output,
 			BatchID:            pt.BatchID,
-			DependsOn:          pt.DependsOnBatch,
+			DependsOn:          []string(pt.DependsOnBatch),
 			AcceptanceCriteria: pt.AcceptanceCriteria,
 		}
 	}
@@ -1803,7 +1803,7 @@ func (e *TeamEngine) readPlanJSON(workdir string) []PlanTask {
 			Role:           t.Role,
 			Output:         t.Output,
 			BatchID:        t.BatchID,
-			DependsOnBatch: t.DependsOn,
+			DependsOnBatch: FlexibleStringSlice(t.DependsOn),
 		}
 	}
 	return planTasks

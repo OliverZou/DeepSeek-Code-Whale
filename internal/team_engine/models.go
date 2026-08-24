@@ -8,7 +8,12 @@
 // control over agent behavior, tool permissions, and execution context.
 package team_engine
 
-import "time"
+import (
+	"encoding/json"
+	"fmt"
+	"strconv"
+	"time"
+)
 
 // TaskState enumerates the states a task can be in.
 type TaskState string
@@ -163,25 +168,48 @@ func (c *CycleFindingsSet) HasNewFindings(prev *CycleFindingsSet) bool {
 	return false
 }
 
+// FlexibleStringSlice 用于解析 planner 输出的数组字段：LLM 可能输出数字数组
+// （如 depends_on_batch: [1,2]）或字符串数组（["1","2"]），统一归一为字符串。
+type FlexibleStringSlice []string
+
+// UnmarshalJSON 先尝试字符串数组，失败再尝试数字数组（转字符串）。
+func (s *FlexibleStringSlice) UnmarshalJSON(data []byte) error {
+	var strs []string
+	if err := json.Unmarshal(data, &strs); err == nil {
+		*s = strs
+		return nil
+	}
+	var ints []int
+	if err := json.Unmarshal(data, &ints); err == nil {
+		out := make([]string, len(ints))
+		for i, n := range ints {
+			out[i] = strconv.Itoa(n)
+		}
+		*s = out
+		return nil
+	}
+	return fmt.Errorf("expected array of string or int, got %s", string(data))
+}
+
 // PlanTask is a single subtask in the leader's decomposition plan, returned
 // as JSON by the planning agent.
 type PlanTask struct {
-	Title              string   `json:"title"`
-	Description        string   `json:"description"`
-	Output             string   `json:"output,omitempty"` // declared deliverable
-	Role               string   `json:"role"`
-	VerifierRole       string   `json:"verifier_role,omitempty"`       // who verifies this task (agent name)
-	AcceptanceCriteria []string `json:"acceptance_criteria,omitempty"` // 验收标准（Worker 自检 + Verifier 验收共用）
-	BatchID            string   `json:"batch_id,omitempty"`            // which batch (stage) this belongs to
-	BatchLabel         string   `json:"batch_label,omitempty"`         // human label for the batch
-	DependsOnBatch     []string `json:"depends_on_batch,omitempty"`    // batch dependencies
-	DependsOnIndex     int      `json:"depends_on_index"`
-	DependsOnIndices   []int    `json:"depends_on_indices,omitempty"`
-	Profile            string   `json:"profile,omitempty"`
-	VerifierFocus      string   `json:"verifier_focus,omitempty"`
-	UseDW              bool     `json:"use_dw"`                // enable multi-verifier Dynamic Workflow
-	Concurrency        int      `json:"concurrency,omitempty"` // per-batch override
-	MaxCycles          int      `json:"max_cycles,omitempty"`  // per-batch override
+	Title              string              `json:"title"`
+	Description        string              `json:"description"`
+	Output             string              `json:"output,omitempty"` // declared deliverable
+	Role               string              `json:"role"`
+	VerifierRole       string              `json:"verifier_role,omitempty"`       // who verifies this task (agent name)
+	AcceptanceCriteria []string            `json:"acceptance_criteria,omitempty"` // 验收标准（Worker 自检 + Verifier 验收共用）
+	BatchID            string              `json:"batch_id,omitempty"`            // which batch (stage) this belongs to
+	BatchLabel         string              `json:"batch_label,omitempty"`         // human label for the batch
+	DependsOnBatch     FlexibleStringSlice `json:"depends_on_batch,omitempty"`    // batch dependencies
+	DependsOnIndex     int                 `json:"depends_on_index"`
+	DependsOnIndices   []int               `json:"depends_on_indices,omitempty"`
+	Profile            string              `json:"profile,omitempty"`
+	VerifierFocus      string              `json:"verifier_focus,omitempty"`
+	UseDW              bool                `json:"use_dw"`                // enable multi-verifier Dynamic Workflow
+	Concurrency        int                 `json:"concurrency,omitempty"` // per-batch override
+	MaxCycles          int                 `json:"max_cycles,omitempty"`  // per-batch override
 }
 
 // NewTask creates a Task with sensible defaults and auto-generated
