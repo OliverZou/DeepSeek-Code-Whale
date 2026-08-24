@@ -44,6 +44,19 @@ func TestDecomposePromptComplexity(t *testing.T) {
 			t.Errorf("no-complexity prompt should state '未评估':\n%s", p)
 		}
 	})
+
+	t.Run("depends_on semantics discourage serial chains", func(t *testing.T) {
+		p := DecomposePrompt("写一个 2048 游戏", "medium")
+		if !strings.Contains(p, "depends_on_batch 使用规则") {
+			t.Errorf("decompose prompt should document depends_on_batch rules:\n%s", p)
+		}
+		if strings.Contains(p, "不同 batch 串行") {
+			t.Errorf("decompose prompt must not claim batches run serially:\n%s", p)
+		}
+		if !strings.Contains(p, "测试基于接口契约独立编写") {
+			t.Errorf("decompose prompt should tell tests to run parallel to implementation:\n%s", p)
+		}
+	})
 }
 
 func TestElaborateFull_ReturnsComplexity(t *testing.T) {

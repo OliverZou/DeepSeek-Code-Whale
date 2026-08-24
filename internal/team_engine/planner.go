@@ -80,7 +80,7 @@ func DecomposePrompt(goal string, complexity ...string) string {
 
 先判断结构再分解：
 SINGLE — 单一关注点 → 1 个任务
-MULTI  — 多个独立关注点 → 每个 concern 一个任务，用 depends_on 串联
+MULTI  — 多个关注点 → 每个 concern 一个任务，放入独立 batch 并行
 MANY   — 大量相同单元 → 每个单元一个任务，相同 role、相同 batch（并行）
 
 ## 可吞性判断
@@ -88,6 +88,16 @@ MANY   — 大量相同单元 → 每个单元一个任务，相同 role、相�
 按难度裁定，不只看体量：
 - 200 行 lock-free 队列 → 拆（需要形式化推理，难度高）
 - 500 行 CRUD handler → 留（机械重复，难度低）
+
+## depends_on_batch 使用规则（关键）
+
+depends_on_batch 只用于「下游任务会修改/覆盖上游任务产出的文件」这一种情况。
+以下情况不要加 depends_on_batch，让 batch 并行执行：
+- 下游仅需读取上游文件：系统会自动把上游文件的绝对路径传给下游 worker，无需串行。
+- 测试任务 vs 实现任务：测试基于接口契约独立编写，不依赖实现完成，应与实现并行。
+- 逻辑上的先后理解 ≠ 执行上的硬依赖。
+
+滥用 depends_on_batch 会把本可并行的任务串成链，显著拖慢整体进度。
 
 ## 角色分配
 
@@ -99,7 +109,7 @@ MANY   — 大量相同单元 → 每个单元一个任务，相同 role、相�
 
 ## 输出
 
-纯 JSON 数组，不加 markdown 包裹。同 batch 并行，不同 batch 串行。
+纯 JSON 数组，不加 markdown 包裹。无 depends_on_batch 的 batch 并行执行；有 depends_on_batch 的 batch 等依赖完成后执行。
 
 [
   {"title":"…","description":"≤3句话","output":"产物路径","role":"角色名","verifier_role":"agent名或空","batch_id":"1","batch_label":"阶段名","depends_on_batch":[],"depends_on_index":-1,"verifier_focus":"审查维度","max_cycles":1}
