@@ -56,6 +56,9 @@ func TestDecomposePromptComplexity(t *testing.T) {
 		if !strings.Contains(p, "必须 depends_on 实现任务") {
 			t.Errorf("decompose prompt should tell tests to depend on implementation:\n%s", p)
 		}
+		if !strings.Contains(p, "合并为同一个任务") {
+			t.Errorf("decompose prompt should merge impl + tests into one task:\n%s", p)
+		}
 	})
 }
 
