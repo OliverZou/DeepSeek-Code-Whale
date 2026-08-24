@@ -88,14 +88,14 @@ func teamEngineSpawnAdapter(runner *tasks.Runner, library *tasks.AgentDefinition
 			}, fmt.Errorf("spawn subagent: %w", err)
 		}
 
-		diag := fmt.Sprintf("status=%s summary=%d reqTools=%v resolvedTools=%v usage(p=%d c=%d t=%d) err=%q truncated=%v structured=%v",
-			resp.Status, len(resp.Summary),
+		diag := fmt.Sprintf("status=%s report=%d reqTools=%v resolvedTools=%v usage(p=%d c=%d t=%d) err=%q truncated=%v structured=%v",
+			resp.Status, len(resp.Report),
 			resp.RequestedTools, resp.ResolvedTools,
 			resp.Usage.PromptTokens, resp.Usage.CompletionTokens, resp.Usage.TotalTokens,
 			resp.Error, resp.Truncated, resp.StructuredResult != nil)
 
 		success := resp.Status == "completed" || resp.Status == "done"
-		if success && strings.TrimSpace(resp.Summary) == "" && resp.StructuredResult == nil {
+		if success && strings.TrimSpace(resp.Report) == "" && resp.StructuredResult == nil {
 			success = false
 		}
 		exitCode := 0
@@ -103,10 +103,14 @@ func teamEngineSpawnAdapter(runner *tasks.Runner, library *tasks.AgentDefinition
 			exitCode = 1
 		}
 
+		// resp.Summary is a one-line preview of the full final message and is
+		// explicitly NOT a substitute for resp.Report. Using Summary here
+		// truncates a worker's completion note (and a verifier's VERDICT: line)
+		// to its first line, which the verifier then cannot judge and fails.
 		return team_engine.SubagentResponse{
 			SessionID:       resp.SessionID,
 			SpawnerType:     "adapter",
-			Output:          resp.Summary,
+			Output:          resp.Report,
 			Structured:      resp.StructuredResult,
 			ExitCode:        exitCode,
 			Success:         success,
