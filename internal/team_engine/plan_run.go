@@ -117,6 +117,10 @@ func (e *TeamEngine) PlanAndRun(ctx context.Context, goal, workdir, masterTaskID
 		e.writePlanJSON(masterTaskID, planTasks)
 	}
 
+	// 后置校验：decompose 可能拆出「上帝任务」（单任务同时承担集成+多端兼容
+	// 等多职责，违反叶子约束，会让单个 worker 触达 tool cap）。检测到就再拆。
+	planTasks = e.splitOverloadedPlanTasks(planTasks, workdir, decomposerTimeout, leaderModel)
+
 	// Step 1: Group PlanTasks into batches by batch_id.
 	type batchGroup struct {
 		label       string
@@ -867,3 +871,65 @@ func (e *TeamEngine) RunBatch(ctx context.Context, batch *Batch) error {
 	batch.TotalTokens = e.tokenTotal() - beforeTokens
 	return nil
 }
+
+// overloadedIntegrationMarkers 与 overloadedQaMarkers 用于检测 decompose 拆出的
+// 「上帝任务」：单个任务同时承担「集成/联调」与「多端/兼容验证」两类职责，
+// 违反「每个 concern 一个叶子任务」的约束，会让单个 worker 触达 tool cap。
+var overloadedIntegrationMarkers = []string{"整合", "联调", "集成"}
+var overloadedQaMarkers = []string{"兼容", "浏览器", "响应式", "破版", "多端", "chrome", "firefox", "safari", "edge"}
+
+// isOverloadedTask 判断任务描述是否把集成工作与多端/兼容验证合并成了单个超重任务。
+// 命中则应在执行前再拆成叶子，避免超重任务拖慢墙钟并触发 tool cap。
+func isOverloadedTask(desc string) bool {
+	d := strings.ToLower(desc)
+	hasIntegration := false
+	for _, m := range overloadedIntegrationMarkers {
+		if strings.Contains(d, m) {
+			hasIntegration = true
+			break
+		}
+	}
+	if !hasIntegration {
+		return false
+	}
+	for _, m := range overloadedQaMarkers {
+		if strings.Contains(d, m) {
+			return true
+		}
+	}
+	return false
+}
+
+// decomposeTaskIntoLeaves 把一个（可能超重的）任务描述重新分解为叶子任务。
+// 复用 Leader.Decompose：把任务描述当作新 goal 再走一次分解。
+func (e *TeamEngine) decomposeTaskIntoLeaves(desc, workdir string, timeout time.Duration, model string) ([]PlanTask, error) {
+	leader := NewLeader(e.Runner).WithLoggers(e.Loggers).WithTeam(e.team)
+	return leader.Decompose(desc, workdir, timeout, model)
+}
+
+// splitOverloadedPlanTasks 对 decompose 产出的 plan 做后置校验：检测「上帝任务」
+// （单个任务同时承担集成+多端兼容等多职责），命中则再拆成叶子任务并替换原任务。
+// 拆分失败不阻塞主流程——保留原任务继续，交由运行时的 tool-cap 拆分兜底。
+func (e *TeamEngine) splitOverloadedPlanTasks(tasks []PlanTask, workdir string, timeout time.Duration, model string) []PlanTask {
+	var out []PlanTask
+	for _, t := range tasks {
+		if !isOverloadedTask(t.Description) {
+			out = append(out, t)
+			continue
+		}
+		children, err := e.decomposeTaskIntoLeaves(t.Description, workdir, timeout, model)
+		if err != nil || len(children) == 0 {
+			Log("plan", "plan: split overloaded task %q failed (err=%v children=%d), keep as-is", t.Title, err, len(children))
+			out = append(out, t)
+			continue
+		}
+		for i := range children {
+			children[i].BatchID = t.BatchID
+			children[i].BatchLabel = t.BatchLabel
+		}
+		Log("plan", "plan: split overloaded task %q into %d leaves", t.Title, len(children))
+		out = append(out, children...)
+	}
+	return out
+}
+

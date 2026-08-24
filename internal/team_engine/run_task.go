@@ -353,34 +353,24 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 			if len(task.ParentIDs) == 0 && result.Success && strings.Contains(result.Stdout, splitMarker) {
 				idx := strings.Index(result.Stdout, splitMarker)
 				splitJSON := result.Stdout[idx+len(splitMarker):]
-				childPlan, err := ParsePlanTasks(splitJSON)
+				if childPlan, err := ParsePlanTasks(splitJSON); err == nil && len(childPlan) > 0 {
+					if e.splitTaskIntoChildren(task, childPlan, workdir, "self-split into children") {
+						return true, nil
+					}
+				}
+			}
+
+			// Tool-cap 触顶：worker 被 forceSummary 强制中断（任务过重，远超叶子
+			// 规模）。把任务再拆成叶子，而不是让 verifier 对不完整 summary 判 PASS。
+			const interruptedMarker = "This turn was auto-interrupted"
+			if len(task.ParentIDs) == 0 && result.Success && strings.Contains(result.Stdout, interruptedMarker) {
+				childPlan, err := e.decomposeTaskIntoLeaves(task.Description, workdir, time.Duration(e.Router.ResolveDecomposerTimeout())*time.Second, e.Router.ResolveModel("planner"))
 				if err == nil && len(childPlan) > 0 {
-					if defaultTeamLog != nil {
-						Log("task", "task: %s self-split into %d children", task.ID[:8], len(childPlan))
+					if e.splitTaskIntoChildren(task, childPlan, workdir, "split into children after tool cap") {
+						return true, nil
 					}
-					var createdChildren []*Task
-					for _, pt := range childPlan {
-						child, err := e.CreateTask(pt.Title, pt.Description, task.Role, task.Profile, []string{task.ID}, 0, workdir, pt.VerifierFocus, task.BatchID, task.MasterTaskID)
-						if err != nil {
-							if defaultTeamLog != nil {
-								Log("task", "task: %s child create failed: %v", task.ID[:8], err)
-							}
-							continue
-						}
-						child.Output = pt.Output
-						child.BatchID = task.BatchID
-						child.MasterTaskID = task.MasterTaskID
-						_ = e.Store.UpdateTask(child.ID, map[string]interface{}{"batch_id": task.BatchID, "master_task_id": task.MasterTaskID})
-						createdChildren = append(createdChildren, child)
-						if defaultTeamLog != nil {
-							Log("task", "task: %s child %s created", task.ID[:8], child.ID[:8])
-						}
-					}
-					e.writeTaskPlanJSON(task, createdChildren)
-					// Mark parent as done (children carry the work forward).
-					_ = e.Store.TransitionState(taskID, TaskStateDone, "", "self-split into children")
-					e.fireEvent(TaskEvent{Type: EventStateChanged})
-					return true, nil
+				} else {
+					Log("task", "task: %s tool-cap hit but split failed (err=%v children=%d), fall through to verifier", task.ID[:8], err, len(childPlan))
 				}
 			}
 
@@ -868,3 +858,46 @@ func npmTestScript(pkgPath string) string {
 func isNoopNpmTest(script string) bool {
 	return strings.Contains(strings.ToLower(script), "no test specified")
 }
+
+// splitTaskIntoChildren 把一个已存在的任务拆成子任务（childPlan 来自
+// self-split 的 [SPLIT_PLAN] 输出，或 tool-cap 触顶后的重新分解）。
+// 返回 true 表示拆分成功且父任务已标记 done，调用者应 return true。
+func (e *TeamEngine) splitTaskIntoChildren(task *Task, childPlan []PlanTask, workdir, reason string) bool {
+	if len(childPlan) == 0 {
+		return false
+	}
+	if defaultTeamLog != nil {
+		Log("task", "task: %s %s into %d children", task.ID[:8], reason, len(childPlan))
+	}
+	var createdChildren []*Task
+	for _, pt := range childPlan {
+		child, err := e.CreateTask(pt.Title, pt.Description, task.Role, task.Profile, []string{task.ID}, 0, workdir, pt.VerifierFocus, task.BatchID, task.MasterTaskID)
+		if err != nil {
+			if defaultTeamLog != nil {
+				Log("task", "task: %s child create failed: %v", task.ID[:8], err)
+			}
+			continue
+		}
+		child.Output = pt.Output
+		child.BatchID = task.BatchID
+		child.MasterTaskID = task.MasterTaskID
+		_ = e.Store.UpdateTask(child.ID, map[string]interface{}{"batch_id": task.BatchID, "master_task_id": task.MasterTaskID})
+		createdChildren = append(createdChildren, child)
+		if defaultTeamLog != nil {
+			Log("task", "task: %s child %s created", task.ID[:8], child.ID[:8])
+		}
+	}
+	if len(createdChildren) == 0 {
+		return false
+	}
+	e.writeTaskPlanJSON(task, createdChildren)
+	// Mark parent as done (children carry the work forward). TransitionState
+	// alone only flips the in-memory state; the file store derives "done" from
+	// output.md + verifier.md, so persist a verifier.md or the batch done-check
+	// re-reads the parent as "produced" and fails the batch.
+	_ = e.Whiteboard.WriteVerifier(task.ID, "split into children: work carried forward")
+	_ = e.Store.TransitionState(task.ID, TaskStateDone, "", reason)
+	e.fireEvent(TaskEvent{Type: EventStateChanged})
+	return true
+}
+
