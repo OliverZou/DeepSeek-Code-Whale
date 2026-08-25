@@ -109,10 +109,14 @@ func (e *TeamEngine) RunLeaderDriven(ctx context.Context, goal, workdir, masterT
 		return "", err
 	}
 
-	// plan-file mode: the Leader session is bootstrapped with one minimal
-	// reply instead of a full decomposition call — the plan came from the
-	// file, so the LLM must NOT regenerate it (byte-for-byte A/B premise).
-	if len(cfg.plan) > 0 && leader.DecomposeSessionID() == "" {
+	// Always bootstrap a Leader session that carries the orchestration tools
+	// (team_run_plan / team_run / team_status ...) for the drive (submit) and
+	// review turns. The decompose spawn is a LEAN single generation (no tools),
+	// so its session cannot call team_run_plan; bootstrapping separately gives
+	// the Leader a session whose continuation can actually submit the plan.
+	// plan-file mode also goes through here (the plan came from the file, so
+	// the bootstrap is a minimal ack, never a re-decomposition).
+	if leader.DecomposeSessionID() == "" || len(cfg.plan) == 0 {
 		if err := leader.BootstrapSession(goal, workdir, decomposerTimeout, leaderModel); err != nil {
 			_ = e.Store.UpdateMasterTaskStatus(masterTaskID, "failed")
 			return "", fmt.Errorf("bootstrap leader session: %w", err)

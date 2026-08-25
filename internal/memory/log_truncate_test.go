@@ -56,3 +56,25 @@ func TestAppendLeavesSmallToolCallUntouched(t *testing.T) {
 		t.Fatalf("small tool_call input changed: %q", got)
 	}
 }
+
+// TestAppendTruncatesOversizedToolResult locks the other half of the token
+// blowup: oversized tool_result text (shell/read output) — which is the bulk of
+// history in a multi-shell worker — must be truncated before it is replayed
+// every turn.
+func TestAppendTruncatesOversizedToolResult(t *testing.T) {
+	log := NewAppendOnlyLog()
+	big := strings.Repeat("console.log('x');\n", 6000) // > 24 KB
+	log.Append(core.Message{
+		Role: core.RoleTool,
+		ToolResults: []core.ToolResult{
+			{Name: "shell_run", ModelText: big},
+		},
+	})
+	got := log.Entries()[0].ToolResults[0].ModelText
+	if len(got) >= len(big) {
+		t.Fatalf("tool result not truncated: %d bytes", len(got))
+	}
+	if !strings.Contains(got, "[tool result truncated") {
+		t.Fatalf("truncation marker missing in: %.120s", got)
+	}
+}

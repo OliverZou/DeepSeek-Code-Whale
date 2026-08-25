@@ -9,18 +9,15 @@ const (
 	RewriteReasonRecovery RewriteReason = "recovery"
 )
 
-// maxHistoryToolCallInputBytes caps how much of a tool_call's input payload is
-// kept in the session history. A write/read tool_call whose input embeds the
-// full file content is re-sent to the model on EVERY subsequent turn (the loop
-// replays all history), so a single such call can dominate the prompt budget —
-// e.g. a 383-line file written via `write` produced a ~159 KB tool_call input
-// that was replayed ~17 times, ~2M tokens of pure history. Truncating the
-// oversized input in history keeps the loop honest (the model can re-read the
-// file via read_file if it needs the content) while collapsing that cost.
-//
-// Only inputs strictly above this threshold are touched, so ordinary small
-// tool calls are left byte-for-byte unchanged.
-const maxHistoryToolCallInputBytes = 24 * 1024
+// maxHistoryToolCallInputBytes caps how much of a tool_call input / tool result
+// text is kept in the session history. A write/read/shell tool whose payload
+// embeds a large output is re-sent to the model on EVERY subsequent turn (the
+// loop replays all history), so a handful of such calls dominate the prompt
+// budget. read_file/shell already truncate to ~16 KB at the tool layer; this
+// budget (16 KB) collapses those too, so a worker that reads many files does not
+// replay every file's content every turn. Only payloads above the budget are
+// touched, so small tool calls stay byte-for-byte unchanged.
+const maxHistoryToolCallInputBytes = 16 * 1024
 
 type AppendOnlyLog struct {
 	entries []core.Message
@@ -58,24 +55,32 @@ func (l *AppendOnlyLog) Len() int {
 	return len(l.entries)
 }
 
-// truncateOversizedToolCallInput collapses any tool_call in the message whose
-// input payload exceeds maxHistoryToolCallInputBytes into a compact head+tail
-// summary, so the giant payload is not replayed every turn. It is a no-op for
-// most messages (small tool_calls, text-only messages), so it never changes
-// normal conversation semantics.
+// truncateOversizedToolCallInput collapses oversized tool_call inputs AND
+// oversized tool_result text in a message, so giant payloads are not replayed
+// to the model every turn. It is a no-op for small messages, so normal
+// conversation semantics are unchanged.
 func truncateOversizedToolCallInput(msg core.Message) core.Message {
-	if len(msg.ToolCalls) == 0 {
-		return msg
-	}
 	var changed bool
 	out := msg
-	out.ToolCalls = append([]core.ToolCall(nil), msg.ToolCalls...)
-	for i, tc := range out.ToolCalls {
-		if len(tc.Input) <= maxHistoryToolCallInputBytes {
-			continue
+	if len(msg.ToolCalls) > 0 {
+		out.ToolCalls = append([]core.ToolCall(nil), msg.ToolCalls...)
+		for i, tc := range out.ToolCalls {
+			if len(tc.Input) <= maxHistoryToolCallInputBytes {
+				continue
+			}
+			out.ToolCalls[i].Input = truncateToolCallInput(tc.Input)
+			changed = true
 		}
-		out.ToolCalls[i].Input = truncateToolCallInput(tc.Input)
-		changed = true
+	}
+	if len(msg.ToolResults) > 0 {
+		out.ToolResults = append([]core.ToolResult(nil), msg.ToolResults...)
+		for i, tr := range out.ToolResults {
+			if len(tr.ModelText) <= maxHistoryToolCallInputBytes {
+				continue
+			}
+			out.ToolResults[i].ModelText = truncateToolResultText(tr.ModelText)
+			changed = true
+		}
 	}
 	if !changed {
 		return msg
@@ -94,6 +99,19 @@ func truncateToolCallInput(input string) string {
 	}
 	return input[:head] + "\n…[tool_call input truncated: " +
 		itoa(len(input)) + " bytes]…\n" + input[len(input)-tail:]
+}
+
+// truncateToolResultText keeps the head and tail of an oversized tool result
+// text (shell/read output) and flags the elision, so the model still sees the
+// leading output without the bulk being replayed every turn.
+func truncateToolResultText(text string) string {
+	const head = 2048
+	const tail = 512
+	if len(text) <= head+tail {
+		return text
+	}
+	return text[:head] + "\n…[tool result truncated: " +
+		itoa(len(text)) + " bytes]…\n" + text[len(text)-tail:]
 }
 
 // itoa is a tiny decimal formatter (avoids importing strconv for a hot path).
