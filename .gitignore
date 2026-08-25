@@ -13,6 +13,7 @@ releases/
 # --- Caches & Temp ---
 .gocache/
 tmp/
+jsontest-*/
 .worktrees/
 
 # --- Local Settings, Secrets & Session State ---
