@@ -33,19 +33,20 @@ func (a *App) ListSubagentPicks() []protocol.SubagentPick {
 }
 
 // TeamSessionPicks returns the member sessions of the current run for the
-// TUI picker (called by the service layer on /team session).
+// TUI picker (called by the service layer on /team session). Scoped to the
+// current run's master — it lists only this team run's member task sessions,
+// never sessions from another (possibly stale) run.
 func (a *App) TeamSessionPicks() []protocol.SessionPick {
 	eng, err := a.teamEngineForGoal()
 	if err != nil {
 		return nil
 	}
 	defer eng.Close()
-	masters, _ := eng.Store.ListMasterTasksBySession(a.sessionID)
+	masters, _ := a.teamRunsForCurrentSession()
 	if len(masters) == 0 {
 		return nil
 	}
-	mt := masters[len(masters)-1]
-	tasks, _ := eng.Store.ListTasksByMasterTask(mt.ID)
+	tasks, _ := eng.Store.ListTasksByMasterTask(masters[len(masters)-1].ID)
 	if len(tasks) == 0 {
 		return nil
 	}
@@ -76,7 +77,7 @@ func (a *App) teamSessionView(sel string) string {
 	}
 	defer eng.Close()
 
-	masters, _ := eng.Store.ListMasterTasksBySession(a.sessionID)
+	masters, _ := a.teamRunsForCurrentSession()
 	if len(masters) == 0 {
 		return "当前会话没有团队 run。先 /team <目标> 启动一个。"
 	}

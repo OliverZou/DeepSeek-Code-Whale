@@ -1,6 +1,7 @@
 package memory
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/usewhale/whale/internal/core"
@@ -111,5 +112,33 @@ func TestRuntimeClonesMessageParts(t *testing.T) {
 
 	if got := second[0].Parts[0].Attachment.DisplayName; got != "screen.png" {
 		t.Fatalf("attachment display name = %q, want screen.png", got)
+	}
+}
+
+// TestRuntimeBuildProviderHistoryTruncatesRestoredWrite locks the retry/continue
+// path: a persisted session (hydrated from the session JSONL, as SessionOps
+// continue does) carries an oversized `write` tool_call. BuildProviderHistory
+// must truncate it before every provider call — otherwise the giant input is
+// replayed each turn and the prompt budget explodes (the "token explosion").
+func TestRuntimeBuildProviderHistoryTruncatesRestoredWrite(t *testing.T) {
+	big := strings.Repeat("function f(){}\n", 4000) // > 24 KB
+	restored := []core.Message{{
+		Role: core.RoleAssistant,
+		ToolCalls: []core.ToolCall{
+			{ID: "tc-1", Name: "write", Input: `{"file_path":"a_big.js","content":"` + big + `"}`},
+		},
+	}}
+	rt := HydrateRuntime(NewImmutablePrefix(nil), restored)
+
+	got := rt.BuildProviderHistory()
+	if len(got) != 1 || len(got[0].ToolCalls) != 1 {
+		t.Fatalf("unexpected history: %+v", got)
+	}
+	trunc := got[0].ToolCalls[0].Input
+	if len(trunc) >= len(big) {
+		t.Fatalf("restored write input not truncated: %d bytes", len(trunc))
+	}
+	if !strings.Contains(trunc, "[tool_call input truncated") {
+		t.Fatalf("truncation marker missing in: %.120s", trunc)
 	}
 }

@@ -47,6 +47,13 @@ func (r *RuntimeState) BuildProviderHistory() []core.Message {
 			Text: strings.Join(r.runtimeBlocks, "\n\n"),
 		})
 	}
-	out = append(out, r.Log.Entries()...)
+	// The log entries surface to the provider as the turn history. Truncate any
+	// oversized tool_call input here — not just at Append time — so history
+	// restored from a persisted session (retry/continue via SessionOps) is also
+	// compressed before every provider call. Otherwise a giant `write` input is
+	// replayed every turn (see AppendOnlyLog.Append truncation for the budget).
+	for _, msg := range r.Log.Entries() {
+		out = append(out, truncateOversizedToolCallInput(msg))
+	}
 	return out
 }

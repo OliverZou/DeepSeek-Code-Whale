@@ -38,7 +38,7 @@ func (a *App) listTeamGoals() (string, error) {
 	}
 	defer eng.Close()
 
-	masters, err := eng.Store.ListMasterTasksBySession(a.sessionID)
+	masters, err := a.teamRunsForCurrentSession()
 	if err != nil {
 		return "", err
 	}

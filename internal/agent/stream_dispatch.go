@@ -1002,6 +1002,15 @@ func (a *Agent) checkShellWriteGate(ctx context.Context, sc *streamDispatchConte
 	if decision.Allow && decision.Level == shellrisk.LevelSafeRead {
 		return false
 	}
+	// Verification/read-tool commands the worker legitimately runs (syntax
+	// check, tests, version probes). Blocking these — as the earlier
+	// "non-safe-read => reject" rule did — made a worker burn ~9 tool rounds
+	// trying to find a shell invocation that was allowed, exploding the prompt
+	// budget with history replay. Treat them as harmless so the worker can
+	// actually verify its deliverable.
+	if shellCommandIsVerification(cmd) {
+		return false
+	}
 	if err := appendToolResult(ctx, sc, results, core.ToolResult{
 		ToolCallID: call.ID,
 		Name:       call.Name,
@@ -1012,6 +1021,26 @@ func (a *Agent) checkShellWriteGate(ctx context.Context, sc *streamDispatchConte
 		return true
 	}
 	return true
+}
+
+// shellCommandIsVerification reports whether a shell command is a tool the
+// worker legitimately runs to verify/build its deliverable, not a write. This
+// keeps node --check / node <file> / git diff / npm test / python ... usable so
+// the worker does not spin on "which shell invocation is allowed".
+func shellCommandIsVerification(cmd string) bool {
+	fields := strings.Fields(strings.ToLower(strings.TrimSpace(cmd)))
+	if len(fields) == 0 {
+		return false
+	}
+	switch fields[0] {
+	case "node", "nodejs", "python", "python3", "npm", "npx", "pnpm", "yarn",
+		"git", "make", "tsc", "go", "rustc", "cargo", "bun", "deno",
+		"dir", "ls", "cat", "grep", "findstr", "rg", "head", "tail", "wc",
+		"file", "stat", "type", "readlink", "realpath", "which", "where":
+		return true
+	default:
+		return false
+	}
 }
 
 func (a *Agent) checkReadBeforeEditGate(ctx context.Context, sc *streamDispatchContext, call core.ToolCall, results *[]core.ToolResult) bool {

@@ -2,10 +2,68 @@ package app
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/usewhale/whale/internal/runtime/protocol"
+	"github.com/usewhale/whale/internal/team_engine"
 )
+
+// teamRunsForCurrentSession returns the team runs belonging to this app
+// session. It scopes to the runs this session actually started (the inline
+// masters tracked by leaderProgressState), falling back to the newest masters
+// in the workspace so /team commands still work when a run was started outside
+// the inline path (e.g. --subagent). This replaces the fragile
+// ListMasterTasksBySession(a.sessionID) match, which returns nothing when the
+// initiator's session id differs from the DSH session id (session id mismatch
+// made /team session load stale runs and /team abort list empty).
+func (a *App) teamRunsForCurrentSession() ([]*team_engine.MasterTask, error) {
+	eng, err := a.teamEngineForGoal()
+	if err != nil {
+		return nil, err
+	}
+	defer eng.Close()
+
+	// Prefer masters this session started (inline leader path).
+	if s := a.leaderProgressState; s != nil {
+		s.mu.Lock()
+		inlineIDs := make([]string, 0, len(s.masters))
+		for id := range s.masters {
+			inlineIDs = append(inlineIDs, id)
+		}
+		s.mu.Unlock()
+		if len(inlineIDs) > 0 {
+			var runs []*team_engine.MasterTask
+			for _, id := range inlineIDs {
+				if mt, _ := eng.Store.GetMasterTask(id); mt != nil {
+					runs = append(runs, mt)
+				}
+			}
+			// Newest first (by CreatedAt) so the picker shows the latest run on top.
+			sortRunsByCreated(runs)
+			return runs, nil
+		}
+	}
+
+	// Fallback: newest masters under this workspace (covers --subagent runs).
+	all, _ := eng.Store.ListMasterTasks()
+	var runs []*team_engine.MasterTask
+	for _, mt := range all {
+		if mt.WorkspacePath == "" || sameWorkspace(mt.WorkspacePath, a.workspaceRoot) {
+			runs = append(runs, mt)
+		}
+	}
+	sortRunsByCreated(runs)
+	return runs, nil
+}
+
+// sortRunsByCreated sorts masters newest-first by CreatedAt. Stable so masters
+// with equal timestamps keep their storage order.
+func sortRunsByCreated(runs []*team_engine.MasterTask) {
+	sort.SliceStable(runs, func(i, j int) bool {
+		return runs[i].CreatedAt > runs[j].CreatedAt
+	})
+}
 
 // TeamRunPicks returns the session team runs (masters) for the abort picker.
 func (a *App) TeamRunPicks() []protocol.RunPick {
@@ -14,7 +72,7 @@ func (a *App) TeamRunPicks() []protocol.RunPick {
 		return nil
 	}
 	defer eng.Close()
-	masters, _ := eng.Store.ListMasterTasksBySession(a.sessionID)
+	masters, _ := a.teamRunsForCurrentSession()
 	if len(masters) == 0 {
 		return nil
 	}
@@ -51,7 +109,7 @@ func (a *App) abortTeamRunBy(sel string) string {
 	}
 	defer eng.Close()
 
-	masters, _ := eng.Store.ListMasterTasksBySession(a.sessionID)
+	masters, _ := a.teamRunsForCurrentSession()
 	if len(masters) == 0 {
 		return "当前会话没有团队 run（先 /team <目标> 启动）"
 	}

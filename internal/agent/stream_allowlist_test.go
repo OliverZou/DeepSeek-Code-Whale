@@ -109,6 +109,19 @@ func TestCheckShellWriteGate(t *testing.T) {
 			t.Fatalf("wrong code %q", results[len(results)-1].Code)
 		}
 	})
+	t.Run("verification shell allowed", func(t *testing.T) {
+		// node --check / node <file> / git diff are how a worker verifies its
+		// deliverable; blocking them used to burn ~9 tool rounds and explode the
+		// prompt budget via history replay. They must be allowed.
+		a := &Agent{workspaceRoot: dir}
+		WithWriteAllowlist([]string{"game.js"}, os.TempDir())(a)
+		var results []core.ToolResult
+		for _, cmd := range []string{"node --check game.js", "node game.test.js", "git diff", "python --version"} {
+			if a.checkShellWriteGate(context.Background(), newAllowlistSC(), tc("shell_run", map[string]any{"command": cmd}), &results) {
+				t.Fatalf("verification shell %q must be allowed", cmd)
+			}
+		}
+	})
 	t.Run("no allowlist means shell unrestricted", func(t *testing.T) {
 		a := &Agent{workspaceRoot: dir}
 		var results []core.ToolResult
