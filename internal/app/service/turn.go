@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/usewhale/whale/internal/agent"
 	"github.com/usewhale/whale/internal/app"
@@ -34,6 +35,45 @@ func (s *Service) runTurnWithContentOptions(parts []core.MessagePart, opts agent
 
 func (s *Service) runInjectedTurn(visibleInput, hiddenInput string) {
 	s.runInjectedTurnWithOptions(visibleInput, hiddenInput, agent.RunOptions{})
+}
+
+// maybeEmitTeamStatus publishes the team run status line after a turn ends
+// (throttled to once per 60s), so the UI always signals the team is working
+// even between event narrations.
+func (s *Service) maybeEmitTeamStatus() {
+	s.cancelMu.Lock()
+	last := s.teamStatusAt
+	s.teamStatusAt = time.Now()
+	s.cancelMu.Unlock()
+	if time.Since(last) < 60*time.Second {
+		return
+	}
+	if st := s.app.LeaderRunStatus(); st != "" {
+		s.emit(Event{Kind: EventTeamStatus, Text: st})
+		s.teamStatusSent = true
+	} else if s.teamStatusSent && s.app.LeaderRunFinished() {
+		// 完结终态：状态行换成完成提示，spinner 停止。
+		s.teamStatusSent = false
+		s.emit(Event{Kind: EventTeamStatus, Text: "✅ 团队已完成"})
+	}
+}
+
+// injectLeaderTurn starts an injected (hidden) leader turn from a team engine
+// progress event, so the inline leader narrates milestones to the user
+// automatically (WorkBuddy-style progress stream). While another turn is
+// active the narration is QUEUED (not dropped) and flushed when the turn ends.
+func (s *Service) injectLeaderTurn(visibleInput, hiddenInput string) {
+	if strings.TrimSpace(hiddenInput) == "" {
+		return
+	}
+	s.cancelMu.Lock()
+	active := s.active
+	s.cancelMu.Unlock()
+	if active {
+		s.app.QueueLeaderProgress(hiddenInput)
+		return
+	}
+	s.goTracked(func() { s.runInjectedTurnWithOptions(visibleInput, hiddenInput, agent.RunOptions{}) })
 }
 
 func (s *Service) runInjectedTurnWithOptions(visibleInput, hiddenInput string, opts agent.RunOptions) {
@@ -139,6 +179,11 @@ func (s *Service) runTurnWith(start func(context.Context) (<-chan agent.AgentEve
 		s.active = false
 		s.cancelMu.Unlock()
 		cancel()
+		// 团队进展不丢：leader turn 期间暂存的事件在此补发。
+		s.app.FlushLeaderProgress()
+		// 团队运行状态（节流）：每次用户可见 turn 结束显示最新进度——用户始终
+		// 知道 team 还在干活（"Worked for" 只是本轮 turn 结束，不是团队结束）。
+		s.maybeEmitTeamStatus()
 	}()
 	events, err := start(turnCtx)
 	if err != nil {

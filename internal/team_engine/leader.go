@@ -95,6 +95,12 @@ func (l *Leader) DecomposeSessionID() string {
 	return l.planner.DecomposeSessionID()
 }
 
+// BootstrapSession delegates to Planner: creates the Leader session in
+// --plan-file mode with one minimal reply (no LLM decomposition).
+func (l *Leader) BootstrapSession(goal, workdir string, timeout time.Duration, model ...string) error {
+	return l.planner.BootstrapSession(goal, workdir, timeout, model...)
+}
+
 // ReviewCycle delegates to Reviewer.
 func (l *Leader) ReviewCycle(goal string, report *CycleReport, workdir string, timeout time.Duration, model ...string) (*CycleReview, error) {
 	return l.reviewer.ReviewCycle(goal, report, workdir, timeout, model...)

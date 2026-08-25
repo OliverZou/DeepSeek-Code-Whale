@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -780,6 +781,9 @@ func (p *noToolProvider) StreamResponse(_ context.Context, _ []Message, _ []Tool
 }
 
 func TestHookRunnerRealShellPreToolBlock(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("command uses POSIX shell syntax (>&2, ;) not supported by cmd.exe")
+	}
 	r := NewHookRunner([]ResolvedHook{{HookConfig: HookConfig{Command: "echo blocked >&2; exit 2"}, Event: HookEventPreToolUse}}, ".")
 	report := r.RunHook(context.Background(), HookPayload{Event: HookEventPreToolUse, ToolName: "bash"})
 	if !report.Blocked {
@@ -791,6 +795,9 @@ func TestHookRunnerRealShellPreToolBlock(t *testing.T) {
 }
 
 func TestHookRunnerRealShellPostToolWarn(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("command uses POSIX shell syntax (>&2, ;) not supported by cmd.exe")
+	}
 	r := NewHookRunner([]ResolvedHook{{HookConfig: HookConfig{Command: "echo post-warn >&2; exit 5"}, Event: HookEventPostToolUse}}, ".")
 	report := r.RunHook(context.Background(), HookPayload{Event: HookEventPostToolUse, ToolName: "echo"})
 	if report.Blocked {
@@ -802,6 +809,9 @@ func TestHookRunnerRealShellPostToolWarn(t *testing.T) {
 }
 
 func TestHookRunnerStopPayloadCarriesAssistantTextAndTurn(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("command uses POSIX shell syntax (cat >, ;) not supported by cmd.exe")
+	}
 	tmp := t.TempDir()
 	capture := filepath.Join(tmp, "payload.json")
 	cmd := "cat > " + capture + "; exit 0"

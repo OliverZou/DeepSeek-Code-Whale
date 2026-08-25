@@ -23,8 +23,6 @@ const (
 	TaskStateAssigned            TaskState = "assigned"
 	TaskStateProducing           TaskState = "producing"
 	TaskStateProduced            TaskState = "produced"
-	TaskStateChecking            TaskState = "checking"
-	TaskStateChecked             TaskState = "checked"
 	TaskStateVerifying           TaskState = "verifying"
 	TaskStateVerified            TaskState = "verified"
 	TaskStateFailed              TaskState = "failed"
@@ -45,6 +43,11 @@ func (s TaskState) IsTerminal() bool {
 func (s TaskState) IsResumable() bool {
 	return s == TaskStateSuspended || s == TaskStatePendingConfirmation
 }
+
+// SystemVerifierAgentName is the name of the system-provided verifier agent.
+// Teams never define a verifier role: the verifier is always the embedded
+// system definition, which carries the generic-task verification methodology.
+const SystemVerifierAgentName = "verifier"
 
 // AgentRole is the role an agent plays in the collaboration.
 type AgentRole string
@@ -88,7 +91,8 @@ type Task struct {
 	Description        string      `json:"description"`                   // 任务描述（给 Agent 的 prompt）
 	Output             string      `json:"output,omitempty"`              // 声明产出（不进DB，运行时传递）
 	Role               AgentRole   `json:"role"`                          // 角色
-	VerifierRole       string      `json:"verifier_role,omitempty"`       // 验证者角色（agent name）
+	VerifierRole       string      `json:"verifier_role,omitempty"`       // 验证者角色（agent name）— deprecated：验证者恒为系统 verifier
+	VerifyMode         string      `json:"verify_mode,omitempty"`         // 验证深度：""=auto / "mechanical" / "semantic"（Leader 分解时判定）
 	AcceptanceCriteria []string    `json:"acceptance_criteria,omitempty"` // 验收标准（Worker 自检 + Verifier 验收共用）
 	Profile            ToolProfile `json:"profile"`                       // 工具权限配置
 	State              TaskState   `json:"state"`                         // 当前状态
@@ -106,6 +110,19 @@ type Task struct {
 	UseDW              bool        `json:"use_dw"`                        // use Dynamic Workflow for verification
 	CreatedAt          string      `json:"created_at"`                    // ISO 8601
 	UpdatedAt          string      `json:"updated_at"`                    // ISO 8601
+	// 运行统计(监控/事后分析):累计耗时与 token（含重试轮；由 UpdateTask 累加）。
+	WorkerDuration   float64 `json:"worker_duration_seconds,omitempty"`
+	WorkerTokens     int     `json:"worker_tokens,omitempty"`
+	VerifierDuration float64 `json:"verifier_duration_seconds,omitempty"`
+	VerifierTokens   int     `json:"verifier_tokens,omitempty"`
+	// 工具探针：worker 会话的进度事件计数与最重工具 Top2（如 "bash:18,read:9"），
+	// 让事后分析直接看出「哪个任务在烧轮数/卡在哪个工具」。
+	ToolCalls int    `json:"tool_calls,omitempty"`
+	TopTools  string `json:"top_tools,omitempty"`
+	// 事后分析：验证结论/验证者 cap 次数/工具等待时长。
+	Verdict          string  `json:"verdict,omitempty"`
+	VerifierCapCount int     `json:"verifier_cap_count,omitempty"`
+	ToolWaitSeconds  float64 `json:"tool_wait_seconds,omitempty"`
 }
 
 // BatchStatus enumerates the states a task batch can be in.
@@ -198,7 +215,8 @@ type PlanTask struct {
 	Description        string              `json:"description"`
 	Output             string              `json:"output,omitempty"` // declared deliverable
 	Role               string              `json:"role"`
-	VerifierRole       string              `json:"verifier_role,omitempty"`       // who verifies this task (agent name)
+	VerifierRole       string              `json:"verifier_role,omitempty"`       // deprecated — replaced by verify_mode
+	VerifyMode         string              `json:"verify_mode,omitempty"`         // ""=auto / "mechanical" / "semantic"（Leader 分解时判定）
 	AcceptanceCriteria []string            `json:"acceptance_criteria,omitempty"` // 验收标准（Worker 自检 + Verifier 验收共用）
 	BatchID            string              `json:"batch_id,omitempty"`            // which batch (stage) this belongs to
 	BatchLabel         string              `json:"batch_label,omitempty"`         // human label for the batch
@@ -253,9 +271,7 @@ var ValidTransitions = map[TaskState][]TaskState{
 	TaskStatePending:             {TaskStateAssigned, TaskStateSuspended, TaskStateFailed},
 	TaskStateAssigned:            {TaskStateProducing, TaskStateSuspended, TaskStateFailed},
 	TaskStateProducing:           {TaskStateProduced, TaskStateSuspended, TaskStateFailed},
-	TaskStateProduced:            {TaskStateChecking, TaskStateDone, TaskStateAssigned, TaskStateSuspended, TaskStateFailed},
-	TaskStateChecking:            {TaskStateChecked, TaskStateSuspended, TaskStateFailed},
-	TaskStateChecked:             {TaskStateVerifying, TaskStateDone, TaskStateSuspended, TaskStateFailed},
+	TaskStateProduced:            {TaskStateVerifying, TaskStateDone, TaskStateAssigned, TaskStateSuspended, TaskStateFailed},
 	TaskStateVerifying:           {TaskStateVerified, TaskStateProducing, TaskStateSuspended, TaskStateAssigned, TaskStateFailed},
 	TaskStateVerified:            {TaskStateDone, TaskStateSuspended, TaskStateAssigned, TaskStateFailed},
 	TaskStateSuspended:           {TaskStatePending, TaskStatePendingConfirmation},
@@ -274,7 +290,7 @@ func ResetForResume(state TaskState) TaskState {
 	if state == TaskStateDone {
 		return TaskStateDone
 	}
-	if state == TaskStateVerified || state == TaskStateChecked {
+	if state == TaskStateVerified {
 		return TaskStateDone
 	}
 	if state.IsTerminal() {
@@ -416,13 +432,17 @@ const (
 
 // TaskEvent 是 engine 向监听者推送的事件
 type TaskEvent struct {
-	Type     TaskEventType `json:"type"`
-	TaskID   string        `json:"task_id"`
-	Title    string        `json:"title,omitempty"`
-	OldState string        `json:"old_state,omitempty"`
-	NewState string        `json:"new_state,omitempty"`
-	Data     string        `json:"data,omitempty"`
-	Progress int           `json:"progress"`
+	Type         TaskEventType `json:"type"`
+	TaskID       string        `json:"task_id"`
+	MasterID     string        `json:"master_id,omitempty"` // 定位所属 run（进展注入把任务映射回 leader 会话）
+	Title        string        `json:"title,omitempty"`
+	Deliverables []string      `json:"deliverables,omitempty"` // 交付文件（相对 workdir），完成事件带出供链接展示
+	Workdir      string        `json:"workdir,omitempty"`      // 交付工作目录（拼绝对链接）
+	Role         string        `json:"role,omitempty"`         // 成员角色（TUI 成员卡片显示）
+	OldState     string        `json:"old_state,omitempty"`
+	NewState     string        `json:"new_state,omitempty"`
+	Data         string        `json:"data,omitempty"`
+	Progress     int           `json:"progress"`
 }
 
 // TaskEventCallback 是事件监听函数
@@ -435,8 +455,6 @@ func AllStates() []TaskState {
 		TaskStateAssigned,
 		TaskStateProducing,
 		TaskStateProduced,
-		TaskStateChecking,
-		TaskStateChecked,
 		TaskStateVerifying,
 		TaskStateVerified,
 		TaskStateFailed,

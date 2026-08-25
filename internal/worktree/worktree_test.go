@@ -733,6 +733,11 @@ func newGitRepo(t *testing.T) string {
 	run(t, dir, "git", "init", "-b", "main")
 	run(t, dir, "git", "config", "user.email", "test@example.com")
 	run(t, dir, "git", "config", "user.name", "Test User")
+	// Keep content byte-for-byte across git round-trips regardless of the
+	// host's global core.autocrlf setting, which would otherwise rewrite LF
+	// test fixtures to CRLF on Windows.
+	run(t, dir, "git", "config", "core.autocrlf", "false")
+	run(t, dir, "git", "config", "core.eol", "lf")
 	write(t, filepath.Join(dir, "README.md"), []byte("test\n"))
 	run(t, dir, "git", "add", "README.md")
 	run(t, dir, "git", "commit", "-m", "initial")

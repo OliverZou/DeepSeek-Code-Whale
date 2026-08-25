@@ -365,7 +365,7 @@ func TestDetectActionResolvesHomebrewSymlink(t *testing.T) {
 		t.Fatalf("MkdirAll link: %v", err)
 	}
 	if err := os.Symlink(target, link); err != nil {
-		t.Fatalf("Symlink: %v", err)
+		t.Skipf("symlink unavailable: %v", err)
 	}
 	action := DetectAction("darwin", link)
 	if action.Cmd != "brew" {

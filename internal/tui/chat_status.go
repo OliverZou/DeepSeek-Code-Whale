@@ -3,8 +3,25 @@ package tui
 import (
 	"strings"
 
+	"github.com/charmbracelet/lipgloss"
 	"github.com/usewhale/whale/internal/runtime/protocol"
+	tuitheme "github.com/usewhale/whale/internal/tui/theme"
 )
+
+// renderTeamStatusLine is the always-visible bottom status line while a team
+// run is active (the leader turn may be idle — the team works in the
+// background, and the user must see that). Animated spinner frame is supplied
+// by the ticker via teamSpinFrame.
+func (m model) renderTeamStatusLine(width int) string {
+	if m.teamStatusFinal != "" {
+		return lipgloss.NewStyle().Width(width).MaxWidth(width).Foreground(tuitheme.Default.Info).Render(m.teamStatusFinal)
+	}
+	if !m.teamStatusActive || m.teamStatusLine == "" {
+		return ""
+	}
+	spin := teamSpinFrames[m.teamSpinFrame%len(teamSpinFrames)]
+	return lipgloss.NewStyle().Width(width).MaxWidth(width).Foreground(tuitheme.Default.Info).Render(spin + " " + m.teamStatusLine)
+}
 
 func (m *model) syncModelEffortFromInfo(text string) {
 	if strings.Contains(text, "\n") {

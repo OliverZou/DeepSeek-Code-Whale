@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -74,6 +75,9 @@ func TestTaskSearchReadEditFlow(t *testing.T) {
 }
 
 func TestTaskBackgroundShellWaitFlow(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX shell scenario fixture not supported on Windows")
+	}
 	run, err := RunTask(context.Background(), TaskSpec{
 		ID:          "background-shell-wait",
 		Description: "start a background shell task and wait for completion",

@@ -1,6 +1,7 @@
 package policy
 
 import (
+	"runtime"
 	"strconv"
 	"testing"
 
@@ -16,6 +17,9 @@ import (
 // Before the fix, shell_run approvals were always command-scoped, so the
 // directory grant was never consulted and the subpath re-prompted.
 func TestExternalDirectoryGrantCoversSafeReadShellSubpath(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses Unix-style absolute path fixtures /repo and /ext/src")
+	}
 	const workspace = "/repo"
 
 	p := RulePolicy{Default: PermissionAllow, Rules: DefaultRules(), WorkspaceRoot: workspace}

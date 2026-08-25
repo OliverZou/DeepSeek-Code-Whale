@@ -50,7 +50,13 @@ func (p RulePolicy) externalDirsFromRoot(command, pathRoot string, programPathTr
 				continue
 			}
 			clean := p.resolveShellPathToken(root, arg)
-			if clean == "" || pathInsideAny(clean, projectRoots) || pathInsideTrustedShellPath(clean) {
+			// Trust temp-dir operands only when the command itself runs inside
+			// the project (a plain read of a temp file). When the CWD is
+			// external (e.g. a shell launched with cwd=/tmp), a relative
+			// operand resolves outside the project and must still be treated as
+			// external_directory.
+			trustTemp := pathInsideAny(root, projectRoots)
+			if clean == "" || pathInsideAny(clean, projectRoots) || pathInsideTrustedShellPath(clean) || (trustTemp && pathInsideTrustedTemp(clean)) {
 				continue
 			}
 			out = append(out, externalDirForToken(clean))

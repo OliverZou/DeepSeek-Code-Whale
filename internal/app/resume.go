@@ -38,10 +38,27 @@ func IsCrossWorkspaceResumeError(err error) bool {
 	return errors.As(err, &target)
 }
 
+// CheckResumeWorkspace reports whether resuming the given session would cross a
+// workspace boundary, so callers can block the resume and tell the user to
+// switch directories. It is the guard behind /resume and startup resume: a
+// top-level session recorded for a different directory must not be silently
+// resumed into the current one.
+//
+// Subagent (child) sessions are exempt. Their Workspace field records the
+// directory they ran in — for a worktree-isolated subagent that is the
+// transient git worktree, which is merged back and removed the moment the
+// subagent completes (see tasks.runSubagent's worktree.Merge/Remove). It is
+// therefore NOT a persistent workspace. Switching into a subagent session
+// targets its conversation context, not its filesystem: the working directory
+// should remain the current workspace, and the subagent's (already-gone)
+// worktree path must not block the switch.
 func CheckResumeWorkspace(sessionsDir, sessionID, currentWorkspace string) (string, bool, error) {
 	meta, err := session.LoadSessionMeta(sessionsDir, sessionID)
 	if err != nil {
 		return "", false, err
+	}
+	if strings.EqualFold(strings.TrimSpace(meta.Kind), "subagent") {
+		return "", false, nil
 	}
 	workspace := strings.TrimSpace(meta.Workspace)
 	if workspace == "" || sameWorkspace(workspace, currentWorkspace) {

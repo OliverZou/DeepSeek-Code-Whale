@@ -56,11 +56,19 @@ func initAppTools(cfg Config, start StartOptions, workspaceRoot string) (appTool
 		}
 	}
 	baseTools := append([]core.Tool{}, toolset.Tools()...)
+	// Inline leader（/team 缺省）：当前主会话直接成为 Leader，需要 team 编排工
+	// 具（team_run_plan/team_status/team_feedback/…）——主 agent 常驻它们，
+	// 用户可随时插话/打断；显式 --subagent 模式仍走后台 subagent leader。
+	baseTools = append(baseTools, toolset.TeamEngineTools()...)
 	baseToolRegistry, err := core.NewToolRegistryChecked(baseTools)
 	if err != nil {
 		return appToolInit{}, fmt.Errorf("init base tool registry failed: %w", err)
 	}
-	subagentTools := append([]core.Tool{}, baseTools...)
+	// Team engine tools (team_run/team_status/team_feedback/…) belong to the
+	// subagent registry: a Leader child agent selects them by name from its .md
+	// tools (or the engine's OrchestrationToolNames) and drives the team state
+	// machine from its session. Parent (main agent) tools stay unchanged.
+	subagentTools := append([]core.Tool{}, toolset.TeamEngineTools()...)
 	subagentTools = append(subagentTools, pluginTools...)
 	subagentToolRegistry, err := core.NewToolRegistryChecked(subagentTools)
 	if err != nil {

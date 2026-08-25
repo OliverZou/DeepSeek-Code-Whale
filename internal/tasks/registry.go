@@ -187,6 +187,13 @@ func addToolSelectors(parent *core.ToolRegistry, selectors []string, caps, tools
 			continue
 		}
 		if parent == nil || parent.Get(selector) == nil {
+			if field == "disallowedTools" {
+				// Unknown names in a disallow list are harmless — the tool
+				// simply does not exist in this runtime (e.g. code-graph
+				// tools without a code-graph backend). "Disallow if present"
+				// semantics: skip instead of failing the spawn.
+				continue
+			}
 			known := []string{CapabilityWorkspaceRead, CapabilityWorkspaceWrite, CapabilityShellRead, CapabilityShellRun, CapabilityTerminalWrite, CapabilityWebSearch, CapabilityWebFetch, CapabilityMCPRead}
 			return fmt.Errorf("unknown agent %s selector %q; use a known capability (%s) or an available tool name", field, selector, strings.Join(known, ", "))
 		}

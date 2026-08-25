@@ -60,9 +60,11 @@ func (t *TeamLog) write(cat, format string, args ...interface{}) {
 	if t.fPath == "" && t.auxPath == "" {
 		return
 	}
-	if !t.mu.TryLock() {
-		return // avoid deadlock — drop log if mutex is contested
-	}
+	// Block: the critical section is a file append (microseconds), and dropping
+	// lifecycle lines (task start / worker done / gate results) under lock
+	// contention has repeatedly made live runs look like missing executions.
+	// A TryLock that silently drops is worse than a short wait.
+	t.mu.Lock()
 	defer t.mu.Unlock()
 	// Lazily open on first write so a logger that never writes leaves no file.
 	if t.f == nil && t.fPath != "" {

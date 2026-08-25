@@ -92,6 +92,67 @@ func currentLabel(label string, current bool) string {
 }
 
 func (m model) renderSessionPicker() string {
+	if len(m.teamAbortRuns) > 0 {
+		rows := []string{
+			pickerTitle("team abort"),
+			pickerHint("(up/down choose, enter stop run, esc cancel)"),
+		}
+		for i, p := range m.teamAbortRuns {
+			label := p.MasterID
+			if len(label) > 8 {
+				label = label[:8]
+			}
+			row := label + " " + p.Status
+			if p.Goal != "" {
+				row = row + " — " + p.Goal
+			}
+			if p.Started != "" {
+				row = row + " (" + p.Started + ")"
+			}
+			rows = append(rows, pickerRow(row, i == m.teamAbortIdx, false))
+		}
+		if m.teamAbortConfirm {
+			rows = append(rows, "", pickerRow("确认停止该 run？（enter/y 确认 · esc 取消）", true, true))
+		}
+		return strings.Join(rows, "\n")
+	}
+	if len(m.teamSessions) > 0 {
+		rows := []string{
+			pickerTitle("team members"),
+			pickerHint("(up/down choose, enter open session, esc cancel)"),
+		}
+		for i, p := range m.teamSessions {
+			label := p.Role
+			if p.Title != "" {
+				label = p.Role + " — " + p.Title
+			}
+			if p.State != "" {
+				label = label + " [" + p.State + "]"
+			}
+			rows = append(rows, pickerRow(label, i == m.teamPickIdx, false))
+		}
+		return strings.Join(rows, "\n")
+	}
+	if len(m.subagentPicks) > 0 {
+		rows := []string{
+			pickerTitle("subagents"),
+			pickerHint("(up/down choose, enter switch session, esc cancel)"),
+		}
+		for i, p := range m.subagentPicks {
+			label := p.Role
+			if p.Title != "" {
+				label = p.Role + " — " + p.Title
+			}
+			if p.ParentTitle != "" {
+				label = label + "  ⇠ " + p.ParentTitle
+			}
+			if p.Status != "" {
+				label = label + " [" + p.Status + "]"
+			}
+			rows = append(rows, pickerRow(label, i == m.subagentPickIdx, false))
+		}
+		return strings.Join(rows, "\n")
+	}
 	rows := []string{
 		pickerTitle("sessions"),
 		pickerHint("(up/down choose, enter confirm, esc cancel)"),

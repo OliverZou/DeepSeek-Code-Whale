@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -67,8 +68,17 @@ func TestGoalCommandSetsStateAndStartsHiddenTurn(t *testing.T) {
 
 func TestGoalCommandRunsHooksOnObjectiveAndSkipsHiddenTurnHooks(t *testing.T) {
 	app := newGoalTestApp(t)
+	// POSIX `/bin/sh -lc` has printf; cmd.exe does not. Emit the JSON directly
+	// on Windows (forcing the cmd shell so the fixture is deterministic even
+	// when pwsh is installed).
+	hookCommand := `printf '{"updated_input":"rewritten objective"}'`
+	hookShell := ""
+	if runtime.GOOS == "windows" {
+		hookCommand = `echo {"updated_input":"rewritten objective"}`
+		hookShell = "cmd"
+	}
 	app.hookRunner = agent.NewHookRunner([]agent.ResolvedHook{{
-		HookConfig: agent.HookConfig{Command: `printf '{"updated_input":"rewritten objective"}'`},
+		HookConfig: agent.HookConfig{Command: hookCommand, Shell: hookShell},
 		Event:      agent.HookEventUserPromptSubmit,
 	}}, app.workspaceRoot)
 
@@ -146,7 +156,9 @@ func TestGoalResumeStartsContinuationInAgentMode(t *testing.T) {
 func TestGoalCommandBlockedByObjectiveHookDoesNotStartGoal(t *testing.T) {
 	app := newGoalTestApp(t)
 	app.hookRunner = agent.NewHookRunner([]agent.ResolvedHook{{
-		HookConfig: agent.HookConfig{Command: `echo blocked objective >&2; exit 2`},
+		// `1>&2` and `&&` and `exit 2` are valid in both POSIX sh and cmd.exe,
+		// so this hook blocks the prompt on both platforms.
+		HookConfig: agent.HookConfig{Command: `echo blocked objective 1>&2 && exit 2`},
 		Event:      agent.HookEventUserPromptSubmit,
 	}}, app.workspaceRoot)
 

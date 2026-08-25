@@ -32,6 +32,13 @@ func (s *Service) Dispatch(in Intent) {
 		s.resolveUserInput(in.ToolCallID, core.UserInputResponse{}, false)
 	case IntentRequestSessions:
 		s.emitSessionChoices()
+	case IntentTeamSessionOpen:
+		text := s.app.ReadMemberSession(strings.TrimSpace(in.Input))
+		s.emit(Event{Kind: EventTeamSessionOpen, Text: text})
+	case IntentTeamAbort:
+		result := s.app.StopSelectedRun(strings.TrimSpace(in.Input))
+		s.emit(Event{Kind: EventInfo, Text: result})
+
 	case IntentRequestExit:
 		s.requestExit()
 	case IntentSelectSession:

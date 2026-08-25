@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/usewhale/whale/internal/core"
 	"github.com/usewhale/whale/internal/tasks"
 	"github.com/usewhale/whale/internal/team_engine"
 )
@@ -34,8 +35,27 @@ func resolveTeamSpawnRequest(req team_engine.SubagentRequest, library *tasks.Age
 		Model:        req.Model,
 		MaxToolIters: req.MaxIters,
 		MaxToolCalls: req.MaxCalls,
+		ReportCap:    req.ReportCap,
 		OutputSchema: req.OutputSchema,
 	}
+
+	// The verifier is always the system-provided agent. Teams never define a
+	// verifier role and no project/user/team agent file may shadow it — the
+	// definition is embedded in the binary, persona and tool list included.
+	if req.AgentName == team_engine.SystemVerifierAgentName {
+		if sys, ok, err := tasks.SystemAgentDefinition(team_engine.SystemVerifierAgentName); err == nil && ok {
+			// The verifier's capability selectors (workspace.read + shell.run)
+			// fan out to the same dead tool schemas as a worker's. Apply the
+			// exclusions before returning so this early exit does not skip the
+			// tool-schema economy below.
+			sys.DisallowedTools = mergeStringSlices(sys.DisallowedTools, teamEngineToolExclusions)
+			tasksReq.Agent = sys
+			return tasksReq
+		} else {
+			team_engine.Log("adapter", "system verifier definition unavailable: %v", err)
+		}
+	}
+
 	if len(req.Tools) > 0 {
 		// req.Tools carries team-engine tool names (ProfileToToolNames),
 		// which the shell spawner understands but the native subagent
@@ -43,6 +63,10 @@ func resolveTeamSpawnRequest(req team_engine.SubagentRequest, library *tasks.Age
 		// agent actually receives workspace.write / shell.run / etc.
 		tasksReq.Tools = teamToolsToCapabilities(req.Tools)
 	}
+	// The orchestration selectors are computed once and merged into the agent
+	// definition regardless of whether an .md definition resolves — the Leader
+	// is an ordinary agent that additionally carries the team tools.
+	orchestrationSelectors := teamToolsToCapabilities(req.OrchestrationTools)
 
 	// Resolve agent definition from .md file when AgentName is set.
 	if req.AgentName != "" && library != nil {
@@ -56,6 +80,13 @@ func resolveTeamSpawnRequest(req team_engine.SubagentRequest, library *tasks.Age
 			lib = library.WithExtraRoot(req.TeamAgentsDir, "team", -1)
 		}
 		if def, ok, err := lib.Resolve(req.AgentName); err == nil && ok {
+			// Leader orchestration: the team tool names (OrchestrationToolNames)
+			// are merged into the definition's declared selectors so the Leader
+			// keeps its .md workspace capabilities AND carries the orchestration
+			// tools (req.Tools semantics stays replace-only).
+			if len(orchestrationSelectors) > 0 {
+				def.Tools = mergeStringSlices(def.Tools, orchestrationSelectors)
+			}
 			tasksReq.Agent = def
 			team_engine.Log("adapter", "resolve agent=%q ok tools=%d promptLen=%d", req.AgentName, len(def.Tools), len(def.Prompt))
 			// The persona is capability context, not the task. Inject it as
@@ -78,18 +109,23 @@ func resolveTeamSpawnRequest(req team_engine.SubagentRequest, library *tasks.Age
 	}
 
 	// Fallback: provide inline agent definitions for built-in roles.
+	// The system verifier is never created here — it is always resolved from
+	// the embedded system definition above; a parse failure of that definition
+	// is a programming error that shadows in the log before falling through
+	// to the inline fallback.
 	if tasksReq.Agent.Name == "" {
 		tasksReq.Agent = tasks.AgentDefinition{
 			Name:           req.Role,
 			Description:    "Team engine " + req.Role + " agent",
 			PermissionMode: permissionForRole(req.Role),
 		}
-		// A verifier whose agent definition didn't resolve still needs the
-		// tool-grounded verify profile (read + shell.run + write) so it
-		// can execute tests/linters and drop its black-box test artifacts.
-		if req.Role == "verifier" && len(tasksReq.Tools) == 0 {
-			tasksReq.Tools = teamToolsToCapabilities(team_engine.ProfileToToolNames(team_engine.ProfileVerify))
-		}
+	}
+
+	// The orchestration tools must NOT depend on a resolved .md definition:
+	// a Leader is an ordinary agent that additionally carries the team tools,
+	// so the inline fallback (no AgentName, no team config) keeps them too.
+	if len(orchestrationSelectors) > 0 {
+		tasksReq.Agent.Tools = mergeStringSlices(tasksReq.Agent.Tools, orchestrationSelectors)
 	}
 
 	// An agent resolved from a .md file may omit permission mode, which
@@ -104,14 +140,63 @@ func resolveTeamSpawnRequest(req team_engine.SubagentRequest, library *tasks.Age
 		tasksReq.Task = fmt.Sprintf("Working directory: %s\n\n%s", req.Workdir, tasksReq.Task)
 	}
 
+	// Tool-schema economy (prompt minimization): the native subagent selects
+	// tools by capability, and wide capabilities like workspace.read fan out to
+	// semantic code-graph / AST / skill / memory tools that a team worker never
+	// uses (a single-file JS task run recorded zero calls for all of them).
+	// Every tool schema is re-sent each round, so dropping these ~1.9k
+	// tokens/round of dead schema is the cheapest prompt win available. Keep
+	// the read/grep/list + edit/write + shell family intact.
+	//
+	// Escape hatch: a definition that explicitly declares one of the excluded
+	// tool names gets it back (e.g. a large-codebase team writing
+	// `tools: [codebase_search]`). Slim is the default, not a lock.
+	exclusions := teamEngineToolExclusions
+	if len(tasksReq.Agent.Tools) > 0 {
+		declared := make(map[string]bool, len(tasksReq.Agent.Tools))
+		for _, name := range tasksReq.Agent.Tools {
+			declared[strings.TrimSpace(name)] = true
+		}
+		var kept []string
+		for _, name := range exclusions {
+			if !declared[name] {
+				kept = append(kept, name)
+			}
+		}
+		exclusions = kept
+	}
+	tasksReq.Agent.DisallowedTools = mergeStringSlices(tasksReq.Agent.DisallowedTools, exclusions)
+
 	return tasksReq
+}
+
+// teamEngineToolExclusions lists native tools excluded from team worker and
+// verifier sessions. They depend on optional backends (code graph, AST MCP,
+// deferred MCP catalog) that team tasks rarely configure, and team workers
+// overwhelmingly use read_file/grep/shell_run/write instead.
+// write_stdin is deliberately kept: ProfileDefault declares it for PTY
+// interactive-shell workflows (REPLs, interactive CLI debugging), which are
+// project-agnostic.
+var teamEngineToolExclusions = []string{
+	"codebase_search", "codebase_trace", "codebase_impact", "codebase_index",
+	"ast_edit", "ast_patch", "ast_symbols",
+	"tool_search", "load_skill", "save_project_memory",
 }
 
 func teamEngineSpawnAdapter(runner *tasks.Runner, library *tasks.AgentDefinitionLibrary, record func(sessionID string, req tasks.SpawnSubagentRequest)) team_engine.SpawnFunc {
 	return func(ctx context.Context, req team_engine.SubagentRequest) (team_engine.SubagentResponse, error) {
 		tasksReq := resolveTeamSpawnRequest(req, library)
 
-		resp, err := runner.SpawnSubagent(ctx, tasksReq)
+		// Bridge the engine's progress callback to the native subagent's tool
+		// progress stream (SpawnSubagent drops it): the engine's tool probe
+		// (run_report tool_calls/top_tools) counts these events.
+		var bridge func(core.ToolProgress)
+		if req.OnProgress != nil {
+			bridge = func(pr core.ToolProgress) {
+				req.OnProgress(pr.Status, pr.Summary, pr.ToolName, pr.DurationMS)
+			}
+		}
+		resp, err := runner.SpawnSubagentWithProgress(ctx, tasksReq, bridge)
 		if record != nil && resp.SessionID != "" {
 			record(resp.SessionID, tasksReq)
 		}
@@ -165,9 +250,8 @@ func teamEngineSpawnAdapter(runner *tasks.Runner, library *tasks.AgentDefinition
 // write/shell to assemble deliverables, and its resolved AgentDefinition's
 // PermissionMode takes priority; this fallback only applies when the .md omits
 // permissionMode. The verifier is special: it needs shell.run to execute
-// tests/linters plus workspace.write to drop its black-box test artifacts
-// (tool-grounded verification), but its toolset is constrained to the verify
-// profile in the adapter fallback, so auto is safe.
+// tests/linters, but it is an inspector, not an editor — its system
+// definition permits no workspace.write, so auto is safe.
 func permissionForRole(role string) string {
 	switch role {
 	case "verifier":
@@ -180,13 +264,19 @@ func permissionForRole(role string) string {
 }
 
 // teamToolsToCapabilities maps team-engine tool names (ProfileToToolNames) to
-// native subagent capabilities. The shell spawner consumes tool names directly;
+// native subagent tool selectors. The shell spawner consumes tool names directly;
 // the native subagent selects tools by capability (workspace.write, shell.run,
 // …), so "apply_patch" — which the native toolset does not provide — correctly
 // collapses into workspace.write alongside "edit"/"write".
+//
+// Team orchestration tools (team_run/team_status/…) pass through under their own
+// names: the subagent registry's tool selector supports capability names and
+// exact tool names side by side (addToolSelectors), and Runner.ParentTools
+// carries the full toolset, so a leader that declares them receives the actual
+// tools and can drive the team engine from its session.
 func teamToolsToCapabilities(toolNames []string) []string {
-	caps := map[string]bool{}
-	add := func(c string) { caps[c] = true }
+	selectors := map[string]bool{}
+	add := func(c string) { selectors[c] = true }
 	for _, name := range toolNames {
 		switch name {
 		case "read_file", "list_dir", "grep", "search_files":
@@ -201,16 +291,38 @@ func teamToolsToCapabilities(toolNames []string) []string {
 			add(tasks.CapabilityWebSearch)
 		case "web_fetch", "fetch":
 			add(tasks.CapabilityWebFetch)
+		default:
+			// Leader-driven orchestration tools: pass the name through so the
+			// subagent registry selects them by name (never by capability).
+			if strings.HasPrefix(name, "team_") {
+				add(name)
+			}
 		}
 	}
-	if len(caps) == 0 {
+	if len(selectors) == 0 {
 		return nil
 	}
-	out := make([]string, 0, len(caps))
-	for c := range caps {
+	out := make([]string, 0, len(selectors))
+	for c := range selectors {
 		out = append(out, c)
 	}
 	sort.Strings(out)
+	return out
+}
+
+// mergeStringSlices concatenates s with the unique items of extra, preserving
+// order and dropping duplicates.
+func mergeStringSlices(s, extra []string) []string {
+	seen := map[string]bool{}
+	out := make([]string, 0, len(s)+len(extra))
+	for _, v := range append(append([]string(nil), s...), extra...) {
+		v = strings.TrimSpace(v)
+		if v == "" || seen[v] {
+			continue
+		}
+		seen[v] = true
+		out = append(out, v)
+	}
 	return out
 }
 

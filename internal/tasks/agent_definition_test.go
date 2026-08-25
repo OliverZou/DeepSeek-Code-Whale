@@ -430,7 +430,14 @@ Review local changes.
 	if err := os.WriteFile(filepath.Join(agentDir, "claude-reviewer.md"), []byte(content), 0o644); err != nil {
 		t.Fatalf("write agent: %v", err)
 	}
-	library := NewAgentDefinitionLibrary(root)
+	// Restrict roots to the workspace so the test does not depend on the
+	// developer's real ~/.whale/agents (which is populated on many machines
+	// and would otherwise leak into the assertion).
+	library := NewAgentDefinitionLibraryWithRoots([]AgentDefinitionRoot{{
+		Path:   filepath.Join(root, ".whale", "agents"),
+		Source: "project",
+		Rank:   0,
+	}})
 	defs, err := library.List(context.Background())
 	if err != nil {
 		t.Fatalf("List: %v", err)
@@ -479,7 +486,14 @@ func TestAgentDefinitionLibraryListSkipsMalformedAgents(t *testing.T) {
 }`), 0o644); err != nil {
 		t.Fatalf("write reader agent: %v", err)
 	}
-	library := NewAgentDefinitionLibrary(root)
+	// Restrict roots to the workspace so the test does not depend on the
+	// developer's real ~/.whale/agents (which is populated on many machines
+	// and would otherwise leak into the assertion).
+	library := NewAgentDefinitionLibraryWithRoots([]AgentDefinitionRoot{{
+		Path:   filepath.Join(root, ".whale", "agents"),
+		Source: "project",
+		Rank:   0,
+	}})
 	defs, err := library.List(context.Background())
 	if err != nil {
 		t.Fatalf("List: %v", err)

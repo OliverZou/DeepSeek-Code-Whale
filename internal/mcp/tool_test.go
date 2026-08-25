@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -131,6 +132,9 @@ func TestToolDescriptionIncludesServerAndTool(t *testing.T) {
 }
 
 func TestToolRunPreflightsFilesystemAllowedDirs(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fixture uses a unix absolute path that filepath.IsAbs does not treat as absolute on Windows")
+	}
 	allowed := t.TempDir()
 	tool := &Tool{
 		registeredName: "mcp__fs__search_files",

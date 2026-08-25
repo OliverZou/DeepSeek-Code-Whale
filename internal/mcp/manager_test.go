@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -383,7 +384,7 @@ func TestExpandStdioValueExpandsHomeAndWindowsPercentEnv(t *testing.T) {
 		{name: "userprofile", in: `%USERPROFILE%\bin\server.exe`, want: `C:\Users\tester\bin\server.exe`},
 		{name: "appdata in arg", in: `--config=%APPDATA%\Whale\mcp.json`, want: `--config=C:\Users\tester\AppData\Roaming\Whale\mcp.json`},
 		{name: "missing env preserved", in: `%MISSING_VAR%\server.exe`, want: `%MISSING_VAR%\server.exe`},
-		{name: "windows home backslash", in: `~\bin\server.exe`, want: `C:\Users\tester/bin\server.exe`},
+		{name: "windows home backslash", in: `~\bin\server.exe`, want: filepath.Join(`C:\Users\tester`, `bin\server.exe`)},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

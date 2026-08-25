@@ -48,7 +48,7 @@ var Defaults = Config{
 	Routing: RoutingConfig{
 		DefaultProfile: "default",
 		RoleMap: map[string]RoleEntry{
-			"planner":     {Profile: "read_only", Timeout: 180, Model: "deepseek-v4-pro"},   // 3 min — plan decomposition
+			"planner":     {Profile: "read_only", Timeout: 180, Model: "deepseek-v4-flash"}, // 3 min — plan decomposition (flash: lean one-shot split)
 			"developer":   {Profile: "default", Timeout: 1800, Model: "deepseek-v4-pro"},    // 30 min — coding
 			"tester":      {Profile: "test", Timeout: 1200, Model: "deepseek-v4-flash"},     // 20 min
 			"reviewer":    {Profile: "read_only", Timeout: 900, Model: "deepseek-v4-flash"}, // 15 min

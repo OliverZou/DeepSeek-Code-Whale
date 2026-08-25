@@ -53,6 +53,20 @@ func TestToolResultReplayContentCompactsLargeOutput(t *testing.T) {
 	}
 }
 
+// TestToolResultReplayContentCompactsMediumOutput locks the tightened
+// threshold: a ~3KB tool result (a full source file read) is already compacted
+// for replay, keeping per-turn context growth flat (the毛 token lever).
+func TestToolResultReplayContentCompactsMediumOutput(t *testing.T) {
+	raw := strings.Repeat("int x = 1; // line ", 400) // ≈ 7.6KB, ≈1900 token
+	got := ToolResultReplayContent(raw)
+	if got == raw {
+		t.Fatal("expected medium tool result to be compacted (4KB threshold)")
+	}
+	if !strings.Contains(got, "[tool result compacted for model replay]") {
+		t.Fatalf("missing compaction marker: %q", got[:min(len(got), 80)])
+	}
+}
+
 func TestEstimateMessagesTokensUsesMessagePartsPlainText(t *testing.T) {
 	msg := core.UserMessageFromParts("s1", []core.MessagePart{
 		{Type: core.MessagePartText, Text: strings.Repeat("a", 8)},

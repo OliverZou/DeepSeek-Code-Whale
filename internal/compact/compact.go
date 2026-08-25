@@ -8,9 +8,14 @@ import (
 )
 
 const (
-	maxToolResultReplayTokens    = 2000
-	maxToolResultReplayChars     = 12 * 1024
-	compactedToolResultKeepRunes = 3000
+	// 重放压缩阈值：超过即把工具结果压成 head+tail 摘要再发给模型。
+	// 收紧到 4KB/600 token（原 12KB/2000）：会话历史在每轮全量重发，工具结果
+	// 是上下文增长的主源（v34 fix 会话 82KB 重放、毛 token 1.45M 的 98% 是缓存
+	// 命中但毛值虚高）；4KB 以上（game.js/style.css 全文、bash 输出）即压缩，
+	// 历史增长放缓，毛 token 显著下降。Full raw 仍在 Whale 会话历史中。
+	maxToolResultReplayTokens    = 600
+	maxToolResultReplayChars     = 4 * 1024
+	compactedToolResultKeepRunes = 1500
 )
 
 func EstimateMessagesTokens(msgs []core.Message) int {

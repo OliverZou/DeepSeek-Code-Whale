@@ -11,7 +11,17 @@ import (
 
 	"github.com/usewhale/whale/internal/core"
 	"github.com/usewhale/whale/internal/team_engine"
+	teampglog "github.com/usewhale/whale/internal/team_engine/log"
 )
+
+// TeamEngineTools returns the team engine tools (team_execute/team_run/
+// team_status/…). The subagent tool registries must carry them so a Leader
+// child agent whose definition selects team_run/team_status/… by name actually
+// receives the tools (addToolSelectors errors on unknown names) and can drive
+// the team state machine from its session.
+func (b *Toolset) TeamEngineTools() []core.Tool {
+	return b.teamEngineTools()
+}
 
 func (b *Toolset) teamEngineTools() []core.Tool {
 	return []core.Tool{
@@ -19,6 +29,7 @@ func (b *Toolset) teamEngineTools() []core.Tool {
 		b.teamComposeTool(),
 		b.teamCreateTool(),
 		b.teamRunTool(),
+		b.teamRunPlanTool(),
 		b.teamStatusTool(),
 		b.teamListTool(),
 		b.teamRosterTool(),
@@ -59,6 +70,14 @@ func (b *Toolset) newTeamEngine() (*team_engine.TeamEngine, error) {
 	eng, err := team_engine.New(dbPath, wbDir, "", spawner)
 	if err != nil {
 		return nil, err
+	}
+	// Tool-created engines execute team_run/team_run_plan asynchronously; without
+	// a logger the engine logs silently vanish (v45: team_run re-dispatch turned
+	// black-box — no [task]/[worker] lines while it ran).
+	// 日志归属 .whale/team_tasks/logs/（baseDir=team_tasks）——用 b.root 会把
+	// logs/ 与 leader_*.md 写到工作区根目录（v46 污染用户工作区）。
+	if lg, lerr := teampglog.New(filepath.Join(b.root, ".whale", "team_tasks")); lerr == nil {
+		eng.Loggers = lg
 	}
 	// Inject the app-layer SessionOps so the six primitives (prompt/spawn/
 	// abort/kill/summarize/fork) can address member sessions.
@@ -272,11 +291,8 @@ func (b *Toolset) runTeamPlan(ctx context.Context, call core.ToolCall, progress 
 			break
 		}
 	}
-	for _, mt := range existing {
-		if mt != masterTask {
-			_ = eng.DeleteMasterTask(mt.ID)
-		}
-	}
+	// team_execute is scoped to this goal — never DeleteMasterTask on other
+	// masters: they may belong to other teams/runs. Reuse the goal match only.
 	if masterTask == nil {
 		masterTask, mtErr = eng.CreateMasterTask(args.Goal, b.root, "")
 		if mtErr != nil {
@@ -494,8 +510,53 @@ func (b *Toolset) teamRunTool() toolFn {
 				return toolError("run: %v", err), nil
 			}
 			task, _ := eng.GetTask(args.TaskID)
+			if task != nil {
+				eng.AppendReviewAction(task.MasterTaskID, "team_run", args.TaskID, ok, "leader re-dispatch")
+			}
 			mark := tick(ok)
 			return toolResult(fmt.Sprintf("%s %s %s -> %s", mark, args.TaskID, task.Title, task.State)), nil
+		},
+	}
+}
+
+// teamRunPlanTool hands the master's plan to the TeamEngine for execution.
+// The TE owns scheduling (parallel-ready batches run concurrently, dependencies
+// run serially, every task runs produce→verify→mechanical-gate→propagate);
+// the Leader polls team_list/team_status to observe. This is the "TE executes,
+// Leader waits asynchronously" primitive — do NOT drive tasks one by one.
+func (b *Toolset) teamRunPlanTool() toolFn {
+	return toolFn{
+		name:        "team_run_plan",
+		description: "Submit the master's decomposed plan to the TeamEngine for execution. The TE owns scheduling: parallel-ready batches run concurrently, dependencies run serially, every task runs produce -> verify -> mechanical gate -> propagate. Returns an execution ticket immediately (do not wait on it); observe progress with team_list/team_status. Use this INSTEAD of calling team_run for each task.",
+		parameters: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"master_task_id": map[string]any{"type": "string", "description": "Master task whose plan/plan.json to execute"},
+			},
+			"required": []string{"master_task_id"},
+		},
+		fn: func(ctx context.Context, call core.ToolCall) (core.ToolResult, error) {
+			var args struct {
+				MasterTaskID string `json:"master_task_id"`
+			}
+			if err := json.Unmarshal([]byte(call.Input), &args); err != nil {
+				return toolError("invalid args: %v", err), nil
+			}
+			eng, err := b.newTeamEngine()
+			if err != nil {
+				return toolError("init: %v", err), nil
+			}
+			// v46 异步化：StartPlanRun 后台完成「分解（如缺 plan.json）→ 执行」
+			// 全流程并立即返回票据；完成/失败通过引擎事件通知（进展桥注入 leader
+			// 叙述），leader turn 不再被分解同步阻塞。
+			msg, err := eng.StartPlanRun(ctx, args.MasterTaskID)
+			if err != nil {
+				eng.Close()
+				return toolError("start plan run: %v", err), nil
+			}
+			// Success path: the run owns the engine's lifecycle (closed when it
+			// finishes) — never Close here.
+			return toolResult(msg), nil
 		},
 	}
 }
@@ -529,7 +590,10 @@ func (b *Toolset) teamStatusTool() toolFn {
 
 			task, err := eng.GetTask(args.TaskID)
 			if err != nil || task == nil {
-				return toolError("task %q not found", args.TaskID), nil
+				if mt, _ := eng.GetMasterTask(args.TaskID); mt != nil {
+					return toolResult(fmt.Sprintf("%q 是 master（不是子任务）。请用 team_run_plan(master_task_id=%q) 提交计划，用 team_list 观察进度。", args.TaskID, args.TaskID)), nil
+				}
+				return toolError("task %q not found（team_status 只接受子任务 ID，来自 team_list 输出；不要传 master_task_id）", args.TaskID), nil
 			}
 			s := fmt.Sprintf("Task: %s\nTitle: %s\nRole: %s\nState: %s (%d%%)\nRetries: %d/%d\nBatch: %s\nCreated: %s",
 				task.ID, task.Title, task.Role, task.State,
@@ -567,7 +631,25 @@ func (b *Toolset) teamListTool() toolFn {
 				return toolError("list: %v", err), nil
 			}
 			if len(tasks) == 0 {
-				return toolResult("No tasks. Use team_execute or team_create."), nil
+				masters, _ := eng.ListMasterTasks()
+				if len(masters) > 0 {
+					var lines []string
+					for _, m := range masters {
+						// v48 计划生成期提示：StartPlanRun 已把 run 注册进 planRuns（进程内）；
+						// 此时无子任务是正常的（后台分解中），明确告诉调用者「正在生成」，
+						// 避免误导其再次提交 plan（team_run_plan 被幂等拒绝）。
+						if v, ok := team_engine.PlanRunStatus(m.ID); ok && v.Running {
+							lines = append(lines, fmt.Sprintf("%s：计划已提交，正在后台生成任务（无需重复提交；完成后我会汇报）", m.ID))
+						} else {
+							lines = append(lines, fmt.Sprintf("%s（尚无子任务）", m.ID))
+						}
+					}
+					if len(lines) > 0 {
+						return toolResult("已创建 master(s)：" + strings.Join(lines, "；")), nil
+					}
+					return toolResult("团队引擎还没有任何任务。请先通过 /team 创建 master 或提交计划。"), nil
+				}
+				return toolResult("团队引擎还没有任何任务。请先通过 /team 创建 master 或提交计划。"), nil
 			}
 			var s string
 			for _, t := range tasks {
@@ -701,9 +783,21 @@ func (b *Toolset) teamFeedbackTool() toolFn {
 			if err := eng.SendFeedback(args.TaskID, args.Message); err != nil {
 				return toolError("feedback: %v", err), nil
 			}
+			if task, _ := eng.GetTask(args.TaskID); task != nil {
+				eng.AppendReviewAction(task.MasterTaskID, "team_feedback", args.TaskID, true, truncateNote(args.Message))
+			}
 			return toolResult("Feedback sent to " + args.TaskID), nil
 		},
 	}
+}
+
+// truncateNote caps a review note (feedback message) to keep the review
+// trail readable; long verifier feedback belongs in the task dir, not here.
+func truncateNote(s string) string {
+	if len(s) <= 200 {
+		return s
+	}
+	return s[:200] + "…"
 }
 
 // --- team_history ---
@@ -821,7 +915,10 @@ func (b *Toolset) teamOutputTool() toolFn {
 
 			task, err := eng.GetTask(args.TaskID)
 			if err != nil || task == nil {
-				return toolError("task %q not found", args.TaskID), nil
+				if mt, _ := eng.GetMasterTask(args.TaskID); mt != nil {
+					return toolResult(fmt.Sprintf("%q 是 master（不是子任务）。请用 team_run_plan(master_task_id=%q) 提交计划，用 team_list 观察进度。", args.TaskID, args.TaskID)), nil
+				}
+				return toolError("task %q not found（team_status 只接受子任务 ID，来自 team_list 输出；不要传 master_task_id）", args.TaskID), nil
 			}
 
 			var md string
@@ -1168,13 +1265,15 @@ func (b *Toolset) teamAbortTool() toolFn {
 		parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"task_id": map[string]any{"type": "string", "description": "Task ID to abort"},
+				"task_id":        map[string]any{"type": "string", "description": "Task ID to abort（中止单个任务）"},
+				"master_task_id": map[string]any{"type": "string", "description": "Master ID 传入时：立即停止整个 run（全部任务）——用户说\u201c停止/取消/别做了\u201d时用这个"},
 			},
 			"required": []string{"task_id"},
 		},
 		fn: func(ctx context.Context, call core.ToolCall) (core.ToolResult, error) {
 			var args struct {
-				TaskID string `json:"task_id"`
+				TaskID       string `json:"task_id"`
+				MasterTaskID string `json:"master_task_id"`
 			}
 			if err := json.Unmarshal([]byte(call.Input), &args); err != nil {
 				return toolError("invalid args: %v", err), nil
@@ -1184,6 +1283,15 @@ func (b *Toolset) teamAbortTool() toolFn {
 				return toolError("init: %v", err), nil
 			}
 			defer eng.Close()
+
+			// master 级停止（用户喊停）：中止整个 run。
+			if strings.TrimSpace(args.MasterTaskID) != "" {
+				stopped := eng.StopRun(args.MasterTaskID)
+				if !stopped {
+					return toolResult("没有发现运行中的任务（可能已结束）——当前状态以 team_status/team_list 为准。"), nil
+				}
+				return toolResult("已停止全部任务（master " + args.MasterTaskID + "）。已执行产出保留在工作区。"), nil
+			}
 
 			if err := eng.Abort(ctx, args.TaskID); err != nil {
 				return toolError("abort: %v", err), nil

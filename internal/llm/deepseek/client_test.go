@@ -1095,6 +1095,74 @@ func TestStreamResponseWithInjectedAttachmentTurnUsesMultimodalEndpoint(t *testi
 	}
 }
 
+// TestStreamResponseThinkingPayloadFollowsEnabledFlag locks the wire format of
+// the thinking switch: a client that does NOT disable thinking (the CLI team
+// providerFactory default before the fix) sends {"thinking":{"type":"enabled"}}
+// plus reasoning_effort, which makes a reasoning model like deepseek-v4-pro burn
+// the completion budget on chain-of-thought (~284s for a leader decompose); an
+// explicit WithThinking(false) sends {"type":"disabled"} and omits
+// reasoning_effort (the fast ~26s path used by newLiteSpawner and the live test).
+func TestStreamResponseThinkingPayloadFollowsEnabledFlag(t *testing.T) {
+	cases := []struct {
+		name       string
+		enabled    bool
+		wantType   string
+		wantEffort bool
+	}{
+		{name: "explicit enabled sends reasoning_effort", enabled: true, wantType: "enabled", wantEffort: true},
+		{name: "explicit disabled omits reasoning_effort", enabled: false, wantType: "disabled", wantEffort: false},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var payload map[string]any
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+					t.Fatalf("decode request body: %v", err)
+				}
+				w.Header().Set("Content-Type", "text/event-stream")
+				_, _ = fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":1,\"total_tokens\":2}}\n\n")
+				_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
+			}))
+			defer srv.Close()
+
+			opts := []Option{
+				WithAPIKey("main-key"),
+				WithHTTPClient(srv.Client()),
+				WithBaseURL(srv.URL),
+				WithModel("deepseek-v4-pro"),
+				WithReasoningEffort("high"),
+			}
+			if tc.enabled {
+				opts = append(opts, WithThinking(true))
+			} else {
+				opts = append(opts, WithThinking(false))
+			}
+			c, err := New(opts...)
+			if err != nil {
+				t.Fatalf("new client: %v", err)
+			}
+			for ev := range c.StreamResponse(context.Background(), []core.Message{core.TextMessage("s1", core.RoleUser, "hi", true)}, nil) {
+				if ev.Type == llm.EventError {
+					t.Fatalf("provider error: %v", ev.Err)
+				}
+			}
+
+			think, ok := payload["thinking"].(map[string]any)
+			if !ok {
+				t.Fatalf("thinking payload missing: %#v", payload["thinking"])
+			}
+			if think["type"] != tc.wantType {
+				t.Fatalf("thinking.type = %v, want %v (payload=%v)", think["type"], tc.wantType, payload)
+			}
+			_, hasEffort := payload["reasoning_effort"]
+			if hasEffort != tc.wantEffort {
+				t.Fatalf("reasoning_effort present = %v, want %v (payload=%v)", hasEffort, tc.wantEffort, payload)
+			}
+		})
+	}
+}
+
 func TestStreamResponseWithAttachmentStripsReasoningContentForOpenAIPayload(t *testing.T) {
 	var payload map[string]any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

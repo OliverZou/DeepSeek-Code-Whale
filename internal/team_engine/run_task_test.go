@@ -67,6 +67,46 @@ func TestRunTaskPassesEndToEnd(t *testing.T) {
 	}
 }
 
+// TestRunTaskResumesSuspended verifies the leader-redispatch resume path: a
+// suspended task (verification hung / user-aborted) can be re-run through
+// RunTask — the state machine allows suspended → pending, and the RunTask
+// guard must not reject it (v24: the review turn could not re-settle a
+// suspended integration-verification task otherwise).
+func TestRunTaskResumesSuspended(t *testing.T) {
+	spawner := &mockSpawner{
+		roleOutputs: map[string]string{
+			"worker":   "implemented feature",
+			"verifier": passVerdict,
+		},
+	}
+	eng := newRunTaskEngine(t, spawner)
+	defer eng.Close()
+
+	task, err := eng.CreateTask("Suspended feature", "Write the feature", RoleDeveloper, "", nil, 1, ".", "", "", "")
+	if err != nil {
+		t.Fatalf("create task: %v", err)
+	}
+	if err := eng.Store.TransitionState(task.ID, TaskStateSuspended, "test suspend", ""); err != nil {
+		t.Fatalf("suspend task: %v", err)
+	}
+
+	ok, err := eng.RunTask(context.Background(), task.ID)
+	if err != nil {
+		t.Fatalf("run suspended task: %v", err)
+	}
+	if !ok {
+		t.Fatalf("expected task to reach done after resume, got ok=false")
+	}
+
+	got, err := eng.Store.GetTask(task.ID)
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if got.State != TaskStateDone {
+		t.Fatalf("expected done after resume, got %s", got.State)
+	}
+}
+
 func TestRunTaskVerifierFailThenRetry(t *testing.T) {
 	spawner := &mockSpawner{
 		roleSeq: map[string][]string{
@@ -199,9 +239,10 @@ func TestRunTaskWorktreeMergeCleanup(t *testing.T) {
 	}
 }
 
-// fileWritingSpawner simulates a Worker that writes its deliverable into the
-// sandbox out/ directory (req.Workdir), and a Verifier that always passes.
-// Used to verify RunTask copies sandboxed output back into the task's workdir.
+// fileWritingSpawner simulates a Worker that writes its deliverable into
+// req.Workdir (the user workspace — deliverables materialize in place, no
+// copy-back), and a Verifier that always passes. Used to verify RunTask
+// leaves the deliverable in the task's workdir.
 type fileWritingSpawner struct {
 	workerFile    string
 	workerContent string
@@ -218,7 +259,7 @@ func (s *fileWritingSpawner) SpawnSubagent(_ context.Context, req SubagentReques
 	return SubagentResponse{Output: "wrote " + s.workerFile, Success: true, ExitCode: 0}, nil
 }
 
-func TestRunTaskPropagatesOutputToWorkdir(t *testing.T) {
+func TestRunTaskWritesDeliverableIntoWorkdir(t *testing.T) {
 	workdir := t.TempDir()
 	spawner := &fileWritingSpawner{
 		workerFile:    "main.go",
@@ -243,9 +284,9 @@ func TestRunTaskPropagatesOutputToWorkdir(t *testing.T) {
 
 	data, err := os.ReadFile(filepath.Join(workdir, "main.go"))
 	if err != nil {
-		t.Fatalf("expected propagated main.go in workdir: %v", err)
+		t.Fatalf("expected deliverable main.go in workdir: %v", err)
 	}
 	if string(data) != "package main\n" {
-		t.Fatalf("propagated main.go content = %q, want %q", string(data), "package main\n")
+		t.Fatalf("deliverable main.go content = %q, want %q", string(data), "package main\n")
 	}
 }

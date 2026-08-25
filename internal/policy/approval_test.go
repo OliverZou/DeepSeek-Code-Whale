@@ -2,6 +2,7 @@ package policy
 
 import (
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -180,6 +181,9 @@ func TestApprovalMetadataIncludesShellRisk(t *testing.T) {
 }
 
 func TestApprovalMetadataIncludesGrantEffect(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses Unix-style absolute path fixture /outside")
+	}
 	call := core.ToolCall{ID: "read-1", Name: "read_file", Input: `{"file_path":"/outside/a.txt"}`}
 
 	got := ApprovalMetadata(call, []string{"grant:external_directory:/outside"}, nil)
@@ -192,6 +196,9 @@ func TestApprovalMetadataIncludesGrantEffect(t *testing.T) {
 }
 
 func TestApprovalKeysForDecisionUseExternalReadDirectoryScope(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses Unix-style absolute path fixture /repo/external")
+	}
 	decision := PolicyDecision{Permission: "external_directory", Pattern: "/repo/external", RequiresApproval: true}
 	calls := []core.ToolCall{
 		{Name: "read_file", Input: `{"file_path":"../external/a.go"}`},
@@ -283,6 +290,9 @@ func TestApprovalKeysForDecisionDoNotPersistExternalDirectoryGrantForMCPTools(t 
 }
 
 func TestApprovalKeysForDecisionPreserveReadRuleApprovalForExternalReads(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses Unix-style absolute path fixtures /repo and /outside/.env")
+	}
 	p := RulePolicy{Default: PermissionAllow, Rules: DefaultRules(), WorkspaceRoot: "/repo"}
 	call := core.ToolCall{Name: "read_file", Input: `{"file_path":"/outside/.env"}`}
 	decision := p.Decide(core.ToolSpec{Name: "read_file"}, call)
@@ -308,6 +318,9 @@ func TestApprovalKeysForDecisionPreserveReadRuleApprovalForExternalReads(t *test
 }
 
 func TestExternalReadRootsForDecisionPreserveConfiguredAllowWithReadApproval(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses Unix-style absolute path fixtures /outside and /repo")
+	}
 	rules := append(DefaultRules(), PermissionRule{Permission: "external_directory", Pattern: "/outside", Action: PermissionAllow})
 	p := RulePolicy{Default: PermissionAllow, Rules: rules, WorkspaceRoot: "/repo"}
 	call := core.ToolCall{Name: "read_file", Input: `{"file_path":"/outside/.env"}`}
@@ -359,6 +372,9 @@ func TestSessionApprovalCachePreservesLegacyExternalReadGrants(t *testing.T) {
 }
 
 func TestExternalReadRootsFromKeysPreservesLegacyExternalReadKeys(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses Unix-style absolute path fixture /outside")
+	}
 	roots := ExternalReadApprovalRootsFromKeys([]string{"external_read:/outside"})
 	if !reflect.DeepEqual(roots, []string{"/outside"}) {
 		t.Fatalf("legacy external read roots = %v, want /outside", roots)

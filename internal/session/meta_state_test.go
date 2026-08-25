@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/usewhale/whale/internal/build"
 )
@@ -283,6 +284,52 @@ func TestListSessionsHidesLegacySubagentSessionNames(t *testing.T) {
 	}
 	if len(out) != 1 || out[0].ID != "parent" {
 		t.Fatalf("expected only parent session, got %+v", out)
+	}
+}
+
+func TestListSubagentSessionsActiveOnlyAndSorted(t *testing.T) {
+	dir := t.TempDir()
+	for _, m := range []struct {
+		id   string
+		meta SessionMeta
+	}{
+		{"parent-a", SessionMeta{Title: "Alpha"}},
+		{"parent-b", SessionMeta{Title: "Beta"}},
+		{"pa--subagent-1", SessionMeta{Kind: "subagent", ParentSessionID: "parent-a", Role: "worker", Task: "task-a1", Status: "running"}},
+		{"pb--subagent-2", SessionMeta{Kind: "subagent", ParentSessionID: "parent-b", Role: "verifier", Task: "task-b2", Status: "running"}},
+		{"pa--subagent-3", SessionMeta{Kind: "subagent", ParentSessionID: "parent-a", Role: "worker", Task: "task-a3", Status: "completed", CompletedAt: time.Now().UTC()}},
+	} {
+		if err := SaveSessionMeta(dir, m.id, m.meta); err != nil {
+			t.Fatalf("save meta %s: %v", m.id, err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, m.id+".jsonl"), []byte("{}\n"), 0o600); err != nil {
+			t.Fatalf("write session %s: %v", m.id, err)
+		}
+	}
+
+	out, err := ListSubagentSessions(dir, true)
+	if err != nil {
+		t.Fatalf("list subagents: %v", err)
+	}
+	// activeOnly: the completed one (pa--subagent-3) is excluded.
+	if len(out) != 2 {
+		t.Fatalf("expected 2 active subagents, got %d: %+v", len(out), out)
+	}
+	// Sorted by parent title: Alpha (parent-a) before Beta (parent-b).
+	if out[0].SessionID != "pa--subagent-1" || out[1].SessionID != "pb--subagent-2" {
+		t.Fatalf("unexpected order: %s, %s", out[0].SessionID, out[1].SessionID)
+	}
+	if out[0].ParentTitle != "Alpha" || out[1].ParentTitle != "Beta" {
+		t.Fatalf("parent titles = %q, %q", out[0].ParentTitle, out[1].ParentTitle)
+	}
+
+	// Without activeOnly, the completed subagent is included too.
+	all, err := ListSubagentSessions(dir, false)
+	if err != nil {
+		t.Fatalf("list all subagents: %v", err)
+	}
+	if len(all) != 3 {
+		t.Fatalf("expected 3 subagents total, got %d", len(all))
 	}
 }
 

@@ -5,10 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"strings"
-	"time"
 	"path/filepath"
 	"sort"
+	"strings"
+	"time"
 
 	"github.com/usewhale/whale/internal/core"
 	whalemcp "github.com/usewhale/whale/internal/mcp"
@@ -187,19 +187,19 @@ func (a *App) detectCodeGraphProject(catalog *whalemcp.DeferredToolCatalog) {
 	}
 	text := whalemcp.CallToolResultText(result)
 	project := matchProjectByRoot(text, a.workspaceRoot)
-		if project != "" {
-			a.toolset.SetCodeGraphProject(project)
-			return
-		}
-		// No matching project -- auto-index so code-graph tools work
-		// in subsequent turns. Fire-and-forget; do not block setup.
-		go func() {
-			idxCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-			defer cancel()
-			a.mcpManager.CallTool(idxCtx, serverName, "index_repository", map[string]any{
-				"repo_path": a.workspaceRoot,
-			})
-		}()
+	if project != "" {
+		a.toolset.SetCodeGraphProject(project)
+		return
+	}
+	// No matching project -- auto-index so code-graph tools work
+	// in subsequent turns. Fire-and-forget; do not block setup.
+	go func() {
+		idxCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		defer cancel()
+		a.mcpManager.CallTool(idxCtx, serverName, "index_repository", map[string]any{
+			"repo_path": a.workspaceRoot,
+		})
+	}()
 }
 
 // matchProjectByRoot parses a list_projects JSON response and returns the
@@ -306,7 +306,6 @@ func (a *App) renderDeferredToolsBlock() string {
 	return truncated + fmt.Sprintf("\n... %d more tool(s) omitted\n</available-deferred-tools>", omitted)
 }
 
-
 // makeDeferredPromoter returns a function that builds full Tool objects for given names,
 // adds them to registries, and returns their specs.
 func (a *App) makeDeferredPromoter() tools.DeferredToolPromoter {
@@ -378,6 +377,11 @@ func (a *App) rebuildToolRegistriesLocked() error {
 	var base []core.Tool
 	if a.toolset != nil {
 		base = append(base, a.toolset.Tools()...)
+		// Team engine tools are part of the base set (initAppTools appends them
+		// so the inline leader can call team_run_plan/team_status/…). Registry
+		// rebuilds must keep them — otherwise the main agent loses the team
+		// tools as soon as MCP initialization refreshes the registries.
+		base = append(base, a.toolset.TeamEngineTools()...)
 	}
 	base = append(base, promoted...)
 

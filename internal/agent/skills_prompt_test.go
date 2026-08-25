@@ -14,6 +14,9 @@ import (
 func TestRuntimeSystemPromptIncludesSkillIndexOnly(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	// Windows 上 os.UserHomeDir() 读取 USERPROFILE 而非 HOME，必须一并隔离到临时目录，
+	// 否则 DefaultRoots 会扫到真实用户目录的大量全局 skills，把本测试的 prompt-skill 挤出索引。
+	t.Setenv("USERPROFILE", home)
 	workspace := t.TempDir()
 	skillDir := filepath.Join(workspace, ".whale", "skills", "prompt-skill")
 	if err := os.MkdirAll(skillDir, 0o755); err != nil {

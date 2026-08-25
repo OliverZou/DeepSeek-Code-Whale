@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -168,6 +169,9 @@ func TestDiscoverSkipsMissingRootAndInvalidSkill(t *testing.T) {
 }
 
 func TestDefaultRootsIncludesWorkspaceBeforeHome(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("HOME is not the Windows home directory (USERPROFILE is); Unix home-layout fixture not supported on Windows")
+	}
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	workspace := t.TempDir()
@@ -189,6 +193,9 @@ func TestDefaultRootsIncludesWorkspaceBeforeHome(t *testing.T) {
 }
 
 func TestDiscoverFollowsSymlinkedAgentsSkillsRoot(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlinked home root and HOME-vs-USERPROFILE layout are not supported on Windows")
+	}
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	workspace := t.TempDir()

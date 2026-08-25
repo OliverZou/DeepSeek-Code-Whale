@@ -59,13 +59,12 @@ type Whiteboard struct {
 }
 
 // NewWhiteboard creates a Whiteboard rooted at baseDir.
+// 惰性创建：目录只在首次写入时产生（各写方法已各自 MkdirAll 保底）；
+// 只读命令（status/list/analyze）不应在未执行任务的位置留下 .whale 目录。
 func NewWhiteboard(baseDir string) (*Whiteboard, error) {
 	abs, err := filepath.Abs(baseDir)
 	if err != nil {
 		return nil, fmt.Errorf("resolve base dir: %w", err)
-	}
-	if err := os.MkdirAll(abs, 0755); err != nil {
-		return nil, fmt.Errorf("create whiteboard dir %s: %w", abs, err)
 	}
 	return &Whiteboard{baseDir: abs}, nil
 }
@@ -123,13 +122,21 @@ func (wb *Whiteboard) InitTask(taskID, input string) error {
 // Board — 全局进度白板 (board.md) 和交付物汇总 (deliverable.md)
 // ---------------------------------------------------------------------------
 
-// BoardPath returns the path to the global board.md file.
+// BoardPath returns the path to the board.md file. When a master is set it
+// lives in the master dir (v47: per-run board, not a shared root file).
 func (wb *Whiteboard) BoardPath() string {
+	if wb.masterID != "" {
+		return filepath.Join(wb.MasterDir(wb.masterID), "board.md")
+	}
 	return filepath.Join(wb.taskRoot(), "board.md")
 }
 
-// DeliverablePath returns the path to the global deliverable.md file.
+// DeliverablePath returns the path to the deliverable.md file (master dir
+// when a master is set — v47).
 func (wb *Whiteboard) DeliverablePath() string {
+	if wb.masterID != "" {
+		return filepath.Join(wb.MasterDir(wb.masterID), "deliverable.md")
+	}
 	return filepath.Join(wb.taskRoot(), "deliverable.md")
 }
 
@@ -240,7 +247,11 @@ func shortID(id string) string {
 
 // WriteOutput writes the Worker's output to output.md.
 func (wb *Whiteboard) WriteOutput(taskID, output string) error {
-	return wb.writeFile(filepath.Join(wb.TaskDir(taskID), "output.md"), output)
+	if err := wb.writeFile(filepath.Join(wb.TaskDir(taskID), "output.md"), output); err != nil {
+		return err
+	}
+	Log("whiteboard", "task %s wrote output.md (%d bytes)", shortID(taskID), len(output))
+	return nil
 }
 
 // AppendOutput appends to output.md.
@@ -257,12 +268,49 @@ func (wb *Whiteboard) ReadOutput(taskID string) (string, error) {
 
 // WriteVerifier writes the Verifier's result to verifier.md.
 func (wb *Whiteboard) WriteVerifier(taskID, result string) error {
-	return wb.writeFile(filepath.Join(wb.TaskDir(taskID), "verifier.md"), result)
+	if err := wb.writeFile(filepath.Join(wb.TaskDir(taskID), "verifier.md"), result); err != nil {
+		return err
+	}
+	Log("whiteboard", "task %s wrote verifier.md (%d bytes, verdict=%v)", shortID(taskID), len(result), strings.Contains(result, "VERDICT: PASS"))
+	return nil
 }
 
 // ReadVerifier reads the Verifier's result from verifier.md.
 func (wb *Whiteboard) ReadVerifier(taskID string) (string, error) {
 	return wb.readFile(filepath.Join(wb.TaskDir(taskID), "verifier.md"))
+}
+
+// WriteDelivered persists the files a worker actually delivered (relative to
+// the task workdir), one per line — consumed by completion events so the
+// inline leader can render clickable deliverable links in its narration.
+func (wb *Whiteboard) WriteDelivered(taskID string, files []string) error {
+	if len(files) == 0 {
+		return nil
+	}
+	if err := wb.writeFile(filepath.Join(wb.TaskDir(taskID), "delivered.txt"), strings.Join(files, "\n")); err != nil {
+		return err
+	}
+	Log("whiteboard", "task %s wrote delivered.txt (%d files)", shortID(taskID), len(files))
+	return nil
+}
+
+// ReadDelivered reads the delivered-file list written by WriteDelivered.
+func (wb *Whiteboard) ReadDelivered(taskID string) ([]string, error) {
+	data, err := os.ReadFile(filepath.Join(wb.TaskDir(taskID), "delivered.txt"))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var files []string
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			files = append(files, line)
+		}
+	}
+	return files, nil
 }
 
 // WriteConfirmation writes the agent's confirmation request.
@@ -590,7 +638,11 @@ func (wb *Whiteboard) WriteInboxFile(taskID string, params InboxParams) error {
 		b.WriteString(params.RetryFeedback)
 		b.WriteString("\n\n")
 	}
-	return wb.writeFile(filepath.Join(taskDir, "input.md"), b.String())
+	if err := wb.writeFile(filepath.Join(taskDir, "input.md"), b.String()); err != nil {
+		return err
+	}
+	Log("whiteboard", "task %s wrote input.md (%d chars, retry_feedback=%v)", shortID(taskID), b.Len(), params.RetryFeedback != "")
+	return nil
 }
 
 // Internal helpers

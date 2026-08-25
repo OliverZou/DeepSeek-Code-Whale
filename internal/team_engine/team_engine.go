@@ -97,6 +97,10 @@ type TeamEngine struct {
 	// Current team configuration (optional).
 	team *TeamConfig
 
+	// leaderRunTokens carries the Leader-side token total into run_report
+	// (leader-driven instance accumulates leader turns; batch totals live on
+	// the execute-side engine).
+	leaderRunTokens int
 	// leaderSessionID is the Leader subagent's session ID from the most recent
 	// TeamCycle decompose, persisted so prompt/fork/summarize can address the
 	// Leader session directly.
@@ -250,6 +254,46 @@ func (e *TeamEngine) Close() error {
 	return e.Store.Close()
 }
 
+// StopRun immediately stops the whole run for a master: it cancels the
+// registered execution context (StartPlanRun / TeamCycle), cancels every
+// active task subagent, suspends unfinished tasks, marks the master
+// “cancelled” and fires a completion event so the inline leader closes out.
+// Returns true when something was actually running.
+func (e *TeamEngine) StopRun(masterTaskID string) bool {
+	var cancels []context.CancelFunc
+	e.mu.Lock()
+	if mc, ok := e.masterTaskCancels[masterTaskID]; ok {
+		delete(e.masterTaskCancels, masterTaskID)
+		cancels = append(cancels, mc)
+	}
+	for _, c := range e.activeCancels {
+		cancels = append(cancels, c)
+	}
+	e.mu.Unlock()
+
+	for _, c := range cancels {
+		c()
+	}
+
+	// 未完成任务挂起（执行中被中止），保留已交付产出。
+	if tasks, err := e.Store.ListTasksByMasterTask(masterTaskID); err == nil {
+		for _, t := range tasks {
+			if !t.State.IsTerminal() {
+				_ = e.Store.TransitionState(t.ID, TaskStateSuspended, "user stop", "")
+			}
+		}
+	}
+	_ = e.Store.UpdateMasterTaskStatus(masterTaskID, "cancelled")
+	// v47：中止也留痕——写最小 run_report（已完成任务的统计可追溯）。
+	if mt, merr := e.GetMasterTask(masterTaskID); merr == nil && mt != nil && mt.WorkspacePath != "" {
+		if batches, berr := e.recoverMasterBatches(masterTaskID, mt.Goal, mt.WorkspacePath); berr == nil && len(batches) > 0 {
+			e.writeRunReport(masterTaskID, mt.Goal, "cancelled", summarizeBatches(batches)+fmt.Sprintf(" (中止，未统计完整时长)"), nil, time.Now().Add(-time.Minute), batches)
+		}
+	}
+	e.fireEvent(TaskEvent{Type: EventLeaderLog, MasterID: masterTaskID, Title: "运行已停止（你叫我停的）"})
+	return len(cancels) > 0
+}
+
 // CancelMasterTaskExecution cancels a running TeamCycle / ResumeMasterTask
 // for the given masterTaskID.  It is called from the dashboard stop button.
 // Returns true if a running execution was found and cancelled.
@@ -277,7 +321,7 @@ func CleanupInterruptedTasks(storeDir string) {
 	tasks, _ := store.ListTasks()
 	for _, t := range tasks {
 		switch t.State {
-		case TaskStateProducing, TaskStateChecking, TaskStateChecked, TaskStateVerifying, TaskStateAssigned:
+		case TaskStateProducing, TaskStateVerifying, TaskStateAssigned:
 			_ = store.ForceTransitionState(t.ID, TaskStateSuspended, "interrupted-restart")
 		}
 	}
@@ -293,7 +337,7 @@ func (e *TeamEngine) cleanupInterruptedTasks() {
 	}
 	for _, t := range tasks {
 		switch t.State {
-		case TaskStateProducing, TaskStateChecking, TaskStateChecked, TaskStateVerifying, TaskStateAssigned:
+		case TaskStateProducing, TaskStateVerifying, TaskStateAssigned:
 			_ = e.Store.ForceTransitionState(t.ID, TaskStateSuspended, "interrupted-restart")
 			if defaultTeamLog != nil {
 				defaultTeamLog.EngineResumeTask(t.ID, string(TaskStateSuspended))
@@ -317,6 +361,37 @@ func (e *TeamEngine) FireEvent(event TaskEvent) {
 
 // fireEvent 向所有订阅者广播事件，同时发布到全局 EventBus。
 func (e *TeamEngine) fireEvent(event TaskEvent) {
+	// 事件元数据统一补全：多数调用点只带 TaskID，跨引擎进展注入需要
+	// MasterID（映射回所属 run）、Workdir 与交付清单（leader 链接展示）。
+	if event.TaskID != "" && e != nil && e.Store != nil {
+		if t, err := e.Store.GetTask(event.TaskID); err == nil && t != nil {
+			if event.MasterID == "" {
+				event.MasterID = t.MasterTaskID
+			}
+			if event.Workdir == "" {
+				event.Workdir = t.Workdir
+			}
+			if event.Role == "" {
+				event.Role = string(t.Role)
+			}
+		}
+	}
+	if len(event.Deliverables) == 0 && event.TaskID != "" && e != nil && e.Whiteboard != nil {
+		if files, rerr := e.Whiteboard.ReadDelivered(event.TaskID); rerr == nil {
+			event.Deliverables = files
+		}
+		// 完成事件带 worker 报告摘要（前 400 字符："4 个文件、29 个测试全通过"
+		// 这类交付摘要），leader 叙述时直接引用——人性化工程过程。
+		if event.Data == "" && (event.NewState == "done" || event.NewState == "failed") {
+			if out, orr := e.Whiteboard.ReadOutput(event.TaskID); orr == nil {
+				trimmed := strings.TrimSpace(out)
+				if runes := []rune(trimmed); len(runes) > 400 {
+					trimmed = string(runes[:400]) + "…"
+				}
+				event.Data = trimmed
+			}
+		}
+	}
 	// 1. 本地订阅者（向后兼容）
 	e.mu.Lock()
 	cbs := make([]TaskEventCallback, len(e.eventCallbacks))
@@ -328,19 +403,45 @@ func (e *TeamEngine) fireEvent(event TaskEvent) {
 			cb(event)
 		}()
 	}
+	// 2. 进程级观察者（app runtime 的 inline-leader 进展注入）。引擎实例
+	// 每次工具调用都会新建，per-engine OnEvent 挂不住；全局 sink 是唯一
+	// 能跨引擎看到「t-xxxx 完成」的通道。
+	if fn := defaultEventSink; fn != nil {
+		func() {
+			defer func() { recover() }()
+			fn(event)
+		}()
+	}
+}
 
+// defaultEventSink is the process-wide engine event observer registered by the
+// app runtime (SetDefaultEventSink); nil means no observer.
+var defaultEventSink func(TaskEvent)
+
+// SetDefaultEventSink registers a process-wide TaskEvent observer. It receives
+// every engine event regardless of which engine instance fired it (the
+// per-engine OnEvent is for instance-scoped subscribers like the dashboard).
+func SetDefaultEventSink(fn func(TaskEvent)) {
+	defaultEventSink = fn
 }
 
 // fireStateEvent 是状态转换的便捷触发方法。
 func (e *TeamEngine) fireStateEvent(taskID, title, oldState, newState string) {
-	e.fireEvent(TaskEvent{
+	ev := TaskEvent{
 		Type:     EventStateChanged,
 		TaskID:   taskID,
 		Title:    title,
 		OldState: oldState,
 		NewState: newState,
 		Progress: GetProgress(TaskState(newState)),
-	})
+	}
+	// 任务归属从 store 解析（事件字段用于跨引擎的进展注入定位 master）。
+	if e != nil && e.Store != nil {
+		if t, err := e.Store.GetTask(taskID); err == nil && t != nil {
+			ev.MasterID = t.MasterTaskID
+		}
+	}
+	e.fireEvent(ev)
 }
 
 // ---------------------------------------------------------------------------
@@ -373,6 +474,10 @@ func (e *TeamEngine) CreateMasterTask(goal, workspacePath, sessionID string) (*M
 	if e.Store != nil {
 		_ = e.Store.InsertMasterTask(mt)
 	}
+
+	// 全局运行索引：master UUID -> 工作区。status/analyze 按 UUID 自动定位，
+	// 用户无需重复 --workdir。
+	RecordRunIndex(mt.ID, workspacePath, goal)
 
 	return mt, nil
 }
@@ -915,7 +1020,7 @@ func (e *TeamEngine) DeleteMasterTask(masterTaskID string) error {
 		return fmt.Errorf("list subtasks: %w", err)
 	}
 	for _, t := range subtasks {
-		if t.State == TaskStateProducing || t.State == TaskStateChecking || t.State == TaskStateChecked || t.State == TaskStateVerifying {
+		if t.State == TaskStateProducing || t.State == TaskStateVerifying {
 			_ = e.Store.TransitionState(t.ID, TaskStateFailed, "deleted by user", "")
 		}
 		_ = e.Store.DeleteTask(t.ID)
@@ -930,64 +1035,6 @@ func (e *TeamEngine) DeleteMasterTask(masterTaskID string) error {
 	}
 	e.Whiteboard.CleanupMasterTask(masterTaskID, ids)
 	return nil
-}
-
-// ApplyOutput copies the task's out/ directory contents to targetDir.
-// This is the user-facing "apply to workspace" action. The original
-// output files in the task directory are never modified or removed.
-func (e *TeamEngine) ApplyOutput(taskID, targetDir string) error {
-	srcDir := filepath.Join(e.Whiteboard.TaskDir(taskID), "out")
-	if _, err := os.Stat(srcDir); err != nil {
-		return fmt.Errorf("task %s has no output directory", taskID)
-	}
-	if err := os.MkdirAll(targetDir, 0755); err != nil {
-		return fmt.Errorf("create target dir: %w", err)
-	}
-	return copyDir(srcDir, targetDir)
-}
-
-// propagateTaskOutput copies a completed task's sandboxed out/ output back into
-// its declared workdir. Non-worktree tasks run in an out/ sandbox, so their
-// results must be copied to the user's workspace to take effect. Relative
-// workdirs resolve against the process cwd (where `team execute` was invoked).
-// Best-effort: a failure here is logged by the caller, not fatal.
-func (e *TeamEngine) propagateTaskOutput(taskID, workdir string) error {
-	if workdir == "" {
-		workdir = "."
-	}
-	if !filepath.IsAbs(workdir) {
-		abs, err := filepath.Abs(workdir)
-		if err != nil {
-			return err
-		}
-		workdir = abs
-	}
-	return e.ApplyOutput(taskID, workdir)
-}
-
-// copyDir recursively copies a directory tree.
-func copyDir(src, dst string) error {
-	return filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
-		// Skip Whale's own state dir — a worker subprocess creates .whale/ in its
-		// sandbox (incl. an empty team_engine.log); propagating it would clobber
-		// the master's live team_engine.log with the empty sandbox copy.
-		if info.IsDir() && info.Name() == ".whale" {
-			return filepath.SkipDir
-		}
-		rel, _ := filepath.Rel(src, path)
-		target := filepath.Join(dst, rel)
-		if info.IsDir() {
-			return os.MkdirAll(target, 0755)
-		}
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return err
-		}
-		return os.WriteFile(target, data, 0644)
-	})
 }
 
 // runDWVerification executes Dynamic Workflow verification for a task:
@@ -1179,10 +1226,6 @@ func GetProgress(state TaskState) int {
 		return 25
 	case TaskStateProduced:
 		return 50
-	case TaskStateChecking:
-		return 55
-	case TaskStateChecked:
-		return 60
 	case TaskStateVerifying:
 		return 65
 	case TaskStateVerified:
@@ -1214,59 +1257,12 @@ func truncateLesson(s string, n int) string {
 	return s
 }
 
-// resolveVerifierAgentName resolves which agent definition to use for
-// verifying a task.  Four-level lookup; always returns a non-empty agent
-// name (falling back to the builtin "verifier").
-//
-//	Level 1: task.VerifierRole (Leader explicitly assigned)
-//	Level 2: Worker role → Verifier role mapping
-//	         (code roles developer/tester/reviewer → "review";
-//	          content roles → "verifier")
-//	Level 3: Team auto-match — scan team roles for a QA/test/review agent
-//	Level 4: Builtin "verifier"
-//
-// Code-type roles map to the "review" agent, which runs the mechanical
-// build/lint/test checks itself via tools — there is no separate
-// deterministic Checker phase.
+// resolveVerifierAgentName returns the agent definition used to verify a task.
+// The verifier is always the system-provided agent — teams never define a
+// verifier role, so there is no per-task or per-team resolution left. task is
+// retained for signature stability only.
 func (e *TeamEngine) resolveVerifierAgentName(task *Task) string {
-	// Level 1: Leader explicitly set VerifierRole.
-	// An explicitly empty string means "no Verifier needed".
-	if task.VerifierRole != "" {
-		return task.VerifierRole
-	}
-	// If Leader explicitly set VerifierRole to "" on the PlanTask,
-	// the task.VerifierRole will be "" and we skip the fallback.
-	// (PlanTask always initialises the field; Leader must set it.)
-
-	// Level 2: Worker role → Verifier role mapping.
-	roleMap := map[AgentRole]string{
-		RoleDeveloper:   "review",
-		RoleTester:      "review",
-		RoleReviewer:    "review",
-		RoleResearcher:  "verifier",
-		RoleWriter:      "verifier",
-		RoleFormatter:   "verifier",
-		RoleEvaluator:   "verifier",
-		RoleSynthesizer: "verifier",
-	}
-	if agentName := roleMap[task.Role]; agentName != "" {
-		return agentName
-	}
-
-	// Level 3: Team auto-match — scan team roles for a QA/test/review agent.
-	if e.team != nil {
-		for _, name := range e.team.Roles {
-			lower := strings.ToLower(name)
-			for _, kw := range []string{"qa", "test", "review", "verifier"} {
-				if strings.Contains(lower, kw) {
-					return name
-				}
-			}
-		}
-	}
-
-	// Level 4: Builtin verifier (always available).
-	return "verifier"
+	return SystemVerifierAgentName
 }
 
 // verifierFeedbackForWorker strips tool details from the Verifier's full
@@ -1637,19 +1633,68 @@ func (e *TeamEngine) readTeamTemplate(output string) string {
 	return fmt.Sprintf("\n\n## 📄 产出模板 (%s)\n按以下模板填写产出内容：\n\n%s\n", name, string(data))
 }
 
+// planEntry is the durable per-task shape of plan.json.  The field set must
+// round-trip PlanTask execution semantics (batch label, verify mode/focus,
+// profile, bounds) so a plan-file can be replayed verbatim for A/B runs.
+type planEntry struct {
+	ID                 string   `json:"id"`
+	Title              string   `json:"title"`
+	Description        string   `json:"description"`
+	Role               string   `json:"role"`
+	Output             string   `json:"output"`
+	BatchID            string   `json:"batch_id"`
+	BatchLabel         string   `json:"batch_label,omitempty"`
+	DependsOn          []string `json:"depends_on,omitempty"`
+	AcceptanceCriteria []string `json:"acceptance_criteria,omitempty"`
+	VerifyMode         string   `json:"verify_mode,omitempty"`
+	VerifierFocus      string   `json:"verifier_focus,omitempty"`
+	Profile            string   `json:"profile,omitempty"`
+	UseDW              bool     `json:"use_dw,omitempty"`
+	MaxCycles          int      `json:"max_cycles,omitempty"`
+	Concurrency        int      `json:"concurrency,omitempty"`
+}
+
+// planFileOnDisk is the durable plan.json document shape.
+type planFileOnDisk struct {
+	Generated  string      `json:"generated"`
+	Complexity string      `json:"complexity,omitempty"`
+	Tasks      []planEntry `json:"tasks"`
+}
+
+// AppendReviewAction appends one structured Leader action (team_feedback /
+// team_run re-dispatch) to <masterDir>/review_actions.jsonl — the Leader's
+// review-turn replay trail, so a run can be analyzed (why it took long, what
+// was redispatched) without digging through session JSONL.
+func (e *TeamEngine) AppendReviewAction(masterTaskID, action, taskID string, ok bool, note string) {
+	dir := e.Whiteboard.MasterDir(masterTaskID)
+	if dir == "" {
+		return
+	}
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return
+	}
+	entry := map[string]any{
+		"ts":      time.Now().UTC().Format(time.RFC3339),
+		"action":  action,
+		"task_id": taskID,
+		"result":  "ok",
+		"note":    note,
+	}
+	if !ok {
+		entry["result"] = "failed"
+	}
+	data, _ := json.Marshal(entry)
+	f, err := os.OpenFile(filepath.Join(dir, "review_actions.jsonl"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0644)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	_, _ = f.Write(append(data, '\n'))
+}
+
 // writePlanJSON writes the decomposition plan as plan.json.
 // plan.json is the authoritative record of how a task was decomposed.
-func (e *TeamEngine) writePlanJSON(masterTaskID string, planTasks []PlanTask) {
-	type planEntry struct {
-		ID                 string   `json:"id"`
-		Title              string   `json:"title"`
-		Description        string   `json:"description"`
-		Role               string   `json:"role"`
-		Output             string   `json:"output"`
-		BatchID            string   `json:"batch_id"`
-		DependsOn          []string `json:"depends_on,omitempty"`
-		AcceptanceCriteria []string `json:"acceptance_criteria,omitempty"`
-	}
+func (e *TeamEngine) writePlanJSON(masterTaskID, complexity string, planTasks []PlanTask) {
 	entries := make([]planEntry, len(planTasks))
 	for i, pt := range planTasks {
 		entries[i] = planEntry{
@@ -1658,21 +1703,73 @@ func (e *TeamEngine) writePlanJSON(masterTaskID string, planTasks []PlanTask) {
 			Role:               pt.Role,
 			Output:             pt.Output,
 			BatchID:            pt.BatchID,
+			BatchLabel:         pt.BatchLabel,
 			DependsOn:          []string(pt.DependsOnBatch),
 			AcceptanceCriteria: pt.AcceptanceCriteria,
+			VerifyMode:         pt.VerifyMode,
+			VerifierFocus:      pt.VerifierFocus,
+			Profile:            pt.Profile,
+			UseDW:              pt.UseDW,
+			MaxCycles:          pt.MaxCycles,
+			Concurrency:        pt.Concurrency,
 		}
 	}
-	plan := map[string]interface{}{
-		"generated": time.Now().UTC().Format(time.RFC3339),
-		"tasks":     entries,
+	plan := planFileOnDisk{
+		Generated:  time.Now().UTC().Format(time.RFC3339),
+		Complexity: complexity,
+		Tasks:      entries,
 	}
 	data, _ := json.MarshalIndent(plan, "", "  ")
 	path := filepath.Join(e.Whiteboard.BaseDir(), masterTaskID, "plan.json")
 	os.MkdirAll(filepath.Dir(path), 0755)
 	os.WriteFile(path, data, 0644)
 	if defaultTeamLog != nil {
-		Log("plan", "wrote plan.json (%d tasks) → %s", len(planTasks), path)
+		Log("plan", "wrote plan.json (%d tasks, complexity=%s) → %s", len(planTasks), complexity, path)
 	}
+}
+
+// LoadPlanFile reads a plan.json into PlanTasks, tolerant of both the current
+// object format ({generated,complexity,tasks}) and the historical top-level
+// array format.  It returns the persisted complexity ("" when absent) — the
+// caller should pass it to WithPreDecomposedPlan so iteration budgets stay
+// the same as the original decompose (an empty complexity would silently
+// widen workers to the default budget).
+func LoadPlanFile(path string) (string, []PlanTask, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", nil, err
+	}
+	var doc planFileOnDisk
+	if err := json.Unmarshal(data, &doc); err != nil {
+		var arr []PlanTask
+		if err2 := json.Unmarshal(data, &arr); err2 != nil {
+			return "", nil, fmt.Errorf("parse plan file %s: %w", path, err)
+		}
+		return "", arr, nil
+	}
+	if len(doc.Tasks) == 0 {
+		return "", nil, fmt.Errorf("plan file %s has no tasks", path)
+	}
+	tasks := make([]PlanTask, 0, len(doc.Tasks))
+	for _, e := range doc.Tasks {
+		tasks = append(tasks, PlanTask{
+			Title:              e.Title,
+			Description:        e.Description,
+			Role:               e.Role,
+			Output:             e.Output,
+			BatchID:            e.BatchID,
+			BatchLabel:         e.BatchLabel,
+			DependsOnBatch:     FlexibleStringSlice(e.DependsOn),
+			AcceptanceCriteria: e.AcceptanceCriteria,
+			VerifyMode:         e.VerifyMode,
+			VerifierFocus:      e.VerifierFocus,
+			Profile:            e.Profile,
+			UseDW:              e.UseDW,
+			MaxCycles:          e.MaxCycles,
+			Concurrency:        e.Concurrency,
+		})
+	}
+	return doc.Complexity, tasks, nil
 }
 
 // writeTaskPlanJSON writes a per-task plan.json for a self-split task.

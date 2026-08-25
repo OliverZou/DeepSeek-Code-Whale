@@ -72,3 +72,7 @@ LSP_REVIEW.md
 bin/
 opencode.json
 /plan-agent-discipline.md
+
+# local artifacts (worktree/IDE)
+.arts/
+.workbuddy/

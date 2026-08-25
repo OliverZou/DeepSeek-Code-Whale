@@ -26,7 +26,13 @@ type Result struct {
 	ForkName           string
 	TeamGoal           string // /team <goal> — start a team run for this goal
 	TeamName           string // optional --team NAME selector for /team
+	TeamInline         bool   // /team (default): current agent becomes the Leader (visible + interruptible)
 	TeamList           bool   // /team (no args) or /team list — enumerate running team runs
+	TeamSession        string // /team session [id] — view a member session (empty = list)
+	TeamAbort          string // /team abort [masterID] — stop the run immediately
+	TeamClean          bool   // /team clean [--yes] — retention cleanup (dry-run default)
+	TeamCleanYes       bool
+	Subagent           bool // /subagent — list active subagent sessions (switch picker)
 	BtwQuestion        string
 }
 
@@ -56,6 +62,9 @@ func Parse(line, currentSessionID string, now time.Time) (Result, error) {
 	}
 	if head == "/resume" && len(fields) > 1 {
 		return Result{}, fmt.Errorf("usage: /resume")
+	}
+	if trimmed == "/subagent" {
+		return Result{Handled: true, SessionID: currentSessionID, Subagent: true}, nil
 	}
 	if head == "/new" {
 		next := ""
@@ -87,16 +96,45 @@ func Parse(line, currentSessionID string, now time.Time) (Result, error) {
 			teamName = strings.TrimSpace(strings.TrimPrefix(rest[i:], "--team"))
 			rest = strings.TrimSpace(rest[:i])
 		}
+		// 缺省 inline：当前 agent 直接成为 Leader（用户可见可插话）；
+		// 显式 --subagent 才走后台 subagent leader（原行为）。
+		subagentMode := false
+		if i := strings.Index(rest, "--subagent"); i >= 0 {
+			subagentMode = true
+			rest = strings.TrimSpace(rest[:i] + rest[i+len("--subagent"):])
+		}
 		if rest == "" {
-			if teamName != "" {
-				return Result{}, fmt.Errorf("usage: /team <goal> [--team NAME]")
+			if teamName != "" || subagentMode {
+				return Result{}, fmt.Errorf("usage: /team <goal> [--team NAME] [--subagent]")
 			}
 			return Result{Handled: true, SessionID: currentSessionID, TeamList: true}, nil
 		}
 		if rest == "list" {
 			return Result{Handled: true, SessionID: currentSessionID, TeamList: true}, nil
 		}
-		return Result{Handled: true, SessionID: currentSessionID, TeamGoal: rest, TeamName: teamName}, nil
+		// /team session [sessionID|taskID]：查看团队成员的会话（列出/打开成员对话）。
+		if strings.HasPrefix(rest, "session") {
+			id := strings.TrimSpace(strings.TrimPrefix(rest, "session"))
+			if id == "" {
+				id = "picker"
+			}
+			return Result{Handled: true, SessionID: currentSessionID, TeamSession: id}, nil
+		}
+		// /team abort [masterID]：立即停止当前（或指定）run——不经模型，确定性操作。
+		if rest == "clean --yes" {
+			return Result{Handled: true, SessionID: currentSessionID, TeamClean: true, TeamCleanYes: true}, nil
+		}
+		if rest == "clean" {
+			return Result{Handled: true, SessionID: currentSessionID, TeamClean: true}, nil
+		}
+		if strings.HasPrefix(rest, "abort") {
+			id := strings.TrimSpace(strings.TrimPrefix(rest, "abort"))
+			if id == "" {
+				id = "picker" // 无参 → 选择器（列出 run 让用户选后再停）；/team abort current 或 <id> 才直接停
+			}
+			return Result{Handled: true, SessionID: currentSessionID, TeamAbort: id}, nil
+		}
+		return Result{Handled: true, SessionID: currentSessionID, TeamGoal: rest, TeamName: teamName, TeamInline: !subagentMode}, nil
 	}
 	if trimmed == "/clear" {
 		return Result{Handled: true, SessionID: currentSessionID, ClearScreen: true}, nil

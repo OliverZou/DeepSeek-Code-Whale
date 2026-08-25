@@ -8,8 +8,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
+	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 // ---------------------------------------------------------------------------
@@ -55,6 +58,19 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 		return true, nil
 	}
 
+	// Suspended tasks are resumable (state machine: suspended → pending). The
+	// re-run through team_run is the resume path — without it a suspended task
+	// (v24: integration-verification task whose headless-Chrome E2E false-
+	// failed and hit the tool-iteration cap) could never be re-settled and
+	// stayed a permanent leftover for the Leader's review turn.
+	if state == TaskStateSuspended {
+		if err := e.Store.TransitionState(taskID, TaskStatePending, "resumed by re-run", ""); err != nil {
+			e.mu.Unlock()
+			return false, fmt.Errorf("resume suspended task: %w", err)
+		}
+		state = TaskStatePending
+	}
+
 	// Guard: only start from PENDING, ASSIGNED, or PRODUCED. Read the derived
 	// file state, not the shared *Task.State field, so this read never races
 	// with a concurrent refreshState write.
@@ -65,6 +81,9 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 
 	// When resuming with existing output, skip produce and go straight to verification.
 	skipProduce := state == TaskStateProduced
+	// Workspace snapshot before the worker runs; on resume (skipProduce) it
+	// stays nil and verifyDepth falls back to the conservative semantic depth.
+	var baseline map[string]time.Time
 
 	// Step 1: Assign (only for pending tasks). AssignTask transitions the
 	// store's in-memory state under fs.mu, so no direct field write here.
@@ -75,6 +94,16 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 		}
 	}
 	e.mu.Unlock()
+
+	// 工具探针：跨 attempt 累计（重试多轮都计入），progress 回调来自后台
+	// goroutine，需加锁。toolWaitMS 累计工具执行等待时长（墙钟归因：
+	// 分得清“LLM 在想”还是“工具在等”，浏览器/脚本等待是长尾主源）。
+	var (
+		toolProbeMu sync.Mutex
+		toolEvents  int
+		toolHist    = map[string]int{}
+		toolWaitMS  int64
+	)
 
 	// Main retry loop.
 	for attempt := 0; attempt < task.MaxRetries; attempt++ {
@@ -111,24 +140,64 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 				UpstreamOutputs:    upstreamRefs,
 				Template:           template,
 				Memory:             memory,
-				AllowSelfSplit:     len(task.ParentIDs) == 0,
+				AllowSelfSplit:     taskMaySelfSplit(task),
 				RetryFeedback:      task.VerifierFeedback,
 			}
 			if err := e.Whiteboard.WriteInboxFile(task.ID, inboxParams); err != nil {
 				return false, fmt.Errorf("write inbox: %w", err)
 			}
 
-			// Agent prompt: reference inbox.md, working dir is out/.
+			// Agent prompt: reference inbox.md. The working directory IS the
+			// user's workspace — deliverables are written in place (no sandbox,
+			// no copy-back stage).
 			inboxPath := filepath.Join(e.Whiteboard.TaskDir(task.ID), "input.md")
-			outDir := filepath.Join(e.Whiteboard.TaskDir(task.ID), "out")
-			prompt := fmt.Sprintf("[Role: %s]\n\n工作目录: %s\n任务文件: %s\n产出: %s\n\n将产出文件写在你的工作目录下。只汇报实际完成的内容，不虚构数字。交付前对照任务文件里的「验收标准」逐项自检，确认完整性与正确性。",
-				task.Role, outDir, inboxPath, task.Output)
+			// Empty workdir must NEVER fall back to cwd: the worker writes
+			// deliverables directly into its workdir, and "." would resolve to
+			// the process cwd (the repo root in smoke runs), polluting the
+			// host checkout. An empty workdir is a task-configuration bug;
+			// surface it instead of guessing.
+			if strings.TrimSpace(task.Workdir) == "" {
+				return false, fmt.Errorf("task %s has empty workdir; refusing to run into process cwd", taskID[:8])
+			}
+			workdir := task.Workdir
+			if wd, err := filepath.Abs(workdir); err != nil {
+				return false, fmt.Errorf("resolve workdir: %w", err)
+			} else {
+				workdir = wd
+				// Write back so the verify phase (verifyWorkdir = task.Workdir)
+				// resolves against the same absolute deliverable dir instead of
+				// the raw relative task.Workdir (a "." would silently depend on
+				// the engine process cwd).
+				task.Workdir = wd
+			}
+			prompt := fmt.Sprintf("[Role: %s]\n\n工作目录: %s\n任务文件: %s\n产出: %s\n\n将产出文件直接写在你的工作目录（用户 workspace）下。只汇报实际完成的内容，不虚构数字。交付前对照任务文件里的「验收标准」逐项自检，确认完整性与正确性。",
+				task.Role, workdir, inboxPath, task.Output)
 			if len(task.ParentIDs) == 0 {
 				prompt += "\n\n如果任务过大无法一次完成，在产出开头输出 [SPLIT_PLAN] 拆分。"
 			}
-			// 产物会在任务 done 后复制到用户 workspace 根目录。用相对路径引用
-			// 沙箱外文件（如 ../../game.js）在复制后层级改变会失效——要求用绝对路径。
-			prompt += "\n\n【路径约束】你的产出文件会被复制到用户 workspace 根目录后交付。严禁用相对路径（如 ../../game.js）引用工作目录之外的文件，这类路径在复制后失效。若需引用其他任务的产出文件，请使用其绝对路径。"
+			// 产出直接落在用户 workspace,不再有 sandbox+复制环节:临时/验证脚本
+			// 若写在工作目录会留在交付区域污染交付物,必须放系统临时目录。
+			prompt += "\n\n【过程文件】执行用的临时脚本（测试脚手架、验证脚本、运行数据）请写入系统临时目录，不要作为交付文件留在工作目录下。同一工作区其他任务的产出文件可直接用相对路径引用。"
+			// 验收/审计纪律：只验证不改——跨任务改写交付文件会引入契约漂移
+			// （v45: 集成验收 1.29M tokens 反复修改 game-dom.js，verifier 判 FAIL）。
+			if isReportTask(task) || isVerificationTask(task) {
+				prompt += "\n\n【验收纪律】本任务是验证/审计：只验证、不改写。除非任务描述明确要求你产出新文件，否则禁止修改或覆盖其它任务的交付文件；发现问题在报告中如实记录并交 Leader 决策，不要自行修复被测代码。"
+			}
+			// 成本纪律：每轮工具调用都会重发全部会话历史，轮数与工具结果大小直接
+			// 决定总 token（v31_full fix 任务 59 轮/1.45M tokens 的教训）。同一文件
+			// 只读一次、优先 grep 定位、不做范围外工作，可显著压低轮数与上下文增长。
+			prompt += "\n\n【成本纪律】只读必要的文件，同一文件在本次会话中最多读取一次；需要定位时优先用 grep 搜索，不要整读大文件；只做任务要求的改动，不要重构、重排或重写其它任务的产出。任务描述要求依据的清单/报告（如 AUDIT_FINDINGS_*.md）若已在工作区，先读取再动手；若不存在则如实说明，不要自行编造或代做其它任务的工作。交付完成即总结退出，不要追加额外检索。"
+			// 端到端验收任务：脚本化 + 环境复用——v34 实测 40 轮 739s 的 QA 会话里
+			// 446s（61%）耗在 4 个「重装/启动浏览器+逐条验」的 shell 等待轮；一次
+			// 脚本覆盖全部验收点、复用系统已装环境，可把轮数与墙钟同时砍半以上。
+			if e2eTitleMarked(task.Title) {
+				prompt += "\n\n【端到端验收规范】用浏览器/运行时验收时：\n1. 写一个**小型**临时脚本（Node + Playwright 或等价，≤120 行）一次运行，逐项输出 PASS/FAIL 与证据；脚本调试最多 2 轮，仍不通过就降级：改用最小可行验证（加载无错误 + 键盘移动 + 分数/持久化这三个核心点），或直接以已有证据完成判定并如实标注未验证项。\n2. 本机已安装 Playwright 与 Chrome/Chromium（用户目录 ms-playwright 缓存与 Google Chrome），直接复用并优先 channel:'chrome'；**禁止重新下载或安装浏览器/包**。\n3. **交付物先写后调**：每完成一个阶段就把已有证据写入产出文件（如 AUDIT_FINDINGS_*.md）；工具轮数预算将尽时，用已有证据落盘报告，**绝不允许以'计划文本/设计文档'作为产出**。\n4. 报告即证据：引用命令输出/断言结果原文；不要输出超长设计叙述。\n5. 脚本放系统临时目录；禁止逐条交互式重验。"
+			}
+
+			// Baseline snapshot for regression-risk assessment: compare workspace
+			// file modtimes AFTER the worker runs to distinguish new deliverables
+			// from overwritten/modified existing files.
+			baseline = snapshotWorkdir(workdir)
 
 			// State: assigned → producing (under lock).
 			e.mu.Lock()
@@ -139,13 +208,9 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 			e.mu.Unlock()
 			e.fireEvent(TaskEvent{Type: EventStateChanged, TaskID: taskID, NewState: string(TaskStateProducing)})
 
-			workdir := task.Workdir
-			if workdir == "" {
-				workdir = "."
-			}
-			// Agent runs in a sandboxed out/ directory.
-			// task.Workdir keeps the original workspace for checker/build reference.
-			agentWorkdir := filepath.Join(e.Whiteboard.TaskDir(taskID), "out")
+			// Agent runs directly in the user workspace — deliverables materialize
+			// in place, no copy-back. task.Workdir is the deliverable location.
+			agentWorkdir := workdir
 			os.MkdirAll(agentWorkdir, 0755)
 
 			// Coding Harness (场景2): create or reuse an isolated git worktree
@@ -172,11 +237,24 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 				}
 			}
 
+			// 工具面保持任务原 profile：v40 曾把报告任务降到 verify 面（无 write），
+			// 实测 LLM 反复尝试不可用工具→撞 tool cap→触发自拆递归（batch3 变成
+			// 13 任务/8M token）。读+写+shell 保持原样，靠预算封顶与禁自拆控制成本。
 			toolNames := ProfileToToolNames(task.Profile)
 			toolsStr := strings.Join(toolNames, ",")
 
 			// Live streaming: write each agent output line to whiteboard in real-time.
-			liveOutput := func(status, summary, toolName string) {
+			// 工具探针：进度回调累计事件与工具直方图（探针声明在 attempt 循环外）。
+			liveOutput := func(status, summary, toolName string, toolDurationMS int64) {
+				toolProbeMu.Lock()
+				toolEvents++
+				if toolName != "" {
+					toolHist[toolName]++
+				}
+				if toolDurationMS > 0 {
+					toolWaitMS += toolDurationMS
+				}
+				toolProbeMu.Unlock()
 				if summary != "" {
 					if err := e.Whiteboard.AppendTaskOutput(task.ID,
 						fmt.Sprintf("[%s] %s: %s", status, toolName, summary)); err != nil {
@@ -189,7 +267,7 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 			// hardcoded default.  Research/deep-analysis roles need more
 			// time (900-1800s) than the default 300s.
 			taskTimeout := time.Duration(e.Router.ResolveTimeout(task.Role, false)) * time.Second
-			wIters, wCalls, wTokens := iterationBudget(task.Complexity, false)
+			wIters, wCalls, wTokens := effectiveWorkerBudget(task)
 			// Register a per-task cancel so Close() / Kill() can immediately
 			// abort running subagents instead of waiting for them to finish.
 			taskCtx, taskCancel := context.WithCancel(ctx)
@@ -261,9 +339,20 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 			if e.Loggers != nil {
 				e.Loggers.Engine("task %s worker DONE in %.1fs (success=%v exit=%d)", taskID[:8], time.Since(workerStart).Seconds(), result.Success, result.ExitCode)
 			}
-			// Clean up nested .whale created by whale exec in the agent sandbox.
+			// Clean up nested .whale created by whale exec inside the agent's
+			// workdir — it would otherwise clutter the user's workspace.
+			// The engine's own team_tasks lives under the same .whale when the
+			// agent runs in the workspace (b.root == workdir) — never delete it:
+			// it holds the plan.json, task records and masters of the run.
 			e.addTokens(result.UsagePrompt, result.UsageCompletion)
-			_ = os.RemoveAll(filepath.Join(agentWorkdir, ".whale"))
+			if entries, err := os.ReadDir(filepath.Join(agentWorkdir, ".whale")); err == nil {
+				for _, entry := range entries {
+					if entry.Name() == "team_tasks" {
+						continue
+					}
+					_ = os.RemoveAll(filepath.Join(agentWorkdir, ".whale", entry.Name()))
+				}
+			}
 			e.mu.Lock()
 			delete(e.activeCancels, taskID)
 			delete(e.activeAgents, taskID)
@@ -291,15 +380,47 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 				defaultTeamLog.WorkerDone(task.ID, result.DurationSeconds, result.ExitCode, len(result.Stdout), result.Success)
 			}
 
-			// Persist subagent session ID for traceability.
+			// Persist subagent session ID + run stats. Per-task token numbers feed
+			// the heartbeat logs and run_report.json for post-run analysis.
+			statsFields := map[string]interface{}{
+				"worker_duration_seconds": result.DurationSeconds,
+				"worker_tokens":           result.UsagePrompt + result.UsageCompletion,
+			}
 			if result.SessionID != "" {
-				_ = e.Store.UpdateTask(task.ID, map[string]interface{}{"session_id": result.SessionID})
+				statsFields["session_id"] = result.SessionID
+			}
+			// 工具探针落盘：累计事件数 + 最重 Top2 工具 + 工具等待时长。
+			toolProbeMu.Lock()
+			if toolEvents > 0 {
+				statsFields["tool_calls"] = toolEvents
+				if toolWaitMS > 0 {
+					statsFields["tool_wait_seconds"] = float64(toolWaitMS) / 1000
+				}
+				type kv struct {
+					k string
+					n int
+				}
+				hist := make([]kv, 0, len(toolHist))
+				for k, n := range toolHist {
+					hist = append(hist, kv{k, n})
+				}
+				sort.Slice(hist, func(i, j int) bool { return hist[i].n > hist[j].n })
+				top := make([]string, 0, min(2, len(hist)))
+				for i := 0; i < min(2, len(hist)); i++ {
+					top = append(top, fmt.Sprintf("%s:%d", hist[i].k, hist[i].n))
+				}
+				statsFields["top_tools"] = strings.Join(top, ",")
+			}
+			toolProbeMu.Unlock()
+			_ = e.Store.UpdateTask(task.ID, statsFields)
+			if e.Loggers != nil {
+				e.Loggers.Engine("task %s worker tokens prompt=%d completion=%d (run total=%d)", taskID[:8], result.UsagePrompt, result.UsageCompletion, e.tokenTotal())
 			}
 
 			// Self-split: only top-level tasks (no parents) can split.
 			// Children must complete without further splitting.
 			const splitMarker = "[SPLIT_PLAN]"
-			if len(task.ParentIDs) == 0 && result.Success && strings.Contains(result.Stdout, splitMarker) {
+			if taskMaySelfSplit(task) && result.Success && strings.Contains(result.Stdout, splitMarker) {
 				idx := strings.Index(result.Stdout, splitMarker)
 				splitJSON := result.Stdout[idx+len(splitMarker):]
 				if childPlan, err := ParsePlanTasks(splitJSON); err == nil && len(childPlan) > 0 {
@@ -312,7 +433,7 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 			// Tool-cap 触顶：worker 被 forceSummary 强制中断（任务过重，远超叶子
 			// 规模）。把任务再拆成叶子，而不是让 verifier 对不完整 summary 判 PASS。
 			const interruptedMarker = "This turn was auto-interrupted"
-			if len(task.ParentIDs) == 0 && result.Success && strings.Contains(result.Stdout, interruptedMarker) {
+			if taskMaySelfSplit(task) && result.Success && strings.Contains(result.Stdout, interruptedMarker) {
 				childPlan, err := e.decomposeTaskIntoLeaves(task.Description, workdir, time.Duration(e.Router.ResolveDecomposerTimeout())*time.Second, e.Router.ResolveModel("planner"))
 				if err == nil && len(childPlan) > 0 {
 					if e.splitTaskIntoChildren(task, childPlan, workdir, "split into children after tool cap") {
@@ -333,6 +454,28 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 				}
 				// Save diff as a deliverable artifact.
 				_ = e.Whiteboard.CopyArtifact(task.ID, task.ID[:8]+".diff", diffContent)
+			}
+
+			// Delivery manifest: log which files the worker added or modified
+			// in the deliverable workdir, comparing against the pre-worker
+			// baseline snapshot taken in Phase 1. Worktree mode is excluded —
+			// the git diff above already records its change set.
+			if baseline != nil && !hasWorktree {
+				if changed, err := changedDeliverables(workdir, baseline); err == nil && len(changed) > 0 {
+					Log("whiteboard", "task %s delivered %d file(s): %s", task.ID[:8], len(changed), strings.Join(changed, ", "))
+					// 所有权交叉校验（v47/Q8）：实际交付必须是任务 Output 声明的文件；
+					// worker 写了别人家文件（并行覆盖隐患）记录为交付异常并警告。
+					if unexpected := unexpectedDeliverables(task, workdir, changed); len(unexpected) > 0 {
+						Log("whiteboard", "task %s WARN: delivered files outside declared output: %s (ownership anomaly)", task.ID[:8], strings.Join(unexpected, ", "))
+						if e.Loggers != nil {
+							e.Loggers.Engine("task %s ownership anomaly: extra files %s not in output %q", task.ID[:8], strings.Join(unexpected, ", "), task.Output)
+						}
+					}
+					// 交付清单落盘：完成事件带出，leader 汇报渲染可点击链接。
+					if werr := e.Whiteboard.WriteDelivered(task.ID, changed); werr != nil {
+						Log("whiteboard", "task %s write delivered.txt failed: %v", task.ID[:8], werr)
+					}
+				}
 			}
 
 			// Log worker output for dashboard dialogue.
@@ -358,20 +501,9 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 		var feedback string
 		var verifyDur time.Duration
 		var v *Verifier
-		var skipVerifier bool
 
-		// Non-worktree: the Worker produced in its sandbox out/ directory, but
-		// task.Workdir still points at the original workspace (output is only
-		// propagated there after a PASS). Point the Verifier at the sandbox so it
-		// inspects the actual deliverables instead of an empty workspace.
+		// Deliverables were written directly into task.Workdir — verify there.
 		verifyWorkdir := task.Workdir
-		if e.activeBranch(taskID) == "" {
-			verifyWorkdir = filepath.Join(e.Whiteboard.TaskDir(taskID), "out")
-		}
-		// 验证产物目录：verifier 落盘验收级黑盒测试/核查清单的地方，与 out/ 平级，
-		// 不参与 propagateTaskOutput，避免混入用户交付物。
-		verifyDir := filepath.Join(e.Whiteboard.TaskDir(taskID), "verify")
-		os.MkdirAll(verifyDir, 0755)
 
 		// Transition to verifying (skip the separate checking phase —
 		// the Verifier agent performs mechanical checks itself).
@@ -386,7 +518,7 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 		// LLM 验证器直接重试，省掉 300s+ 的验证器开销（验证器超时被杀是复测
 		// 假 FAIL 的主因）。未检测到测试则跳过，交给 LLM 语义审查。
 		if !task.UseDW {
-			if ok, detail := runMechanicalVerify(verifyWorkdir); !ok {
+			if ok, detail := runMechanicalVerify(verifyWorkdir, verifyWorkdir); !ok {
 				passed = false
 				feedback = "交付物的自动化测试未通过（客观门）：\n" + detail
 				if e.Loggers != nil {
@@ -396,22 +528,21 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 			}
 		}
 
-		// 回归风险抽样：机械客观门通过后，纯新建独立文件（未触及任何已存在
-		// workspace 文件）且无关键 verifier 角色的任务跳过 LLM 语义 verifier，
-		// 避免为独立页面文件付 worker+verifier 双份 LLM。客观门每次都跑。
-		skipVerifier = e.shouldSkipVerifier(task, verifyWorkdir)
-
-		if skipVerifier {
+		// 深度按需：Leader 在分解时判定（verify_mode，验证环节恒有）；未判定
+		// （auto）时由启发式回退。mechanical = 客观门 + worker 自检（不调 LLM
+		// 验证器）；semantic = 独立系统验证器交叉验证。
+		if e.verifyDepth(task, verifyWorkdir, baseline) == "mechanical" {
 			passed = true
-			feedback = "mechanical gate only（客观门通过，交付物为新建独立文件，跳过语义审查）"
+			feedback = "mechanical gate only（客观门通过，验证深度=机械，无语义审查）"
 			if e.Loggers != nil {
-				e.Loggers.Engine("task %s verifier SKIP (mechanical gate only, low regression risk)", taskID[:8])
+				e.Loggers.Engine("task %s verifier SKIP (mechanical depth, low regression risk)", taskID[:8])
 			}
 			// 写 verifier.md 以驱动 file-based state 到 done —— 等价于 verifier.Verify
-			// 内部的 WriteVerifier 行为：跳过语义审查只是不付 LLM，产出证据照写。
+			// 内部的 WriteVerifier 行为：机械深度只是不付 LLM，产出证据照写。
 			if err := e.Whiteboard.WriteVerifier(taskID, feedback); err != nil {
 				Log("task", "task %s write verifier marker failed: %v", taskID[:8], err)
 			}
+			_ = e.Store.UpdateTask(taskID, map[string]interface{}{"verdict": "MECHANICAL"})
 		} else if task.UseDW {
 			// Dynamic Workflow mode: N verifiers in parallel + Synthesizer.
 			passed, _, feedback = e.runDWVerification(task)
@@ -424,8 +555,17 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 			verifyStart := time.Now()
 			var verifyPromptTokens, verifyCompletionTokens int
 
-			// Normal spawn via Runner.
-			v = NewVerifier(e.Whiteboard, e.Runner, e.Router, 0, verifierModel).WithAgentName(verifierAgentName).WithWorkdir(verifyWorkdir).WithVerifyDir(verifyDir)
+			// Normal spawn via Runner. 系统 verifier 定义（verifier.md）由 adapter
+			// 特判注入，不查团队/项目/用户 agent 文件.
+			v = NewVerifier(e.Whiteboard, e.Runner, e.Router, 0, verifierModel).WithAgentName(verifierAgentName).WithWorkdir(verifyWorkdir)
+			// 复审轮：把上一轮验证报告注入 prompt，verifier 只复审未通过/无法
+			// 验证项，避免全量重验的重复 token（协作协议：不重复验证已通过项）。
+			// 条件只看 feedback 是否存在：Leader 重派被 suspend 的验证任务时
+			// resume 路径从 attempt=0 重跑，但 VerifierFeedback 已归档——首轮
+			// 也必须是复审轮（v44 缺口）。
+			if task.VerifierFeedback != "" {
+				v = v.WithPreviousReport(task.VerifierFeedback)
+			}
 			if e.Loggers != nil {
 				e.Loggers.Engine("task %s verifier START agent=%s", taskID[:8], verifierAgentName)
 			}
@@ -438,7 +578,30 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 			if e.Loggers != nil {
 				e.Loggers.Engine("task %s verifier DONE in %.1fs (pass=%v)", taskID[:8], verifyDur.Seconds(), passed)
 			}
+			// 验证结论事件：leader 叙述“严过关完成独立验证，判定 PASS/FAIL”。
+			verdict := "FAIL"
+			if passed {
+				verdict = "PASS"
+			}
+			e.fireEvent(TaskEvent{Type: EventVerifierResult, TaskID: taskID, Title: task.Title, Data: verdict})
 			e.addTokens(verifyPromptTokens, verifyCompletionTokens)
+			verifyStats := map[string]interface{}{
+				"verifier_duration_seconds": verifyDur.Seconds(),
+				"verifier_tokens":           verifyPromptTokens + verifyCompletionTokens,
+			}
+			// 事后分析轨迹：验证结论 + 验证者 cap 中断次数。
+			if passed {
+				verifyStats["verdict"] = "PASS"
+			} else {
+				verifyStats["verdict"] = "FAIL"
+			}
+			if v.LastCapRetries > 0 {
+				verifyStats["verifier_cap_count"] = v.LastCapRetries
+			}
+			_ = e.Store.UpdateTask(taskID, verifyStats)
+			if e.Loggers != nil {
+				e.Loggers.Engine("task %s verifier tokens prompt=%d completion=%d (run total=%d)", taskID[:8], verifyPromptTokens, verifyCompletionTokens, e.tokenTotal())
+			}
 		}
 
 		// Log verifier output for dashboard dialogue.
@@ -459,63 +622,62 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 		}
 
 		if passed {
-			// Non-worktree: propagate BEFORE marking done so a mechanical re-check
-			// can downgrade the verdict if the propagated deliverable is broken
-			// (e.g. hardcoded sandbox-relative paths that no longer resolve after
-			// copy — see #24).
-			if e.activeBranch(taskID) == "" {
-				if err := e.propagateTaskOutput(taskID, task.Workdir); err != nil {
-					Log("task", "task %s output propagation failed: %v", taskID[:8], err)
-				} else if ok, detail := runMechanicalVerify(task.Workdir); !ok {
-					passed = false
-					feedback = "交付物传播到 workspace 后机械验证失败（自动化测试/构建未通过）：\n" + detail
-				}
-			}
-
-			if passed {
-				e.mu.Lock()
-				if err := e.Store.TransitionState(taskID, TaskStateVerified, "", ""); err != nil {
-					e.mu.Unlock()
-					return false, fmt.Errorf("transition to verified: %w", err)
-				}
-				if err := e.Store.TransitionState(taskID, TaskStateDone, "", ""); err != nil {
-					e.mu.Unlock()
-					return false, fmt.Errorf("transition to done: %w", err)
-				}
-				if err := e.Store.UpdateTask(taskID, map[string]interface{}{
-					"retry_count": attempt,
-				}); err != nil {
-					e.mu.Unlock()
-					return false, fmt.Errorf("update retry count: %w", err)
-				}
+			e.mu.Lock()
+			if err := e.Store.TransitionState(taskID, TaskStateVerified, "", ""); err != nil {
 				e.mu.Unlock()
-
-				// Coding Harness: merge the worktree branch back into the main repo
-				// now that verification passed.
-				if e.activeBranch(taskID) != "" {
-					if err := e.mergeWorktree(taskID); err != nil {
-						// Merge conflict/failure: abort to restore the main repo and
-						// keep the worktree branch for manual inspection. The diff
-						// artifact already holds the worker's changes.
-						abort := exec.Command("git", "merge", "--abort")
-						abort.Dir = e.worktreeDir
-						_ = abort.Run()
-						Log("worktree", "task %s merge failed (branch kept): %v", taskID[:8], err)
-					} else {
-						e.cleanupWorktree(taskID)
-					}
-				}
-
-				// Write verify file — file-based completion proof.
-				if task.Output != "" {
-					os.WriteFile(filepath.Join(e.Whiteboard.TaskDir(taskID), "verify.md"), []byte(feedback), 0644)
-				}
-				return true, nil
+				return false, fmt.Errorf("transition to verified: %w", err)
 			}
-			// passed=false after mechanical verification: fall through to retry.
+			if err := e.Store.TransitionState(taskID, TaskStateDone, "", ""); err != nil {
+				e.mu.Unlock()
+				return false, fmt.Errorf("transition to done: %w", err)
+			}
+			if err := e.Store.UpdateTask(taskID, map[string]interface{}{
+				"retry_count": attempt,
+			}); err != nil {
+				e.mu.Unlock()
+				return false, fmt.Errorf("update retry count: %w", err)
+			}
+			e.mu.Unlock()
+
+			// Coding Harness: merge the worktree branch back into the main repo
+			// now that verification passed.
+			if e.activeBranch(taskID) != "" {
+				if err := e.mergeWorktree(taskID); err != nil {
+					// Merge conflict/failure: abort to restore the main repo and
+					// keep the worktree branch for manual inspection. The diff
+					// artifact already holds the worker's changes.
+					abort := exec.Command("git", "merge", "--abort")
+					abort.Dir = e.worktreeDir
+					_ = abort.Run()
+					Log("worktree", "task %s merge failed (branch kept): %v", taskID[:8], err)
+				} else {
+					e.cleanupWorktree(taskID)
+				}
+			}
+
+			// Write verify file — file-based completion proof.  Unconditional:
+			// verify.md is the PASS-only marker that deriveState keys on (it
+			// must NOT be gated on Output, else a passed task with empty Output
+			// would leave only verifier.md — which is also written on FAIL — and
+			// be re-derived as not-done).  The verifier report lives in
+			// verifier.md and stays readable either way.
+			os.WriteFile(filepath.Join(e.Whiteboard.TaskDir(taskID), "verify.md"), []byte(feedback), 0644)
+			return true, nil
 		}
 
 	verifyFailed:
+		// Verifier 自身被 tool cap 中断（输出 missing "auto-interrupted"）≠
+		// 交付物缺陷：打回 worker 会陷入“verifier 中断→worker 重做→verifier
+		// 又中断”循环（v41: fix 3 次重试 / 2.1M tokens）。挂起保留报告，交
+		// Leader/用户升级（与 isVerificationTask 的“无法验证”处理一致）。
+		if strings.Contains(feedback, "This turn was auto-interrupted") || strings.Contains(feedback, "tool iteration cap") {
+			_ = e.Store.UpdateTask(taskID, map[string]interface{}{"verdict": "CAP-INTERRUPT"})
+			if err := e.Store.TransitionState(taskID, TaskStateSuspended, "verifier interrupted by tool cap — cannot verify", feedback); err != nil {
+				return false, err
+			}
+			return false, nil
+		}
+
 		// Verification failed — prepare retry.
 		e.mu.Lock()
 		task, err = e.Store.GetTask(taskID)
@@ -617,49 +779,157 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 	return false, nil
 }
 
-// runMechanicalVerify 在传播后的 workdir 检测并运行标准测试/构建命令，
+// runMechanicalVerify 在交付物的 workdir/outDir 检测并运行标准测试/构建命令，
 // 确认交付物真正可用。未检测到自动化测试时返回 passed=true（不误判）。
-func runMechanicalVerify(workdir string) (passed bool, detail string) {
-	name, args := detectTestCommand(workdir)
-	if name == "" {
-		return true, ""
-	}
+//
+// 验证范围是「交付物」而非整个 workspace：机械验证目标从 worker 的产物目录
+// （outDir）推断——outDir 根或直接子目录含 go.mod 表示交付了独立 module，
+// 只在对应 workdir 路径内验证。这避免在仓库根跑全量 go test ./...，把与本
+// 任务无关的既有失败（如 whale 仓库自身的预存 Windows 失败）误判为交付物
+// 失败、触发无关 retry 并把上万行日志灌入任务描述（冒烟实测 input.md 膨胀
+// 到 12.7MB）。无独立 module 交付时回退到 workdir 本身——改动现有文件的
+// 任务需要在整个 workspace 验证回归。
+func runMechanicalVerify(workdir, outDir string) (passed bool, detail string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, name, args...)
-	cmd.Dir = workdir
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return false, fmt.Sprintf("%s %s\n%s", name, strings.Join(args, " "), string(out))
+
+	targets := mechanicalTargets(workdir, outDir)
+	// Log the resolved targets — the gate must never silently fall back to the
+	// process cwd (repo root); if workdir ever mis-resolves, the log shows it.
+	if len(targets) == 0 {
+		Log("task", "mechverify: no targets (workdir=%q) - skipping mechanical check", workdir)
+		return true, ""
 	}
-	return true, ""
+	Log("task", "mechverify: workdir=%q outDir=%q targets=%v", workdir, outDir, targets)
+
+	var failures []string
+	for _, target := range targets {
+		name, args := detectTestCommand(target)
+		if name == "" {
+			// 该目标无自动化测试——交给 LLM 语义审查，不误判。
+			continue
+		}
+		cmd := exec.CommandContext(ctx, name, args...)
+		cmd.Dir = target
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			failures = append(failures, fmt.Sprintf("%s %s\n%s", name, strings.Join(args, " "), truncateMechanicalDetail(string(out))))
+		}
+	}
+	if len(failures) == 0 {
+		return true, ""
+	}
+	return false, strings.Join(failures, "\n---\n")
 }
 
-// outDeliverables walks outDir and reports how many files the worker produced
-// and whether any of them already exist at the corresponding path in workdir —
-// i.e. the worker modified an existing workspace file rather than creating a
-// brand-new standalone deliverable.
-func outDeliverables(outDir, workdir string) (count int, touches bool, err error) {
-	walkErr := filepath.Walk(outDir, func(path string, info os.FileInfo, err error) error {
+// mechanicalTargets 返回机械验证应执行的目录列表。交付的独立 module 以
+// outDir（worker 产物暂存）为唯一证据：outDir 内根/直接子目录含 go.mod 的
+// 目录才是本任务的交付物；其余 workspace 路径（仓库根、既有 module）都不
+// 属于验证范围。无独立 module 交付时回退到 workdir（改动现有文件的任务）。
+// 空 workdir 返回空列表——机械验证不接触任何目录（空 workdir 是任务配置
+// bug，若回退到 "." 会解析到进程 cwd=仓库根，把仓库自身的失败算进交付物）。
+func mechanicalTargets(workdir, outDir string) []string {
+	if strings.TrimSpace(workdir) == "" {
+		return nil
+	}
+	var rels []string
+	if _, err := os.Stat(filepath.Join(outDir, "go.mod")); err == nil {
+		rels = append(rels, ".")
+	}
+	if entries, err := os.ReadDir(outDir); err == nil {
+		for _, e := range entries {
+			if !e.IsDir() || strings.HasPrefix(e.Name(), ".") {
+				continue
+			}
+			if _, err := os.Stat(filepath.Join(outDir, e.Name(), "go.mod")); err == nil {
+				rels = append(rels, e.Name())
+			}
+		}
+	}
+	if len(rels) == 0 {
+		return []string{workdir}
+	}
+	targets := make([]string, 0, len(rels))
+	for _, rel := range rels {
+		targets = append(targets, filepath.Join(workdir, rel))
+	}
+	return targets
+}
+
+// mechanicalGateAvailable 报告 outDir 中是否存在可执行的客观测试门。
+// mechanical 深度必须有一个真实测试门，否则机械门 trivially pass 会在零
+// 客观检查下放行交付物（verifyDepth 的 auto 启发式依赖它）。
+func mechanicalGateAvailable(outDir string) bool {
+	for _, target := range mechanicalTargets(outDir, outDir) {
+		if name, _ := detectTestCommand(target); name != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// truncateMechanicalDetail 截断机械验证失败输出，防止上万行测试日志经
+// retry feedback 灌入任务描述造成 input 膨胀（冒烟实测 12.7MB）。保留头
+// 部失败摘要即可，完整输出在 tool-result/引擎日志可见。
+func truncateMechanicalDetail(out string) string {
+	const keep = 8192
+	if len(out) <= keep {
+		return out
+	}
+	// 按合法 UTF-8 边界截断（一个字符最多回退 4 字节）。
+	end := keep
+	for end > 0 && !utf8.ValidString(out[:end]) {
+		end--
+	}
+	return out[:end] + "\n…(output truncated)"
+}
+
+// snapshotWorkdir records rel path → modtime for every file under workdir,
+// skipping Whale state (.whale), VCS internals (.git) and dependency dirs.
+// RunTask takes the snapshot just before spawning the worker; outDeliverables
+// compares against it afterwards to detect modifications of existing files
+// (regression risk) versus purely new deliverables.
+func snapshotWorkdir(workdir string) map[string]time.Time {
+	snap := map[string]time.Time{}
+	_ = filepath.Walk(workdir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return nil
+		}
+		if info.IsDir() {
+			if info.Name() == ".whale" || info.Name() == ".git" || info.Name() == "node_modules" {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if rel, relErr := filepath.Rel(workdir, path); relErr == nil {
+			snap[rel] = info.ModTime()
+		}
+		return nil
+	})
+	return snap
+}
+
+// outDeliverables counts files in the workdir and reports whether the worker
+// modified an existing file (regression risk) — compares each file's modtime
+// against the pre-worker baseline snapshot. .whale/.git/node_modules are
+// whale's own state / VCS internals / dependencies, never deliverables.
+func outDeliverables(workdir string, baseline map[string]time.Time) (count int, touches bool, err error) {
+	walkErr := filepath.Walk(workdir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
 		}
 		if info.IsDir() {
-			// .whale is whale's own metadata/log dir (written by `whale exec` in
-			// the sandbox), not a worker deliverable. Its relative path overlaps the
-			// master engine's log under the workspace, so counting it as a touch
-			// would misclassify every pure-new deliverable as high regression risk.
-			if info.Name() == ".whale" {
+			if info.Name() == ".whale" || info.Name() == ".git" || info.Name() == "node_modules" {
 				return filepath.SkipDir
 			}
 			return nil
 		}
 		count++
-		rel, relErr := filepath.Rel(outDir, path)
+		rel, relErr := filepath.Rel(workdir, path)
 		if relErr != nil {
 			return relErr
 		}
-		if _, statErr := os.Stat(filepath.Join(workdir, rel)); statErr == nil {
+		if mod, ok := baseline[rel]; ok && !mod.Equal(info.ModTime()) {
 			touches = true
 		}
 		return nil
@@ -667,38 +937,129 @@ func outDeliverables(outDir, workdir string) (count int, touches bool, err error
 	return count, touches, walkErr
 }
 
-// shouldSkipVerifier decides whether the LLM semantic verifier can be skipped
-// after the mechanical gate passes. It is conservative: only brand-new
-// standalone deliverables (touching no pre-existing workspace file) from
-// mechanical roles are eligible. The mechanical gate (automated tests) always
-// runs regardless; worktree and DW modes never skip.
-func (e *TeamEngine) shouldSkipVerifier(task *Task, verifyWorkdir string) bool {
+// changedDeliverables lists the files the worker added or modified in workdir —
+// entries whose modtime differs from the pre-worker baseline snapshot (new
+// files have no baseline entry). Walk visits entries in lexical order, so the
+// list is deterministic. .whale/.git/node_modules are never deliverables.
+func changedDeliverables(workdir string, baseline map[string]time.Time) ([]string, error) {
+	var changed []string
+	err := filepath.Walk(workdir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return nil
+		}
+		if info.IsDir() {
+			if info.Name() == ".whale" || info.Name() == ".git" || info.Name() == "node_modules" {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		rel, relErr := filepath.Rel(workdir, path)
+		if relErr != nil {
+			return relErr
+		}
+		if mod, ok := baseline[rel]; !ok || !mod.Equal(info.ModTime()) {
+			changed = append(changed, rel)
+		}
+		return nil
+	})
+	return changed, err
+}
+
+// verifyDepth decides the verification depth for a task after the mechanical
+// gate passes. The verification link is always present（环节恒有）; only the
+// depth varies: "mechanical" = objective gate + worker self-check (no LLM
+// verifier), "semantic" = independent system verifier cross-check.
+//
+// The Leader decides the depth at decompose time (task.VerifyMode); an unset
+// value (auto) falls back to a conservative heuristic — any signal of
+// subjectivity or regression risk promotes to semantic. The mechanical gate
+// (automated tests/build) always runs regardless of depth.
+func (e *TeamEngine) verifyDepth(task *Task, verifyWorkdir string, baseline map[string]time.Time) string {
+	switch task.VerifyMode {
+	case "mechanical", "semantic":
+		return task.VerifyMode
+	}
+	// Auto heuristics.
 	if task.UseDW {
-		return false
+		return "semantic"
 	}
 	// Worktree mode edits the repo in place via a branch; regression assessment
 	// needs a git diff — be conservative and always verify.
 	if e.activeBranch(task.ID) != "" {
-		return false
+		return "semantic"
 	}
 	// Subjective/key roles (architecture, security, docs) always verify.
 	if task.VerifierRole != "" {
-		return false
+		return "semantic"
+	}
+	// Declared deliverables must actually exist. A worker that failed to produce
+	// its promised output is the worst failure mode — but the workdir-wide count
+	// (count>0) and the no-regression flag (touches=false) would let it slip
+	// through as a low-risk mechanical SKIP. A missing declared file forces
+	// semantic depth so the system verifier cross-checks instead, not at the
+	// cost of a false PASS via the degenerate SKIP path.
+	if !declaredOutputsPresent(task, verifyWorkdir) {
+		return "semantic"
 	}
 	// High regression risk: the deliverable touches an existing workspace file.
-	// An empty out/ (worker produced nothing) also verifies — a missing
-	// deliverable is not a low-risk standalone file.
-	count, touches, err := outDeliverables(verifyWorkdir, task.Workdir)
-	if err != nil || touches || count == 0 {
-		return false
+	// An empty workdir (worker produced nothing) also verifies — a missing
+	// deliverable is not a low-risk standalone file. Without a baseline (resume
+	// with existing output) new vs modified files cannot be told apart, so stay
+	// conservative.
+	count, touches, err := outDeliverables(verifyWorkdir, baseline)
+	if err != nil || touches || count == 0 || baseline == nil {
+		return "semantic"
 	}
 	// No automated test command means the mechanical gate ran nothing — it
 	// trivially "passes" and would release the deliverable with zero objective
-	// check. Never skip semantic verification in that case.
-	if name, _ := detectTestCommand(verifyWorkdir); name == "" {
-		return false
+	// check. Never go mechanical-only without an objective gate.
+	if !mechanicalGateAvailable(verifyWorkdir) {
+		return "semantic"
+	}
+	return "mechanical"
+}
+
+// declaredOutputsPresent 校验 task.Output 声明的每个交付文件是否真实存在于
+// workdir. 批量任务把多个交付物写在同一 workdir,声明文件缺失(worker 没产出承诺
+// 的东西)是最重的失败——即使 workdir 非空、也没触碰旧文件(touches=false),也不该
+// 被 mechanical 深度(SKIP)放行,必须提升 semantic 由系统验证器交叉审查。
+// task.Output 以逗号分隔多个条目;为空声明时视为无需校验(交由 outDeliverables
+// 的 count 判断)。父任务聚合产物等非 worker 直接写的路径不做硬判,缺失也仅升
+// semantic 不致误 fail。
+func declaredOutputsPresent(task *Task, workdir string) bool {
+	out := strings.TrimSpace(task.Output)
+	if out == "" {
+		return true
+	}
+	for _, o := range strings.Split(out, ",") {
+		o = strings.TrimSpace(o)
+		if o == "" {
+			continue
+		}
+		p := filepath.Clean(o)
+		if !filepath.IsAbs(p) {
+			p = filepath.Join(workdir, p)
+		}
+		if _, err := os.Stat(p); err != nil {
+			return false
+		}
 	}
 	return true
+}
+
+// verifyModeForTask resolves the effective verification depth handed down from
+// a PlanTask. verify_mode wins; a legacy verifier_role (old plans predating
+// verify_mode) maps to "semantic" because a Leader-assigned verifier denoted a
+// subjective/key task. Empty result means auto (engine heuristic).
+func verifyModeForTask(pt PlanTask) string {
+	switch pt.VerifyMode {
+	case "mechanical", "semantic":
+		return pt.VerifyMode
+	}
+	if strings.TrimSpace(pt.VerifierRole) != "" {
+		return "semantic"
+	}
+	return ""
 }
 
 // detectTestCommand 在 workdir 检测标准自动化测试/构建命令，返回命令名与参数。
@@ -772,6 +1133,7 @@ func (e *TeamEngine) splitTaskIntoChildren(task *Task, childPlan []PlanTask, wor
 			continue
 		}
 		child.Output = pt.Output
+		child.VerifyMode = verifyModeForTask(pt)
 		child.BatchID = task.BatchID
 		child.MasterTaskID = task.MasterTaskID
 		child.UpstreamBatches = task.UpstreamBatches
@@ -787,9 +1149,12 @@ func (e *TeamEngine) splitTaskIntoChildren(task *Task, childPlan []PlanTask, wor
 	e.writeTaskPlanJSON(task, createdChildren)
 	// Mark parent as done (children carry the work forward). TransitionState
 	// alone only flips the in-memory state; the file store derives "done" from
-	// output.md + verifier.md, so persist a verifier.md or the batch done-check
-	// re-reads the parent as "produced" and fails the batch.
+	// output.md + verify.md (verify.md is the PASS-only marker; verifier.md is
+	// the verifier's report and is written on FAIL too, so it must NOT drive
+	// done). Persist both or the batch done-check re-reads the parent as
+	// "produced" and fails the batch.
 	_ = e.Whiteboard.WriteVerifier(task.ID, "split into children: work carried forward")
+	_ = os.WriteFile(filepath.Join(e.Whiteboard.TaskDir(task.ID), "verify.md"), []byte("split into children: work carried forward"), 0644)
 	_ = e.Store.TransitionState(task.ID, TaskStateDone, "", reason)
 	e.fireEvent(TaskEvent{Type: EventStateChanged})
 	return true

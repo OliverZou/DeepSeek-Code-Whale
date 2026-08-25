@@ -18,7 +18,9 @@ type mockSpawner struct {
 	// for a given role consumes the next string in the sequence.
 	roleSeq   map[string][]string
 	seqCursor map[string]int
-	calls     map[string]int // spawn count by role
+	calls     map[string]int    // spawn count by role
+	reqs      []SubagentRequest // every request received, in order
+	sessionID string            // session ID returned on every spawn ("" when unset)
 	err       error
 }
 
@@ -29,6 +31,7 @@ func (m *mockSpawner) SpawnSubagent(_ context.Context, req SubagentRequest) (Sub
 		m.calls = make(map[string]int)
 	}
 	m.calls[req.Role]++
+	m.reqs = append(m.reqs, req)
 	if m.err != nil {
 		return SubagentResponse{}, m.err
 	}
@@ -41,23 +44,23 @@ func (m *mockSpawner) SpawnSubagent(_ context.Context, req SubagentRequest) (Sub
 			i := m.seqCursor[req.Role]
 			if i < len(seq) {
 				m.seqCursor[req.Role] = i + 1
-				return SubagentResponse{Output: seq[i], Success: true, ExitCode: 0}, nil
+				return SubagentResponse{Output: seq[i], SessionID: m.sessionID, Success: true, ExitCode: 0}, nil
 			}
 			// Sequence exhausted — fall through to roleOutputs.
 		}
 	}
 	// 2. Exact role match.
 	if out, ok := m.roleOutputs[req.Role]; ok {
-		return SubagentResponse{Output: out, Success: true, ExitCode: 0}, nil
+		return SubagentResponse{Output: out, SessionID: m.sessionID, Success: true, ExitCode: 0}, nil
 	}
 	// 3. Worker roles fall back to "worker" key.
 	if req.Role != "planner" && req.Role != "verifier" {
 		if out, ok := m.roleOutputs["worker"]; ok {
-			return SubagentResponse{Output: out, Success: true, ExitCode: 0}, nil
+			return SubagentResponse{Output: out, SessionID: m.sessionID, Success: true, ExitCode: 0}, nil
 		}
 	}
 	// 4. Default output.
-	return SubagentResponse{Output: m.output, Success: true, ExitCode: 0}, nil
+	return SubagentResponse{Output: m.output, SessionID: m.sessionID, Success: true, ExitCode: 0}, nil
 }
 
 func newTestEngine(t *testing.T) *TeamEngine {
@@ -129,16 +132,14 @@ func TestValidTransitions(t *testing.T) {
 		{TaskStatePending, TaskStateAssigned, true},
 		{TaskStateAssigned, TaskStateProducing, true},
 		{TaskStateProducing, TaskStateProduced, true},
-		{TaskStateProduced, TaskStateChecking, true},
-		{TaskStateChecking, TaskStateChecked, true},
-		{TaskStateChecked, TaskStateVerifying, true},
+		{TaskStateProduced, TaskStateVerifying, true},
 		{TaskStateVerifying, TaskStateVerified, true},
 		{TaskStateVerified, TaskStateDone, true},
 		{TaskStatePending, TaskStateFailed, true},
 		{TaskStateDone, TaskStatePending, false},
 		{TaskStateFailed, TaskStateDone, false},
 		{TaskStateProduced, TaskStateDone, true},
-		{TaskStateProduced, TaskStateVerifying, false},
+		{TaskStateProduced, TaskStateVerifying, true},
 	}
 
 	for _, tc := range tests {
@@ -1267,7 +1268,9 @@ func TestIntegration_SelfSplitPipeline(t *testing.T) {
 
 // TestIntegration_SoftwareTeam_AgentVerifier verifies the full pipeline using
 // software development team roles with an agent-definition-driven Verifier.
-// Worker="software-engineer", Verifier="software-qa-engineer" (via verifier_role).
+// Worker="software-engineer"; a legacy verifier_role in the plan maps to
+// VerifyMode=semantic, and the verifier agent itself is always the system
+// "verifier".
 func TestIntegration_SoftwareTeam_AgentVerifier(t *testing.T) {
 	planJSON := `[{"title":"Implement gcd.go","description":"Write gcd.go with GCD(a,b int) int using Euclidean algorithm","role":"software-engineer","verifier_role":"software-qa-engineer","batch_id":"batch-1","batch_label":"Implementation","verifier_focus":"correctness","use_dw":false,"max_cycles":1}]`
 
@@ -1315,9 +1318,9 @@ func TestIntegration_SoftwareTeam_AgentVerifier(t *testing.T) {
 				t.Errorf("task %s (%s): expected DONE, got %s (retries=%d, feedback=%s)",
 					task.ID[:8], task.Title, task.State, task.RetryCount, truncateStr(task.VerifierFeedback, 200))
 			}
-			if task.VerifierRole != "software-qa-engineer" {
-				t.Errorf("task %s: expected VerifierRole=software-qa-engineer, got %q",
-					task.ID[:8], task.VerifierRole)
+			if task.VerifyMode != "semantic" {
+				t.Errorf("task %s: expected VerifyMode=semantic (legacy verifier_role maps to semantic), got %q",
+					task.ID[:8], task.VerifyMode)
 			}
 		}
 	}

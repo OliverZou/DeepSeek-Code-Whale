@@ -21,7 +21,6 @@ import (
 //	│   ├── goal.md       ← Engine writes
 //	│   ├── input.md      ← Engine writes (WriteInboxFile)
 //	│   ├── output.md     ← Agent writes  →  produced
-//	│   ├── out/          ← Agent output files (sandboxed)
 //	│   ├── verify.md     ← Verifier writes → done (with output.md)
 //	│   ├── error.md      ← failed
 //	│   ├── suspended.md  ← suspended
@@ -38,9 +37,11 @@ type FileTaskStore struct {
 }
 
 func NewFileTaskStore(baseDir string) (*FileTaskStore, error) {
-	if err := os.MkdirAll(baseDir, 0755); err != nil {
-		return nil, fmt.Errorf("create task store: %w", err)
-	}
+	// 惰性创建：目录只在首次写入时产生。只读命令（status/list/analyze）
+	// 启动即 newTeamEngine，绝不该在未执行任务的地方留下 .whale/team_tasks
+	// ——尤其 whale.exe 所在目录（启动目录污染问题）。rebuildIndex 对
+	// 不存在的目录按空索引处理；写路径（InsertMasterTask/InsertTask/
+	// writeMeta）各自 MkdirAll 保底。
 	fs := &FileTaskStore{
 		baseDir: baseDir,
 		tasks:   make(map[string]*Task),
@@ -78,7 +79,7 @@ func (fs *FileTaskStore) rebuildIndex() {
 			if err != nil {
 				continue
 			}
-			fs.masters[e.Name()] = &MasterTask{ID: meta.ID, Goal: meta.Title, Agent: meta.Agent, SessionID: meta.SessionID, WorkspacePath: meta.WorkspacePath, CreatedAt: meta.CreatedAt}
+			fs.masters[e.Name()] = &MasterTask{ID: meta.ID, Goal: meta.Title, Agent: meta.Agent, SessionID: meta.SessionID, LeaderSessionID: meta.LeaderSessionID, WorkspacePath: meta.WorkspacePath, CreatedAt: meta.CreatedAt}
 		}
 	}
 }
@@ -110,8 +111,10 @@ type taskMeta struct {
 	Role             string   `json:"role"`
 	Agent            string   `json:"agent,omitempty"`
 	SessionID        string   `json:"session_id,omitempty"`
+	LeaderSessionID  string   `json:"leader_session_id,omitempty"`
 	WorkspacePath    string   `json:"workspace_path,omitempty"`
 	Output           string   `json:"output"`
+	Workdir          string   `json:"workdir,omitempty"` // 交付工作目录（传播/机械验证的落点）
 	ParentIDs        []string `json:"parent_ids,omitempty"`
 	UpstreamBatches  []string `json:"upstream_batches,omitempty"`
 	BatchID          string   `json:"batch_id,omitempty"`
@@ -120,6 +123,17 @@ type taskMeta struct {
 	VerifierFeedback string   `json:"verifier_feedback,omitempty"`
 	MaxRetries       int      `json:"max_retries,omitempty"`
 	CreatedAt        string   `json:"created_at"`
+	// 运行统计（累计，含重试轮）——事后分析与 run_report 的输出依据。
+	WorkerDuration   float64 `json:"worker_duration_seconds,omitempty"`
+	WorkerTokens     int     `json:"worker_tokens,omitempty"`
+	VerifierDuration float64 `json:"verifier_duration_seconds,omitempty"`
+	VerifierTokens   int     `json:"verifier_tokens,omitempty"`
+	ToolCalls        int     `json:"tool_calls,omitempty"`
+	TopTools         string  `json:"top_tools,omitempty"`
+	// 事后分析轨迹：验证结论/验证者 cap 次数/工具等待时长（墙钟归因）。
+	Verdict          string  `json:"verdict,omitempty"`
+	VerifierCapCount int     `json:"verifier_cap_count,omitempty"`
+	ToolWaitSeconds  float64 `json:"tool_wait_seconds,omitempty"`
 }
 
 func (fs *FileTaskStore) writeMeta(dir string, meta *taskMeta) error {
@@ -162,6 +176,7 @@ func (fs *FileTaskStore) taskFromMeta(meta *taskMeta) *Task {
 		Description:      meta.Description,
 		Role:             AgentRole(meta.Role),
 		Output:           meta.Output,
+		Workdir:          meta.Workdir,
 		ParentIDs:        meta.ParentIDs,
 		UpstreamBatches:  meta.UpstreamBatches,
 		BatchID:          meta.BatchID,
@@ -171,6 +186,15 @@ func (fs *FileTaskStore) taskFromMeta(meta *taskMeta) *Task {
 		MaxRetries:       meta.MaxRetries,
 		RetryCount:       0, // runtime counter, not persisted
 		CreatedAt:        meta.CreatedAt,
+		WorkerDuration:   meta.WorkerDuration,
+		WorkerTokens:     meta.WorkerTokens,
+		VerifierDuration: meta.VerifierDuration,
+		VerifierTokens:   meta.VerifierTokens,
+		ToolCalls:        meta.ToolCalls,
+		TopTools:         meta.TopTools,
+		Verdict:          meta.Verdict,
+		VerifierCapCount: meta.VerifierCapCount,
+		ToolWaitSeconds:  meta.ToolWaitSeconds,
 	}
 }
 
@@ -194,7 +218,7 @@ func (fs *FileTaskStore) deriveState(dir string) TaskState {
 	}
 
 	hasOutput := fileExists(filepath.Join(dir, "output.md"))
-	hasVerify := fileExists(filepath.Join(dir, "verify.md")) || fileExists(filepath.Join(dir, "verifier.md"))
+	hasVerify := fileExists(filepath.Join(dir, "verify.md"))
 	hasInput := fileExists(filepath.Join(dir, "input.md"))
 
 	if hasOutput && hasVerify {
@@ -231,14 +255,14 @@ func (fs *FileTaskStore) InsertMasterTask(mt *MasterTask) error {
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return err
 	}
-	meta := &taskMeta{ID: mt.ID, Title: mt.Goal, Role: "teamleader", Agent: mt.Agent, SessionID: mt.SessionID, WorkspacePath: mt.WorkspacePath, CreatedAt: time.Now().UTC().Format(time.RFC3339)}
+	meta := &taskMeta{ID: mt.ID, Title: mt.Goal, Role: "teamleader", Agent: mt.Agent, SessionID: mt.SessionID, LeaderSessionID: mt.LeaderSessionID, WorkspacePath: mt.WorkspacePath, CreatedAt: time.Now().UTC().Format(time.RFC3339)}
 	if err := fs.writeMeta(dir, meta); err != nil {
 		return err
 	}
 	fs.writeGoal(dir, mt.Goal, "teamleader", mt.Goal, "")
 
 	fs.mu.Lock()
-	fs.masters[mt.ID] = &MasterTask{ID: mt.ID, Goal: mt.Goal, Agent: mt.Agent, SessionID: mt.SessionID, WorkspacePath: mt.WorkspacePath, CreatedAt: meta.CreatedAt}
+	fs.masters[mt.ID] = &MasterTask{ID: mt.ID, Goal: mt.Goal, Agent: mt.Agent, SessionID: mt.SessionID, LeaderSessionID: mt.LeaderSessionID, WorkspacePath: mt.WorkspacePath, CreatedAt: meta.CreatedAt}
 	fs.mu.Unlock()
 	return nil
 }
@@ -317,7 +341,7 @@ func (fs *FileTaskStore) InsertTask(task *Task) error {
 	}
 	meta := &taskMeta{
 		ID: task.ID, Title: task.Title, Description: task.Description,
-		Role: string(task.Role), Output: task.Output,
+		Role: string(task.Role), Output: task.Output, Workdir: task.Workdir,
 		ParentIDs: task.ParentIDs, UpstreamBatches: task.UpstreamBatches, BatchID: task.BatchID, MasterTaskID: task.MasterTaskID,
 		VerifierFocus: task.VerifierFocus, MaxRetries: task.MaxRetries,
 		CreatedAt: time.Now().UTC().Format(time.RFC3339),
@@ -469,9 +493,9 @@ func (fs *FileTaskStore) UpstreamOutputs(task *Task) []UpstreamRef {
 	return refs
 }
 
-// absOutputPath returns the absolute path of a task's deliverable after
-// propagation to the workspace. Workers run in their own out/ sandbox, so a
-// bare relative Output ("game.js") is useless for reading upstream files.
+// absOutputPath returns the absolute path of a task's deliverable in its
+// workspace. Workers write deliverables directly into Workdir, so a bare
+// relative Output ("game.js") resolves against it for reading upstream files.
 func (fs *FileTaskStore) absOutputPath(t *Task) string {
 	if t.Workdir == "" {
 		return t.Output
@@ -545,6 +569,75 @@ func (fs *FileTaskStore) UpdateTask(id string, fields map[string]interface{}) er
 	// session_id: persistence-only field (not on Task struct).
 	if v, ok := fields["session_id"]; ok {
 		meta.SessionID = fmt.Sprint(v)
+	}
+	// 运行统计：累加语义——同一任务的多轮执行（重试、多 cycle）都要计入，
+	// 这样 run_report / RUN SUMMARY 的 per-task token 才是总账；旧实现把
+	// 这四个 key 挡在白名单外静默丢弃，导致并行批次下只能靠计数器 delta
+	// 交叉估算（v32 实测虚高 61%）。
+	if v, ok := fields["worker_duration_seconds"]; ok {
+		if f, ok := v.(float64); ok {
+			meta.WorkerDuration += f
+			t.WorkerDuration = meta.WorkerDuration
+		}
+	}
+	if v, ok := fields["worker_tokens"]; ok {
+		switch n := v.(type) {
+		case int:
+			meta.WorkerTokens += n
+		case float64:
+			meta.WorkerTokens += int(n)
+		}
+		t.WorkerTokens = meta.WorkerTokens
+	}
+	if v, ok := fields["verifier_duration_seconds"]; ok {
+		if f, ok := v.(float64); ok {
+			meta.VerifierDuration += f
+			t.VerifierDuration = meta.VerifierDuration
+		}
+	}
+	if v, ok := fields["verifier_tokens"]; ok {
+		switch n := v.(type) {
+		case int:
+			meta.VerifierTokens += n
+		case float64:
+			meta.VerifierTokens += int(n)
+		}
+		t.VerifierTokens = meta.VerifierTokens
+	}
+	// 工具探针：tool_calls 累加（多轮 worker 都要计入）；top_tools 覆写
+	// （run_task 侧已聚合为累计直方图 Top2）。
+	if v, ok := fields["tool_calls"]; ok {
+		switch n := v.(type) {
+		case int:
+			meta.ToolCalls += n
+		case float64:
+			meta.ToolCalls += int(n)
+		}
+		t.ToolCalls = meta.ToolCalls
+	}
+	if v, ok := fields["top_tools"]; ok {
+		meta.TopTools = fmt.Sprint(v)
+		t.TopTools = meta.TopTools
+	}
+	// 事后分析轨迹：verdict 覆写；cap 次数/工具等待累加（多轮都要计入）。
+	if v, ok := fields["verdict"]; ok {
+		meta.Verdict = fmt.Sprint(v)
+		t.Verdict = meta.Verdict
+	}
+	if v, ok := fields["verifier_cap_count"]; ok {
+		switch n := v.(type) {
+		case int:
+			meta.VerifierCapCount += n
+		case float64:
+			meta.VerifierCapCount += int(n)
+		}
+		t.VerifierCapCount = meta.VerifierCapCount
+	}
+	if v, ok := fields["tool_wait_seconds"]; ok {
+		if f, ok := v.(float64); ok {
+			meta.ToolWaitSeconds += f
+			t.ToolWaitSeconds = meta.ToolWaitSeconds
+		}
 	}
 	fs.mu.Unlock()
 	return fs.writeMeta(dir, meta)
@@ -667,7 +760,8 @@ func (fs *FileTaskStore) GetTaskHistory(taskID string) ([]StateHistoryEntry, err
 	addEvent("input.md", TaskStateAssigned)
 	addEvent("output.md", TaskStateProduced)
 	addEvent("verify.md", TaskStateVerified)
-	addEvent("verifier.md", TaskStateVerified) // alias
+	// verifier.md is the verifier's report, written on both PASS and FAIL — it
+	// is not a verified marker and must not be mapped to TaskStateVerified.
 	addEvent("error.md", TaskStateFailed)
 	addEvent("suspended.md", TaskStateSuspended)
 	addEvent("confirmation.md", TaskStatePendingConfirmation)
@@ -728,6 +822,26 @@ func (fs *FileTaskStore) UpdateMasterTaskStatus(id, status string) error {
 	defer fs.mu.Unlock()
 	if mt, ok := fs.masters[id]; ok {
 		mt.Status = status
+	}
+	return nil
+}
+
+// SaveMasterTaskLeaderSession persists the Leader subagent session ID for a
+// master task, both in memory and in the master meta.json, so any engine
+// instance (CLI command, agent tool, session picker) can address the Leader
+// session later (continuation turns, user conversations).
+func (fs *FileTaskStore) SaveMasterTaskLeaderSession(id, sessionID string) error {
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+	mt, ok := fs.masters[id]
+	if !ok {
+		return nil
+	}
+	mt.LeaderSessionID = sessionID
+	dir := fs.masterDir(id)
+	if meta, err := fs.readMeta(dir); err == nil {
+		meta.LeaderSessionID = sessionID
+		_ = fs.writeMeta(dir, meta)
 	}
 	return nil
 }

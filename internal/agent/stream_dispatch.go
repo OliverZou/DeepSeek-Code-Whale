@@ -113,6 +113,31 @@ func (a *Agent) dispatchToolCalls(ctx context.Context, sc streamDispatchContext,
 		pendingParallelSubagents = pendingParallelSubagents[:0]
 		return a.flushPendingParallelSubagents(ctx, sc.SessionID, sc.Assistant.ID, sc.Model, pending, sc.Events, &results, sc.Tools)
 	}
+	pendingParallelReads := []preparedToolDispatch{}
+	flushPendingParallelReads := func() error {
+		if len(pendingParallelReads) == 0 {
+			return nil
+		}
+		pending := append([]preparedToolDispatch(nil), pendingParallelReads...)
+		pendingParallelReads = pendingParallelReads[:0]
+		limit := len(pending)
+		if limit > maxParallelReadToolCalls {
+			limit = maxParallelReadToolCalls
+		}
+		outcomes, err := a.dispatchParallelToolCallsWithRecovery(ctx, sc.SessionID, sc.Assistant.ID, sc.Model, pending, sc.Events, sc.Tools, limit)
+		if err != nil {
+			return err
+		}
+		for _, outcome := range outcomes {
+			if !outcome.OK {
+				continue
+			}
+			if !a.appendDispatchedToolResult(ctx, sc.SessionID, outcome.Prepared, outcome.Result, outcome.PrimarySucceeded, sc.Events, &results, true) {
+				return ctx.Err()
+			}
+		}
+		return nil
+	}
 	flushPendingParallelReasoning := func() error {
 		if len(pendingParallelReasoning) == 0 {
 			return nil
@@ -122,6 +147,9 @@ func (a *Agent) dispatchToolCalls(ctx context.Context, sc streamDispatchContext,
 		return a.flushPendingParallelReasoning(ctx, sc.SessionID, sc.Assistant.ID, sc.Model, pending, sc.Events, &results, sc.Tools)
 	}
 	flushPendingParallelBatches := func() error {
+		if err := flushPendingParallelReads(); err != nil {
+			return err
+		}
 		if err := flushPendingParallelSubagents(); err != nil {
 			return err
 		}
@@ -146,6 +174,11 @@ func (a *Agent) dispatchToolCalls(ctx context.Context, sc streamDispatchContext,
 		}
 		if call.Name != parallelReasonToolName {
 			if err := flushPendingParallelReasoning(); err != nil {
+				return nil, false, err
+			}
+		}
+		if !maybeParallelReadTool(call.Name) {
+			if err := flushPendingParallelReads(); err != nil {
 				return nil, false, err
 			}
 		}
@@ -253,6 +286,13 @@ func (a *Agent) dispatchToolCalls(ctx context.Context, sc streamDispatchContext,
 			return nil, false, err
 		}
 		if handled {
+			continue
+		}
+
+		// 只读文件工具：collect into the parallel batch (flushed by the next
+		// non-read call or at the end of the turn).
+		if maybeParallelReadTool(call.Name) {
+			pendingParallelReads = append(pendingParallelReads, prepared)
 			continue
 		}
 
@@ -824,6 +864,24 @@ func toolResultRequestsTurnAbort(res core.ToolResult) bool {
 }
 
 // P1: read-before-edit gate helpers
+
+// maxParallelReadToolCalls caps how many read-only file tools run concurrently
+// per dispatch batch (bounds I/O bursts while still collapsing the串行往返).
+const maxParallelReadToolCalls = 4
+
+// parallelReadToolNames — pure file read/search tools: no side effects, no
+// approval prompts, no shared state, so calls in the same model turn can run
+// concurrently.  Reads dominate team subagent round trips (a "read 3 files
+// then think" turn used to cost 3 sequential LLM round-trips; now 1).
+// Mutation/shell tools intentionally stay sequential (state, approvals, P1
+// read-before-edit ordering).
+var parallelReadToolNames = map[string]bool{
+	"read_file": true, "list_dir": true, "grep": true, "search_files": true, "glob": true,
+}
+
+func maybeParallelReadTool(name string) bool {
+	return parallelReadToolNames[name]
+}
 
 var mutationToolNames = map[string]bool{
 	"edit":       true,

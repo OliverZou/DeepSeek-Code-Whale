@@ -309,6 +309,7 @@ type Agent struct {
 	dynamicSystemBlocks    []func(RunOptions) string
 	sessionRuntime         *memory.SessionRuntime
 	sessionsDir            string
+	childAgent             bool
 	budgetWarningUSD       float64
 	usageLogPath           string
 	toolResultArchiveDir   string
@@ -822,6 +823,18 @@ func WithExtraSkills(extra []*skills.Skill) AgentOption {
 func WithExtraSystemBlocks(blocks ...string) AgentOption {
 	return func(a *Agent) {
 		a.extraSystemBlocks = append([]string(nil), blocks...)
+	}
+}
+
+// WithChildAgentMode marks the agent as a child (subagent) session. Child
+// agents skip the interactive-only system prompt blocks — mode switching,
+// mode contract, delegation policy, request_user_input guidance, and the
+// skills index — none of which apply to a bounded, tool-scoped worker.
+// These blocks are re-sent every round, so skipping them also cuts a fixed
+// ~1k token/round cost on long tool loops.
+func WithChildAgentMode() AgentOption {
+	return func(a *Agent) {
+		a.childAgent = true
 	}
 }
 

@@ -1,6 +1,7 @@
 package policy
 
 import (
+	"runtime"
 	"testing"
 
 	"github.com/usewhale/whale/internal/core"
@@ -72,6 +73,9 @@ func TestExecBoundaryPolicyPrefersExactProgramRule(t *testing.T) {
 }
 
 func TestExecBoundaryPolicyEnforcesExternalDirectory(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses Unix-style absolute path fixtures /repo and /etc/hosts")
+	}
 	rules := append(DefaultRules(), PermissionRule{Permission: "external_directory", Pattern: "*", Action: PermissionDeny})
 	p := RulePolicy{Default: PermissionAllow, Rules: rules, WorkspaceRoot: "/repo"}
 
@@ -86,6 +90,9 @@ func TestExecBoundaryPolicyEnforcesExternalDirectory(t *testing.T) {
 }
 
 func TestExecBoundaryPolicyUsesExecCWDForExternalDirectory(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses Unix-style absolute path fixture /tmp")
+	}
 	rules := append(DefaultRules(), PermissionRule{Permission: "external_directory", Pattern: "*", Action: PermissionDeny})
 	p := RulePolicy{Default: PermissionAllow, Rules: rules, WorkspaceRoot: "/repo"}
 
@@ -109,6 +116,9 @@ func TestExecBoundaryPolicyUsesExecCWDForExternalDirectory(t *testing.T) {
 }
 
 func TestExecBoundaryPolicyEnforcesExternalDirectoryForImplicitCWD(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses Unix-style absolute path fixtures /tmp and /repo")
+	}
 	rules := append(DefaultRules(), PermissionRule{Permission: "external_directory", Pattern: "*", Action: PermissionDeny})
 	p := RulePolicy{Default: PermissionAllow, Rules: rules, WorkspaceRoot: "/repo"}
 

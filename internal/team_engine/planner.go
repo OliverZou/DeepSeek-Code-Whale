@@ -103,6 +103,24 @@ MANY   — 大量相同单元 → 每个单元一个任务，相同 role、相�
 若确因体量过大必须拆开，验证任务必须 depends_on 产出任务（串行执行）。
 只有跨模块的集成验证（涉及多模块协作/端到端行为）才拆成独立任务。
 
+## 物理文件所有权唯一（关键）
+
+每个交付物物理文件在整份计划中必须恰好被一个任务拥有——output 字段列出的文件
+绝对不得在两个或以上任务中出现。原因：
+- 多个任务产出/写入同一文件，并行 worker 会互相覆盖、后完成者胜，结果是确定性错误；
+- 即便串行也会因相互编辑同一文件而语义错位。
+
+**交付位置（v46 工作区整洁）**：交付文件直接写工作区根目录（工作区根就是交付目录，用户直接查看）——output 用裸文件名，不要放进多余的子目录（如 deliverables/）；
+但不允许在工作区根创建中间产物目录（临时脚本/随机命名目录/日志等一律不放根目录——统一放 .whale/team_tasks/ 或系统临时目录）。
+
+**文件名与目标一致（v47 消二义性）**：目标中明确点名的文件（如 game.js）必须原样作为 output；不得为其另造别名/衍生核心文件（如同时产出 game-core.js 又 game.js）——同一职责只产出一个权威文件，其它职责文件（如 DOM 交互层）另起明确名字（game-dom.js），计划里每个名字只出现一次。
+
+拆任务时按「关注点」拆分，但若多个关注点会落到同一个物理文件：
+- 要么把这些关注点合并为同一个任务，由同一个 worker 一次产出该文件；
+- 要么让每个关注点产出**独立路径**的文件（如 game-core.js / game-dom.js），
+  禁止把同一路径拆给两个任务。
+输出前必须自查：output 里的每个文件都只出现一次、且都在约定的交付子目录内。
+
 ## depends_on_batch 使用规则（关键）
 
 depends_on_batch 声明「下游任务依赖其产出的上游 batch」——无论是读取还是修改。
@@ -151,13 +169,18 @@ depends_on_batch 声明「下游任务依赖其产出的上游 batch」——无
    章节引用完整一致；研究：结论合并无矛盾；设计：模块接口对齐）。
 3. 禁止：遗漏引用清单，或把集成验证并入某个具体产出任务而不单独成任务。
 
-## 角色分配
+## 角色分配与验证深度
 
 每个任务必须分配：
 - role：与领域精确匹配的具体角色名
-- verifier_role：质量审查的 agent 名。主观任务（架构、安全、文档）
-  用真实 verifier agent。纯机械任务（算法实现、格式转换）留 ""。
-- verifier_focus：审查维度（correctness、security、performance…）
+- verify_mode：验证深度（验证环节恒有，深度按需）。在分解时判定，标准如下：
+  - "mechanical"：客观门（编译/测试/格式化）+ Worker 交付前自检，不调独立
+    Verifier。适用于可客观判定、机械重复的交付（算法实现、格式转换、编译修复、
+    纯静态交付——样式/模板/规则化数据文件，契约已内联在 description 中）。
+  - "semantic"：独立系统 Verifier 交叉验证。适用于需要判断、主观质量的交付
+    （架构、安全、文档、设计、复杂业务逻辑、影响面大的改动）。
+  - 拿不准时给出你的最佳判断；宁可 semantic 也不放水。
+- verifier_focus：审查维度（correctness、security、performance…）（仅 semantic 使用）
 
 ## 验收标准（关键）
 
@@ -174,7 +197,7 @@ depends_on_batch 声明「下游任务依赖其产出的上游 batch」——无
 纯 JSON 数组，不加 markdown 包裹。无 depends_on_batch 的 batch 并行执行；有 depends_on_batch 的 batch 等依赖完成后执行。
 
 [
-  {"title":"…","description":"≤3句话","output":"产物路径","role":"角色名","verifier_role":"agent名或空","acceptance_criteria":["条件1","条件2"],"batch_id":"1","batch_label":"阶段名","depends_on_batch":[],"depends_on_index":-1,"verifier_focus":"审查维度","max_cycles":1}
+  {"title":"…","description":"≤3句话","output":"产物路径","role":"角色名","verify_mode":"mechanical或semantic","acceptance_criteria":["条件1","条件2"],"batch_id":"1","batch_label":"阶段名","depends_on_batch":[],"depends_on_index":-1,"verifier_focus":"审查维度","max_cycles":1}
 ]`, goal, sizeGuide)
 }
 
@@ -368,6 +391,45 @@ func lexicalComplexity(goal string) string {
 
 var complexSignalKeywords = []string{"重构", "迁移", "微服务", "分布式", "高并发", "多模块", "复杂"}
 
+// BootstrapSession creates the Leader's persistent session in --plan-file
+// mode: the plan comes from an external file, so no decomposition LLM call is
+// made — the spawn is a single minimal reply that merely records the session
+// (with orchestration tools) for the drive/review turns.  The plan stays
+// byte-for-byte what the file contains; only worker/verifier behavior varies
+// between runs, which is what a head-to-head A/B needs.
+func (p *Planner) BootstrapSession(goal, workdir string, timeout time.Duration, model ...string) error {
+	prompt := fmt.Sprintf("你是团队负责人 Leader。已有一份由外部提供并审定的任务计划，你不需要重新分解。仅回复：OK，等待编排指令。")
+	if p.team != nil {
+		prompt = p.team.BuildLeaderPrompt(prompt)
+	}
+	if p.team != nil && p.team.Leader.Model != "" {
+		model = []string{p.team.Leader.Model}
+	}
+
+	start := time.Now()
+	result := p.runner.RunLeaderBootstrap(prompt, workdir, timeout, model...)
+	dur := time.Since(start)
+
+	if p.loggers != nil {
+		p.loggers.Engine("leader.bootstrap: model=%s spawner=%s dur=%.1fs output=%d chars success=%v",
+			modelName(model), result.SpawnerType, dur.Seconds(), len(result.Stdout), result.Success)
+	}
+	if !result.Success || result.SessionID == "" {
+		return fmt.Errorf("leader bootstrap failed (exit %d): %s", result.ExitCode, result.Stderr)
+	}
+	p.lastDecomposeSessionID = result.SessionID
+	p.lastDecomposeResult = fmt.Sprintf("[plan-file] %s", goal)
+	return nil
+}
+
+// modelName returns the effective model name or "" for logging.
+func modelName(model []string) string {
+	if len(model) > 0 {
+		return model[0]
+	}
+	return ""
+}
+
 // decomposeInternal runs the leader agent and returns both parsed tasks
 // and the raw AI output text.
 func (p *Planner) decomposeInternal(goal string, workdir string, timeout time.Duration, model ...string) ([]PlanTask, string, error) {
@@ -375,6 +437,11 @@ func (p *Planner) decomposeInternal(goal string, workdir string, timeout time.Du
 		timeout = 180 * time.Second
 	}
 	prompt := DecomposePrompt(goal, p.complexity)
+	// Leader orchestrates from ITS OWN definition: BuildLeaderPrompt injects the
+	// leader persona/rules plus the team role table (name/agent/duty) — that is
+	// everything an orchestrator needs to split tasks. Member .md definitions are
+	// NOT loaded here (lean flash one-shot); members are dispatched later by
+	// team_run / team_feedback.
 	if p.team != nil {
 		prompt = p.team.BuildLeaderPrompt(prompt)
 	}
@@ -448,6 +515,8 @@ func (p *Planner) decomposeInternal(goal string, workdir string, timeout time.Du
 				if p.loggers != nil {
 					p.loggers.Engine("leader.decompose: success — %d tasks in plan (structured output)", len(tasks))
 				}
+				p.lastDecomposeResult = output
+				p.lastDecomposeSessionID = result.SessionID
 				return tasks, result.Stdout, nil
 			}
 		}

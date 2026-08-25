@@ -169,6 +169,10 @@ func (m model) shouldRenderComposer() bool {
 
 func (m model) bottomPartsBeforeInput(mainWidth int) []string {
 	bottomParts := make([]string, 0, 8)
+	// 团队运行状态行（v47）：leader 空闲也常驻底部——后台在干活必须可见。
+	if statusLine := m.renderTeamStatusLine(mainWidth); statusLine != "" {
+		bottomParts = append(bottomParts, statusLine)
+	}
 	if statusLine := m.renderBusyStatusLine(mainWidth); statusLine != "" {
 		bottomParts = append(bottomParts, statusLine)
 	}

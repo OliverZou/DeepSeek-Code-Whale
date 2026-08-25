@@ -96,6 +96,91 @@ func (m *model) advanceApprovalPrompt(status string) {
 }
 
 func (m *model) handleSessionPickerKey(msg tea.KeyMsg) tea.Cmd {
+	// /team abort 选择器：↑↓ 选择 run，回车停止。
+	if len(m.teamAbortRuns) > 0 {
+		switch msg.String() {
+		case "esc":
+			if m.teamAbortConfirm {
+				m.teamAbortConfirm = false
+			} else {
+				m.mode = modeChat
+				m.teamAbortRuns = nil
+			}
+		case "up", "k":
+			if m.teamAbortIdx > 0 {
+				m.teamAbortIdx--
+			}
+		case "down", "j":
+			if m.teamAbortIdx < len(m.teamAbortRuns)-1 {
+				m.teamAbortIdx++
+			}
+		case "enter", "y":
+			if m.teamAbortConfirm {
+				if m.teamAbortIdx < len(m.teamAbortRuns) {
+					p := m.teamAbortRuns[m.teamAbortIdx]
+					m.mode = modeChat
+					m.teamAbortRuns = nil
+					m.teamAbortConfirm = false
+					m.dispatchIntent(protocol.Intent{Kind: protocol.IntentTeamAbort, Input: p.MasterID})
+				}
+			} else if m.teamAbortIdx < len(m.teamAbortRuns) {
+				m.teamAbortConfirm = true // 选中后需二次确认
+			}
+		}
+		return nil
+	}
+	// 团队成员会话选择器（/team session）复用本模式。
+	if len(m.teamSessions) > 0 {
+		switch msg.String() {
+		case "esc":
+			m.mode = modeChat
+			m.teamSessions = nil
+		case "up", "k":
+			if m.teamPickIdx > 0 {
+				m.teamPickIdx--
+			}
+		case "down", "j":
+			if m.teamPickIdx < len(m.teamSessions)-1 {
+				m.teamPickIdx++
+			}
+		case "enter":
+			if m.teamPickIdx < len(m.teamSessions) {
+				p := m.teamSessions[m.teamPickIdx]
+				m.mode = modeChat
+				m.teamSessions = nil
+				if p.SessionID != "" {
+					m.dispatchIntent(protocol.Intent{Kind: protocol.IntentTeamSessionOpen, Input: p.SessionID})
+				}
+			}
+		}
+		return nil
+	}
+	// /subagent 选择器：↑↓ 选择活跃 subagent，回车切换（复用主会话 resume）。
+	if len(m.subagentPicks) > 0 {
+		switch msg.String() {
+		case "esc":
+			m.mode = modeChat
+			m.subagentPicks = nil
+		case "up", "k":
+			if m.subagentPickIdx > 0 {
+				m.subagentPickIdx--
+			}
+		case "down", "j":
+			if m.subagentPickIdx < len(m.subagentPicks)-1 {
+				m.subagentPickIdx++
+			}
+		case "enter":
+			if m.subagentPickIdx < len(m.subagentPicks) {
+				p := m.subagentPicks[m.subagentPickIdx]
+				m.mode = modeChat
+				m.subagentPicks = nil
+				if p.SessionID != "" {
+					m.dispatchIntent(protocol.Intent{Kind: protocol.IntentSelectSession, SessionInput: p.SessionID})
+				}
+			}
+		}
+		return nil
+	}
 	switch msg.String() {
 	case "esc":
 		if m.resumeMenu {

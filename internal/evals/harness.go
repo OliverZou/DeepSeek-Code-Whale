@@ -241,11 +241,12 @@ func collectStepRuns(turns []TurnSpec, msgs []core.Message) ([]StepRun, error) {
 	out := make([]StepRun, 0, expectedStepCount(turns))
 	for turnIdx, turn := range turns {
 		msg := toolMsgs[turnIdx]
-		if len(msg.ToolResults) != len(turn.Steps) {
-			return nil, fmt.Errorf("turn %d produced %d tool results, expected %d", turnIdx+1, len(msg.ToolResults), len(turn.Steps))
+		results := filterInjectedResults(msg.ToolResults)
+		if len(results) != len(turn.Steps) {
+			return nil, fmt.Errorf("turn %d produced %d tool results, expected %d", turnIdx+1, len(results), len(turn.Steps))
 		}
 		for stepIdx, step := range turn.Steps {
-			res := msg.ToolResults[stepIdx]
+			res := results[stepIdx]
 			call := core.ToolCall{
 				ID:    res.ToolCallID,
 				Name:  res.Name,
@@ -264,6 +265,21 @@ func collectStepRuns(turns []TurnSpec, msgs []core.Message) ([]StepRun, error) {
 		}
 	}
 	return out, nil
+}
+
+// filterInjectedResults drops synthetic tool results that the agent appends to
+// a turn after a successful mutation (e.g. auto_verify and test_reminder in
+// stream_dispatch.go). These are not part of the scenario's declared steps, so
+// they must not be counted or mapped onto step specs.
+func filterInjectedResults(results []core.ToolResult) []core.ToolResult {
+	out := make([]core.ToolResult, 0, len(results))
+	for _, res := range results {
+		if res.Code == "auto_verify" || res.Code == "test_reminder" {
+			continue
+		}
+		out = append(out, res)
+	}
+	return out
 }
 
 func expectedStepCount(turns []TurnSpec) int {

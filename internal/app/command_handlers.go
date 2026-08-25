@@ -12,14 +12,17 @@ import (
 )
 
 type CommandExecution struct {
-	Handled        bool
-	Text           string
-	LocalResult    *LocalResult
-	Turn           *plugins.CommandTurn
-	ShouldExit     bool
-	ClearScreen    bool
-	Mutated        bool
-	HydrateSession bool
+	Handled           bool
+	Text              string
+	LocalResult       *LocalResult
+	Turn              *plugins.CommandTurn
+	ShouldExit        bool
+	ClearScreen       bool
+	Mutated           bool
+	HydrateSession    bool
+	TeamSessionPicker bool // /team session（无参）→ TUI 成员会话选择器
+	TeamAbortPicker   bool // /team abort（无参）→ TUI run 选择器（选择后停止）
+	SubagentPicker    bool // /subagent → TUI 活跃 subagent 选择器（选择后切换会话）
 }
 
 func (a *App) HandleSlash(line string) (handled bool, output string, synthetic string, shouldExit bool, clearScreen bool, err error) {
@@ -77,11 +80,52 @@ func (a *App) ExecuteSlash(line string) (CommandExecution, error) {
 		res, err := a.forkCurrentSession(cmdResult.ForkName)
 		return CommandExecution{Handled: true, Text: res.Message, LocalResult: res.Local}, err
 	}
+	if cmdResult.TeamClean {
+		text, err := a.cleanTeamData(cmdResult.TeamCleanYes)
+		return CommandExecution{Handled: true, Text: text}, err
+	}
+	if cmdResult.TeamAbort != "" {
+		if cmdResult.TeamAbort == "picker" {
+			return CommandExecution{Handled: true, TeamAbortPicker: true}, nil
+		}
+		return CommandExecution{Handled: true, Text: a.abortTeamRun(cmdResult.TeamAbort)}, nil
+	}
+
+	if cmdResult.Subagent {
+		return CommandExecution{Handled: true, SubagentPicker: true}, nil
+	}
+	if cmdResult.TeamSession != "" {
+		if cmdResult.TeamSession == "picker" {
+			// /team session（无参）复用 /subagent：列出活跃 subagent 会话供切换。
+			return CommandExecution{Handled: true, SubagentPicker: true}, nil
+		}
+		return CommandExecution{Handled: true, Text: a.teamSessionView(cmdResult.TeamSession)}, nil
+	}
 	if cmdResult.TeamList {
 		text, err := a.listTeamGoals()
 		return CommandExecution{Handled: true, Text: text}, err
 	}
 	if cmdResult.TeamGoal != "" {
+		if cmdResult.TeamInline {
+			// 缺省 inline：当前 agent 成为 Leader——创建 master（登记索引）后把
+			// 驱动指令作为下一轮输入注入当前会话，用户可全程看到/插话。
+			master, _, err := a.createTeamMaster(cmdResult.TeamGoal, cmdResult.TeamName)
+			if err != nil {
+				return CommandExecution{Handled: true}, err
+			}
+			// 登记进展桥：任务完成/失败事件自动注入 leader 会话汇报。
+			a.registerInlineMaster(master.ID)
+			text := fmt.Sprintf("🧭 你已成为团队 Leader（master: %s）。任务已创建，开始分解与执行…", master.ID[:8])
+			return CommandExecution{
+				Handled: true,
+				Text:    text,
+				Turn: &plugins.CommandTurn{
+					Input:               a.leaderInlinePrompt(cmdResult.TeamGoal, cmdResult.TeamName, master.ID),
+					SkipUserPromptHooks: true,
+					SkipSkillInjection:  true,
+				},
+			}, nil
+		}
 		text, err := a.startTeamGoal(cmdResult.TeamGoal, cmdResult.TeamName)
 		return CommandExecution{Handled: true, Text: text}, err
 	}

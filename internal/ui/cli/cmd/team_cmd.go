@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -58,7 +59,58 @@ Subcommands:
 	teamCmd.PersistentFlags().StringVar(&dbPath, "db", ".whale/team_engine.db", "Path to SQLite database")
 	teamCmd.PersistentFlags().StringVar(&whiteboardDir, "whiteboard", ".whale/team_tasks", "Whiteboard directory for agent communication")
 	teamCmd.PersistentFlags().StringVar(&configPath, "config", "", "Path to team_engine.yaml config")
-	teamCmd.PersistentFlags().StringVar(&workdir, "workdir", ".", "Working directory for agent execution")
+	// workdir 必填：team 状态目录/交付目录的位置必须显式指定——默认回退到
+	// 启动目录会让 .whale/team_tasks 落到 whale.exe 所在目录/任意 cwd。
+	teamCmd.PersistentFlags().StringVar(&workdir, "workdir", "", "Working directory for agent execution (required)")
+	// Resolve paths at the command root so every subcommand consumes the same
+	// absolute values. newTeamEngine repeats this (idempotent), but paths that
+	// bypass it — e.g. RunLeaderDriven's workdir, which becomes task.Workdir —
+	// would otherwise keep the raw default "." and make the verify phase
+	// resolve against the engine process cwd.
+	teamCmd.PersistentPreRunE = func(cmd *cobra.Command, args []string) error {
+		// 只读查询命令（status/list/analyze/history）按 master UUID 用全局运行
+		// 索引解析工作区，允许不传 --workdir；其余命令（创建/执行/反馈）
+		// 必须显式指定。注意顺序：workdir 为空时绝不能先绝对化成 cwd
+		// （Join(cwd, "") = cwd 会吞掉 UUID 解析），路径解析只在 workdir
+		// 非空时进行。
+		queryOnly := map[string]bool{"status": true, "list": true, "analyze": true, "history": true}
+		if !queryOnly[cmd.Name()] && strings.TrimSpace(workdir) == "" {
+			return errors.New("--workdir is required: team state and deliverables need an explicit workspace (e.g. --workdir C:\\projects\\my-app)")
+		}
+		if strings.TrimSpace(workdir) != "" {
+			if !filepath.IsAbs(workdir) {
+				cwd, _ := os.Getwd()
+				workdir = filepath.Join(cwd, workdir)
+			}
+			if !filepath.IsAbs(whiteboardDir) {
+				whiteboardDir = filepath.Join(workdir, whiteboardDir)
+			}
+			// db 默认路径同样跟随 workdir（而非 cwd）——否则从 exe 目录启动时
+			// team_engine.db 会落在程序目录。
+			if !filepath.IsAbs(dbPath) {
+				dbPath = filepath.Join(workdir, dbPath)
+			}
+		}
+		return nil
+	}
+
+	// resolveQueryWorkdir: 只读查询按 master UUID 用全局运行索引解析工作区——
+	// status/analyze/history 不必重复传 --workdir（master 是全局唯一键）。
+	resolveQueryWorkdir := func(cmd *cobra.Command, args []string) error {
+		if strings.TrimSpace(workdir) != "" {
+			return nil
+		}
+		if len(args) == 0 {
+			return errors.New("--workdir is required for this command (no master id to resolve from)")
+		}
+		wd, ok := team_engine.ResolveRunIndex(args[0])
+		if !ok {
+			return fmt.Errorf("no workspace index for %q — pass --workdir once (the index is written on each new team run)", args[0])
+		}
+		workdir = wd
+		whiteboardDir = filepath.Join(wd, ".whale", "team_tasks")
+		return nil
+	}
 
 	// --- create subcommand ---
 	createCmd := &cobra.Command{
@@ -249,6 +301,19 @@ Subcommands:
 				eng.Runner.SetLiteSpawner(lite)
 			}
 
+			// --plan-file: reuse an existing decompose (verbatim plan; the
+			// Leader is bootstrapped, no LLM decomposition of the goal).
+			planFile, _ := cmd.Flags().GetString("plan-file")
+			var planOptions []team_engine.LeaderDrivenOption
+			if planFile != "" {
+				complexity, planTasks, err := team_engine.LoadPlanFile(planFile)
+				if err != nil {
+					return fmt.Errorf("load plan file: %w", err)
+				}
+				fmt.Printf("📋 Using plan file: %s (%d tasks, complexity=%s)\n", planFile, len(planTasks), complexity)
+				planOptions = append(planOptions, team_engine.WithPreDecomposedPlan(planTasks, complexity))
+			}
+
 			stopAt := strings.ToLower(strings.TrimSpace(cmd.Flag("stop-at").Value.String()))
 			if stopAt == "spec" || stopAt == "decompose" {
 				leader := team_engine.NewLeader(eng.Runner).WithTeam(eng.Team())
@@ -313,36 +378,12 @@ Subcommands:
 			})
 			defer cancel()
 
-			batches, err := eng.TeamCycle(cmd.Context(), goal, workdir, masterTask.ID)
+			report, err := eng.RunLeaderDriven(cmd.Context(), goal, workdir, masterTask.ID, planOptions...)
 			if err != nil {
 				return fmt.Errorf("plan and run: %w", err)
 			}
 
-			fmt.Printf("\n📊 Results:\n")
-			for _, batch := range batches {
-				icon := "✅"
-				if batch.Status == team_engine.BatchStatusFailed {
-					icon = "❌"
-				}
-				// A batch can be "passed" while still carrying suspended tasks
-				// (left for user intervention) — surface that instead of a green check.
-				for _, t := range batch.Tasks {
-					if t.State == team_engine.TaskStateSuspended {
-						icon = "⚠️"
-						break
-					}
-				}
-				fmt.Printf("  %s Batch %s [%s]\n", icon, batch.LabelOrID(), batch.Status)
-				for _, t := range batch.Tasks {
-					taskIcon := "  ✅"
-					if t.State == team_engine.TaskStateFailed {
-						taskIcon = "  ❌"
-					} else if t.State == team_engine.TaskStateSuspended {
-						taskIcon = "  ⚠️"
-					}
-					fmt.Printf("    %s %s [%s] %s\n", taskIcon, t.ID[:8], t.State, t.Title)
-				}
-			}
+			fmt.Printf("\n📊 Final report:\n%s\n", report)
 			return nil
 		},
 	}
@@ -351,6 +392,20 @@ Subcommands:
 	executeCmd.Flags().String("model", "", "Model override for the Leader decomposition step")
 	executeCmd.Flags().Bool("worktree", false, "Use git worktree isolation for coding tasks")
 	executeCmd.Flags().String("stop-at", "", "Stop early: 'spec' (elaborate only) or 'decompose' (plan only)")
+	executeCmd.Flags().String("plan-file", "", "Reuse an existing plan.json verbatim (Leader is bootstrapped without LLM decomposition; --goal still required as the run title)")
+
+	// --- analyze subcommand ---
+	analyzeCmd := &cobra.Command{
+		Use:   "analyze MASTER_ID",
+		Short: "Analyze a finished run (run_report + leader review trail)",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := resolveQueryWorkdir(cmd, args); err != nil {
+				return err
+			}
+			return analyzeRun(whiteboardDir, args[0])
+		},
+	}
 
 	// --- status subcommand ---
 	statusCmd := &cobra.Command{
@@ -365,6 +420,10 @@ Subcommands:
 			defer eng.Close()
 
 			jsonOutput, _ := cmd.Flags().GetBool("json")
+
+			if err := resolveQueryWorkdir(cmd, args); err != nil {
+				return err
+			}
 
 			if len(args) == 1 {
 				task, err := eng.GetTask(args[0])
@@ -684,6 +743,7 @@ Subcommands:
 	teamCmd.AddCommand(runCmd)
 	teamCmd.AddCommand(initCmd)
 	teamCmd.AddCommand(executeCmd)
+	teamCmd.AddCommand(analyzeCmd)
 	teamCmd.AddCommand(statusCmd)
 	teamCmd.AddCommand(listCmd)
 	teamCmd.AddCommand(cancelCmd)
@@ -694,6 +754,9 @@ Subcommands:
 		Short: "Show state transition history for a task",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := resolveQueryWorkdir(cmd, args); err != nil {
+				return err
+			}
 			eng, err := newTeamEngine(dbPath, whiteboardDir, configPath, workdir)
 			if err != nil {
 				return fmt.Errorf("init engine: %w", err)
@@ -984,6 +1047,14 @@ func ensureTeamEngineSpawnFunc(workdir string) {
 		opts := []deepseek.Option{
 			deepseek.WithAPIKey(apiKey),
 			deepseek.WithModel(model),
+			// The CLI has no app runtime to set per-model thinking; the default
+			// (DefaultThinkingEnabled=true) burns the completion budget on
+			// chain-of-thought for reasoning models — the leader's native-adapter
+			// decompose drops from ~284s to ~26s once thinking is disabled. Keep
+			// the CLI team path on the same fast thinking-off route as the lite
+			// spawner and the live-test spawner (realTeamLeaderSpawner), so worker/
+			// verifier/leader all share one provider configuration.
+			deepseek.WithThinking(false),
 		}
 		if maxTokens > 0 {
 			opts = append(opts, deepseek.WithMaxTokens(maxTokens))
@@ -997,7 +1068,12 @@ func ensureTeamEngineSpawnFunc(workdir string) {
 	// write artifacts (they'd emit only the <analysis> preamble).
 	var parentTools *core.ToolRegistry
 	if toolset, err := tools.NewToolset(workdir); err == nil {
-		parentTools, _ = core.NewToolRegistryChecked(toolset.Tools())
+		// The team tools go into the subagent registry (leaders select
+		// team_run/team_status/… by name); the CLI runner's members are the
+		// only consumers of this registry besides the parent controls in
+		// app_tools_init, where the same set is assembled.
+		toolsForRegistry := append(toolset.Tools(), toolset.TeamEngineTools()...)
+		parentTools, _ = core.NewToolRegistryChecked(toolsForRegistry)
 	}
 	// Member subagent sessions must land on a real JSONLStore + sessions dir so
 	// they are persistent, observable, and forkable — a runner without these
@@ -1022,9 +1098,15 @@ func ensureTeamEngineSpawnFunc(workdir string) {
 // The spawner calls the Whale CLI (via `whale exec`) for subagent execution.
 func newTeamEngine(dbPath, whiteboardDir, configPath, workdir string) (*team_engine.TeamEngine, error) {
 	// Resolve paths.
-	if !filepath.IsAbs(dbPath) {
+	if strings.TrimSpace(workdir) == "" {
+		return nil, errors.New("--workdir is required (team state/deliverables location)")
+	}
+	if !filepath.IsAbs(workdir) {
 		cwd, _ := os.Getwd()
-		dbPath = filepath.Join(cwd, dbPath)
+		workdir = filepath.Join(cwd, workdir)
+	}
+	if !filepath.IsAbs(dbPath) {
+		dbPath = filepath.Join(workdir, dbPath)
 	}
 	// workdir 是项目交付目录，也是 write 工具的 workspace 边界。让 whiteboardDir
 	// （team 状态目录）和日志都跟随 workdir 而非 cwd，使 verify/ 等状态目录落在

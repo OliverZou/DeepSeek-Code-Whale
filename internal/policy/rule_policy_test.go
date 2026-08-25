@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"testing"
 
@@ -118,6 +119,9 @@ func TestRulePolicyUserWebRulesOverrideDefaultAllow(t *testing.T) {
 }
 
 func TestRulePolicyExternalDirectory(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses Unix-style absolute path fixtures /repo and /etc/hosts")
+	}
 	p := RulePolicy{Default: PermissionAllow, Rules: DefaultRules(), WorkspaceRoot: "/repo"}
 	for _, command := range []string{
 		"cat /etc/hosts",
@@ -191,6 +195,10 @@ func TestRulePolicyExternalReadAllowsDiscoveredGlobalSkillReferences(t *testing.
 	workspace := t.TempDir()
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	// On Windows os.UserHomeDir() reads USERPROFILE, not HOME, so the global
+	// skill root must be discoverable there too. Setting both keeps the
+	// home-based skill discovery portable across platforms.
+	t.Setenv("USERPROFILE", home)
 
 	skillDir := filepath.Join(home, ".whale", "skills", "global-skill")
 	refDir := filepath.Join(skillDir, "references")
@@ -266,6 +274,9 @@ func TestRulePolicyExternalDirectoryAllowCarriesReadScope(t *testing.T) {
 }
 
 func TestRulePolicyExternalDirectoryForTempReadOnlyFileTools(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses Unix-style absolute path fixtures /tmp and /private/tmp")
+	}
 	home, err := os.MkdirTemp(".", "whale-ext-read-tmp-*")
 	if err != nil {
 		t.Fatal(err)
@@ -664,6 +675,9 @@ func TestRulePolicyWriteStdinEmptyPollUsesReadPermission(t *testing.T) {
 }
 
 func TestRulePolicyExternalDirectoryDenyOverridesShellApproval(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses Unix-style absolute path fixtures /repo and /etc/hosts")
+	}
 	rules := append(DefaultRules(), PermissionRule{Permission: "external_directory", Pattern: "*", Action: PermissionDeny})
 	p := RulePolicy{Default: PermissionAllow, Rules: rules, WorkspaceRoot: "/repo"}
 
@@ -712,6 +726,9 @@ func TestRulePolicyRedirectionTargetsAreNotGated(t *testing.T) {
 }
 
 func TestRulePolicyExternalDirectoryKeepsOperandsBeforeAttachedRedirections(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses Unix-style absolute path fixtures /repo and /etc/hosts")
+	}
 	rules := append(DefaultRules(), PermissionRule{Permission: "external_directory", Pattern: "*", Action: PermissionDeny})
 	p := RulePolicy{Default: PermissionAllow, Rules: rules, WorkspaceRoot: "/repo"}
 	spec := core.ToolSpec{Name: "shell_run"}
@@ -767,7 +784,8 @@ func TestRulePolicyExternalDirectoryMatchesDirectoryOperandItself(t *testing.T) 
 	rule := PermissionRule{Permission: "external_directory", Pattern: extDir, Action: PermissionDeny}
 	p := RulePolicy{Default: PermissionAllow, Rules: append(DefaultRules(), rule), WorkspaceRoot: root}
 
-	got := p.Decide(core.ToolSpec{Name: "shell_run"}, core.ToolCall{Name: "shell_run", Input: `{"command":"ls ` + extDir + `"}`})
+	command := "ls " + extDir
+	got := p.Decide(core.ToolSpec{Name: "shell_run"}, core.ToolCall{Name: "shell_run", Input: `{"command":` + strconv.Quote(command) + `}`})
 	if got.Allow || got.MatchedRule != ruleLabel(rule) {
 		t.Fatalf("ls of external directory = %+v, want deny matching the directory's own rule", got)
 	}

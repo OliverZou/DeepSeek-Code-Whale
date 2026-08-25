@@ -15,13 +15,13 @@ func TestIterationBudget(t *testing.T) {
 		wantTokens int
 	}{
 		{"simple", false, 20, 50, 16000},
-		{"simple", true, 8, 20, 8000},
-		{"medium", false, 50, 120, 24000},
-		{"medium", true, 12, 35, 16000},
+		{"simple", true, 12, 30, 12000},
+		{"medium", false, 30, 80, 22000},
+		{"medium", true, 20, 60, 20000},
 		{"complex", false, 80, 200, defaultMaxTokens},
-		{"complex", true, 15, 50, defaultMaxTokens},
+		{"complex", true, 25, 70, defaultMaxTokens},
 		{"", false, 80, 200, defaultMaxTokens},      // unassessed → default
-		{"unknown", true, 15, 50, defaultMaxTokens}, // unknown → default
+		{"unknown", true, 25, 70, defaultMaxTokens}, // unknown → verifier default
 	}
 	for _, c := range cases {
 		iters, calls, tokens := iterationBudget(c.complexity, c.isVerifier)

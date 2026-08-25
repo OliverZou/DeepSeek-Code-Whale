@@ -5,6 +5,7 @@ import (
 	"os/exec"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/usewhale/whale/internal/app"
 	"github.com/usewhale/whale/internal/core"
@@ -26,6 +27,8 @@ const (
 	IntentCancelUserInput           IntentKind = "cancel_user_input"
 	IntentSelectSession             IntentKind = "select_session"
 	IntentRequestSessions           IntentKind = "request_sessions"
+	IntentTeamSessionOpen           IntentKind = "team_session_open"
+	IntentTeamAbort                 IntentKind = "team_abort"
 	IntentRequestExit               IntentKind = "request_exit"
 	IntentShutdown                  IntentKind = "shutdown"
 	IntentSetModelAndEffort         IntentKind = "set_model_and_effort"
@@ -135,6 +138,11 @@ const (
 	EventPendingInputAccepted          = protocol.EventPendingInputAccepted
 	EventPendingInputRejected          = protocol.EventPendingInputRejected
 	EventTurnDone                      = protocol.EventTurnDone
+	EventTeamStatus                    = protocol.EventTeamStatus
+	EventTeamSessionPicker             = protocol.EventTeamSessionPicker
+	EventTeamSessionOpen               = protocol.EventTeamSessionOpen
+	EventSubagentPicker                = protocol.EventSubagentPicker
+	EventTeamAbortPicker               = protocol.EventTeamAbortPicker
 	EventModelSelectionRequested       = protocol.EventModelSelectionRequested
 	EventPermissionsSelectionRequested = protocol.EventPermissionsSelectionRequested
 	EventSkillsSelectionRequested      = protocol.EventSkillsSelectionRequested
@@ -166,6 +174,8 @@ type Service struct {
 	cancel           context.CancelFunc
 	active           bool
 	bgWG             sync.WaitGroup
+	teamStatusAt     time.Time // 团队状态行节流（60s 一条）
+	teamStatusSent   bool      // 已发过团队运行状态（用于完结时发最终行）
 
 	interactionMu     sync.Mutex
 	shutdownRequested bool
@@ -212,6 +222,10 @@ func New(ctx context.Context, cfg app.Config, start app.StartOptions) (*Service,
 	}
 	a.SetApprovalFunc(s.awaitApproval)
 	a.SetUserInputFunc(s.awaitUserInput)
+	// 团队进展桥：引擎任务完成/失败事件 → 注入 leader turn（用户可见叙述）。
+	a.SetInlineLeaderTurnSink(func(visibleInput, hiddenInput string) {
+		s.injectLeaderTurn(visibleInput, hiddenInput)
+	})
 	s.goTracked(s.runLocalSubmitWorker)
 	if start.ResumeMenu {
 		if !s.emitSessionChoices() {

@@ -13,6 +13,8 @@ const (
 	IntentCancelUserInput           IntentKind = "cancel_user_input"
 	IntentSelectSession             IntentKind = "select_session"
 	IntentRequestSessions           IntentKind = "request_sessions"
+	IntentTeamSessionOpen           IntentKind = "team_session_open"
+	IntentTeamAbort                 IntentKind = "team_abort"
 	IntentRequestExit               IntentKind = "request_exit"
 	IntentShutdown                  IntentKind = "shutdown"
 	IntentSetModelAndEffort         IntentKind = "set_model_and_effort"

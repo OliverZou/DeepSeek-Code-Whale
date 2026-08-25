@@ -155,6 +155,21 @@ func (s *Service) handleSubmitSlashCommand(state *submitState) bool {
 		return true
 	}
 	if cmd.Handled {
+		if cmd.TeamAbortPicker {
+			s.emit(Event{Kind: EventTeamAbortPicker, TeamRuns: s.app.TeamRunPicks()})
+			s.emit(Event{Kind: EventTurnDone})
+			return true
+		}
+		if cmd.SubagentPicker {
+			s.emit(Event{Kind: EventSubagentPicker, Subagents: s.app.ListSubagentPicks()})
+			s.emit(Event{Kind: EventTurnDone})
+			return true
+		}
+		if cmd.TeamSessionPicker {
+			s.emit(Event{Kind: EventTeamSessionPicker, TeamSessions: s.app.TeamSessionPicks()})
+			s.emit(Event{Kind: EventTurnDone})
+			return true
+		}
 		if cmd.ClearScreen {
 			s.emit(Event{Kind: EventScreenClearRequested})
 		}

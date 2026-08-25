@@ -28,9 +28,19 @@ func TestShellPolicyClassifiesLongRunningCommands(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			// interactive/auth commands can only auto-background via a
+			// writable PTY, which is unsupported on Windows (and any platform
+			// where shellPTYSupportedForPolicy is false). The test below
+			// (TestShellPolicyDoesNotAutoBackgroundInteractiveAuthWithoutPTY)
+			// pins the no-PTY behavior; here the expectation must follow the
+			// host capability instead of hard-coding the Unix result.
+			wantAuto := tt.autoBackground
+			if tt.reason == "interactive_or_auth" && !shellPTYSupportedForPolicy() {
+				wantAuto = false
+			}
 			got := shellPolicy(tt.command, 300000)
-			if got.AutoBackground != tt.autoBackground || got.Reason != tt.reason {
-				t.Fatalf("policy = {auto:%v reason:%q}, want {auto:%v reason:%q}", got.AutoBackground, got.Reason, tt.autoBackground, tt.reason)
+			if got.AutoBackground != wantAuto || got.Reason != tt.reason {
+				t.Fatalf("policy = {auto:%v reason:%q}, want {auto:%v reason:%q}", got.AutoBackground, got.Reason, wantAuto, tt.reason)
 			}
 		})
 	}

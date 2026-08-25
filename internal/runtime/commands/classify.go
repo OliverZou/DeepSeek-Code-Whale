@@ -36,6 +36,10 @@ func (c SubmitClassification) BusyImmediate() bool {
 	if c.Class == SubmitLocalReadOnly || c.Class == SubmitExit || c.Line == "/focus" || strings.HasPrefix(c.Line, "/btw ") {
 		return true
 	}
+	// 团队运行中也要立即响应：用户需要随时能 /team abort（查看/停掉）与 /team session。
+	if strings.HasPrefix(c.Line, "/team abort") || strings.HasPrefix(c.Line, "/team session") || strings.HasPrefix(c.Line, "/team list") || strings.HasPrefix(c.Line, "/team clean") {
+		return true
+	}
 	fields := strings.Fields(c.Line)
 	return c.Class == SubmitLocalMutating && len(fields) == 1 && fields[0] == "/stop"
 }

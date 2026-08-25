@@ -14,6 +14,8 @@ import (
 	"time"
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
+
+	"golang.org/x/sys/windows"
 )
 
 const (
@@ -186,11 +188,26 @@ func waitForWindowsMCPPIDExit(t *testing.T, pid string, timeout time.Duration) {
 
 func windowsMCPPIDExists(t *testing.T, pid string) bool {
 	t.Helper()
-	out, err := exec.Command("tasklist", "/FI", "PID eq "+pid, "/FO", "CSV", "/NH").CombinedOutput()
+	p, err := strconv.Atoi(strings.TrimSpace(pid))
 	if err != nil {
-		t.Fatalf("tasklist failed: %v\n%s", err, string(out))
+		t.Fatalf("invalid pid %q: %v", pid, err)
 	}
-	return strings.Contains(string(out), `"`+pid+`"`)
+	return windowsProcessAlive(uint32(p))
+}
+
+// windowsProcessAlive reports whether a process with the given PID is still
+// running, using the Windows API directly instead of shelling out to tasklist.
+// A live process opens successfully under PROCESS_QUERY_LIMITED_INFORMATION; a
+// dead PID returns ERROR_INVALID_PARAMETER (treated as not alive). Access-denied
+// results for protected processes are treated as not alive, which is fine for
+// these tests because they only ever query processes this test spawned.
+func windowsProcessAlive(pid uint32) bool {
+	h, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, pid)
+	if err != nil {
+		return false
+	}
+	_ = windows.CloseHandle(h)
+	return true
 }
 
 func waitForWindowsMCPFile(t *testing.T, path string, timeout time.Duration) {

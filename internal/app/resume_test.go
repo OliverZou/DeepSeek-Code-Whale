@@ -93,6 +93,36 @@ func TestApplyResumeChoiceBlocksCrossWorkspaceID(t *testing.T) {
 	}
 }
 
+func TestCheckResumeWorkspaceExemptsSubagent(t *testing.T) {
+	current := t.TempDir()
+	other := t.TempDir() // 模拟已删除的 worktree 路径 / 其他目录
+	sessionsDir := filepath.Join(t.TempDir(), "sessions")
+	if err := os.MkdirAll(sessionsDir, 0o755); err != nil {
+		t.Fatalf("mkdir sessions: %v", err)
+	}
+
+	// 顶层会话，Workspace=other → 跨 workspace 应拦截（回归）。
+	if err := session.SaveSessionMeta(sessionsDir, "top", session.SessionMeta{Workspace: other}); err != nil {
+		t.Fatalf("save top meta: %v", err)
+	}
+	// worktree 隔离的 subagent，Workspace=other（瞬态 worktree 已合并删除）→ 应豁免。
+	if err := session.SaveSessionMeta(sessionsDir, "sub", session.SessionMeta{Kind: "subagent", Workspace: other, ParentSessionID: "top"}); err != nil {
+		t.Fatalf("save sub meta: %v", err)
+	}
+
+	if _, blocked, err := CheckResumeWorkspace(sessionsDir, "sub", current); err != nil {
+		t.Fatalf("CheckResumeWorkspace(subagent): %v", err)
+	} else if blocked {
+		t.Fatal("subagent session must be exempt from the cross-workspace block")
+	}
+
+	if _, blocked, err := CheckResumeWorkspace(sessionsDir, "top", current); err != nil {
+		t.Fatalf("CheckResumeWorkspace(top): %v", err)
+	} else if !blocked {
+		t.Fatal("top-level session from another workspace must still be blocked")
+	}
+}
+
 func TestApplyResumeChoiceUsesWorkspaceFilteredNumbering(t *testing.T) {
 	current := t.TempDir()
 	other := t.TempDir()

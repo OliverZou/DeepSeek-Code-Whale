@@ -35,17 +35,22 @@ func iterationBudget(complexity string, isVerifier bool) (maxIters, maxCalls, ma
 	switch complexity {
 	case "simple":
 		if isVerifier {
-			return 8, 20, 8000
+			return 12, 30, 12000
 		}
 		return 20, 50, 16000
 	case "medium":
 		if isVerifier {
-			return 12, 35, 16000
+			// 12/35 太紧：v41 fix 的 semantic verifier 连续两轮被 tool cap
+			// 中断（“读多文件+复验”>35 次调用），中断输出被误判 FAIL →
+			// worker 3 次重试烧 2.1M token。放宽到 20/60。
+			return 20, 60, 20000
 		}
-		return 50, 120, 24000
+		// v45: medium 实现任务 50 轮允许“写→跑→改”长循环（game-dom.js
+		// 1.36M tokens/35 调用）。30 轮/80 调用足够覆盖正常调试，压住失控循环。
+		return 30, 80, 22000
 	default: // complex or unassessed — keep existing defaults
 		if isVerifier {
-			return 15, 50, defaultMaxTokens
+			return 25, 70, defaultMaxTokens
 		}
 		return 80, 200, defaultMaxTokens
 	}
@@ -109,7 +114,7 @@ type SubagentSpawner interface {
 // SubagentProgress is a callback that receives real-time progress from
 // the running subagent.  It replaces the original team-engine-go's
 // stdout pipe streaming with Whale-native event-driven progress.
-type SubagentProgress func(status, summary, toolName string)
+type SubagentProgress func(status, summary, toolName string, toolDurationMS int64)
 
 // SubagentRequest is the minimum set of parameters needed to spawn
 // a Whale subagent for a Team Engine task.
@@ -121,15 +126,21 @@ type SubagentRequest struct {
 	TeamAgentsDir string   // team's agents/ dir (e.g. ~/.whale/teams/<name>/agents); adapter resolves team-local agent definitions from here
 	Model         string   // LLM model name; "" = Whale default
 	Tools         []string // Allowed tool names
-	Workdir       string   // Working directory
-	Timeout       time.Duration
-	MaxIters      int
-	MaxCalls      int
-	MaxTokens     int                  // Completion token budget (0 = runner default)
-	OutputSchema  map[string]any       // Force structured JSON output (nil = free text)
-	OnProgress    SubagentProgress     // Real-time progress callback (nil = no streaming)
-	OnPID         func(int)            // Called with PID when OS process starts (nil = no-op)
-	OnStdin       func(io.WriteCloser) // Called with stdin pipe for real-time messaging (nil = no-op)
+	// OrchestrationTools are team tool names (OrchestrationToolNames) merged
+	// into the resolved agent definition's tool selectors by the app adapter —
+	// they never replace the definition's own declared tools. Used for the
+	// Leader's spawn so its continued turns can drive the team.
+	OrchestrationTools []string
+	Workdir            string // Working directory
+	Timeout            time.Duration
+	MaxIters           int
+	MaxCalls           int
+	MaxTokens          int                  // Completion token budget (0 = runner default)
+	ReportCap          int                  // Report cap override: <0 = never truncate, 0 = runner default
+	OutputSchema       map[string]any       // Force structured JSON output (nil = free text)
+	OnProgress         SubagentProgress     // Real-time progress callback (nil = no streaming)
+	OnPID              func(int)            // Called with PID when OS process starts (nil = no-op)
+	OnStdin            func(io.WriteCloser) // Called with stdin pipe for real-time messaging (nil = no-op)
 }
 
 // SubagentResponse contains the result of a subagent execution.
@@ -267,9 +278,9 @@ func (ar *AgentRunner) Run(prompt, workdir, tools string, timeout time.Duration,
 	return ar.RunWithContext(context.Background(), prompt, workdir, tools, timeout, 80, 200, 0, nil, nil, nil, model...)
 }
 
-// RunVerifier spawns a verifier subagent.  The agent definition (from .md
-// file or builtin) resolved via agentName provides the system prompt and
-// skills, but the toolset is always ProfileVerify (read + shell.run + write)
+// RunVerifier spawns a verifier subagent.  The agent definition (the system
+// verifier .md, embedded in the binary) provides the system prompt and skills,
+// but the toolset is always ProfileVerify (read + shell.run + web, no write)
 // — verification is tool-grounded by the task, so it never inherits a role's
 // write/test tools.
 func (ar *AgentRunner) RunVerifier(prompt, workdir string, timeout time.Duration, maxIters, maxCalls, maxTokens int, agentName string, model ...string) *RunResult {
@@ -284,11 +295,10 @@ func (ar *AgentRunner) RunVerifier(prompt, workdir string, timeout time.Duration
 		MaxIters:      maxIters,
 		MaxCalls:      maxCalls,
 	}
-	// Verification is tool-grounded regardless of which agent persona the
-	// verifier resolves to: it needs read + shell.run (to execute the worker's
-	// own tests/linters) + write (to drop its black-box test artifacts to
-	// verify/), and must not inherit a QA persona's write/test tools.
-	// The verify toolset is fixed by the task, not by the role.
+	// Verification is tool-grounded: the verifier needs read + shell.run (to
+	// execute the worker's own tests/linters) but never write — it is an
+	// inspector, not an editor, and must not inherit a QA persona's
+	// write/test tools. The verify toolset is fixed by the task, not by the role.
 	req.Tools = ProfileToToolNames(ProfileVerify)
 	if len(model) > 0 && model[0] != "" {
 		req.Model = model[0]
@@ -332,17 +342,11 @@ func (ar *AgentRunner) RunVerifier(prompt, workdir string, timeout time.Duration
 
 // RunDecomposer runs the Leader subagent to decompose a goal into subtasks.
 //
-// The Leader is spawned through the native adapter (ar.spawner) with its own
-// agent definition — resolved from the team's agents/<leader-role>.md — exactly
-// like a worker or verifier. This gives the Leader a persistent, forkable JSONL
-// session and its .md persona/tools/permission. The lite (in-process,
-// session-less) path is reserved for RunElaborationStep, never the Leader.
-//
-// For reasoning models (deepseek-v4-pro, etc.) the decomposer gets a larger
-// token budget (defaultMaxTokens) because the planning prompt is significantly
-// longer than a typical task prompt and the model's chain-of-thought can
-// consume 60-80% of the completion budget.
-func (ar *AgentRunner) RunDecomposer(prompt, workdir string, timeout time.Duration, model ...string) *RunResult {
+// buildLeaderSubagentRequest assembles the Leader's spawn request shared by
+// decomposition and plan-file bootstrap: same agent-definition resolution,
+// orchestration tools recorded on the session (turn 2 rebuilds the agent from
+// this record), never-truncate report cap.
+func (ar *AgentRunner) buildLeaderSubagentRequest(prompt, workdir string, timeout time.Duration, maxIters, maxCalls int, model ...string) SubagentRequest {
 	mdl := ""
 	if len(model) > 0 && model[0] != "" {
 		mdl = model[0]
@@ -364,8 +368,16 @@ func (ar *AgentRunner) RunDecomposer(prompt, workdir string, timeout time.Durati
 		TeamAgentsDir: teamAgentsDir(ar.team),
 		Workdir:       workdir,
 		Timeout:       timeout,
-		MaxIters:      15,
-		MaxCalls:      40,
+		MaxIters:      maxIters,
+		MaxCalls:      maxCalls,
+		// The decompose plan JSON exceeds the default 8192-char cap on real
+		// goals; truncating it corrupts the plan and silently degrades the
+		// whole run to a single fallback task. Never truncate the planner.
+		ReportCap: -1,
+		// The Leader's continued (turn-2) turns drive the team from its own
+		// session, so the spawn that records this session must also record the
+		// orchestration tools — Turn 2 rebuilds the agent from this record.
+		OrchestrationTools: OrchestrationToolNames,
 	}
 	if mdl != "" {
 		req.Model = mdl
@@ -392,7 +404,7 @@ func (ar *AgentRunner) RunDecomposer(prompt, workdir string, timeout time.Durati
 							"depends_on_batch": map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
 							"depends_on_index": map[string]any{"type": "integer"},
 							"verifier_focus":   map[string]any{"type": "string"},
-							"verifier_role":    map[string]any{"type": "string"},
+							"verify_mode":      map[string]any{"type": "string"},
 							"use_dw":           map[string]any{"type": "boolean"},
 							"max_cycles":       map[string]any{"type": "integer"},
 						},
@@ -403,6 +415,91 @@ func (ar *AgentRunner) RunDecomposer(prompt, workdir string, timeout time.Durati
 			"required": []string{"tasks"},
 		}
 	}
+	return req
+}
+
+// RunLeaderBootstrap spawns the Leader session WITHOUT letting it produce a
+// plan: the plan arrives from outside (--plan-file).  The session is still
+// created (with orchestration tools recorded) so the drive (turn 2) and review
+// (turn 3) turns can Continue it, but the bootstrap turn itself is a single
+// minimal reply — no planning, no plan regeneration — keeping the injected
+// plan byte-for-byte fixed for head-to-head A/B runs.
+// 预算记录必须按 review 轮的用量（15/40，与 RunDecomposer 一致）而非 1/1：
+// Continue 复用 session 时按记录限额——v44 leader 想 team_feedback+team_run
+// 重派 QA 时被 tool call cap 打断（bootstrap 时若记 1/1，review 轮每轮只有
+// 1 次工具调用，永远无法完成重派闭环）。
+func (ar *AgentRunner) RunLeaderBootstrap(prompt, workdir string, timeout time.Duration, model ...string) *RunResult {
+	req := ar.buildLeaderSubagentRequest(prompt, workdir, timeout, 15, 40, model...)
+
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	start := time.Now()
+	resp, err := ar.spawner.SpawnSubagent(ctx, req)
+	elapsed := time.Since(start).Seconds()
+
+	if err != nil {
+		return &RunResult{
+			SessionID:       resp.SessionID,
+			ExitCode:        -1,
+			Stdout:          "",
+			Stderr:          fmt.Sprintf("leader bootstrap subagent error: %v", err),
+			DurationSeconds: round(elapsed, 2),
+			Success:         false,
+			PID:             resp.PID,
+		}
+	}
+
+	return &RunResult{
+		SessionID:       resp.SessionID,
+		ExitCode:        resp.ExitCode,
+		Stdout:          resp.Output,
+		SpawnerType:     resp.SpawnerType,
+		Stderr:          resp.Diagnostic,
+		DurationSeconds: round(elapsed, 2),
+		Success:         resp.Success,
+		Structured:      resp.Structured,
+		UsagePrompt:     resp.UsagePrompt,
+		UsageCompletion: resp.UsageCompletion,
+		SystemPrompt:    resp.SystemPrompt,
+	}
+}
+
+// The Leader is spawned through the native adapter (ar.spawner) with its own
+// agent definition — resolved from the team's agents/<leader-role>.md — exactly
+// like a worker or verifier. This gives the Leader a persistent, forkable JSONL
+// session and its .md persona/tools/permission. The lite (in-process,
+// session-less) path is reserved for RunElaborationStep, never the Leader.
+//
+// For reasoning models (deepseek-v4-pro, etc.) the decomposer gets a larger
+// token budget (defaultMaxTokens) because the planning prompt is significantly
+// longer than a typical task prompt and the model's chain-of-thought can
+// consume 60-80% of the completion budget.
+// RunDecomposer is a LEAN planner spawn: pure text → plan JSON. It carries no
+// team .md persona, no orchestration tools and a single generation pass —
+// decomposition is a one-shot text-in/text-out analysis, and persona/tools on
+// this call only add latency and cost. Deeper leader sessions (drive/review on
+// a recorded plan) use RunLeaderBootstrap instead, which keeps the persona and
+// orchestration tools for turn-2 rebuild.
+func (ar *AgentRunner) RunDecomposer(prompt, workdir string, timeout time.Duration, model ...string) *RunResult {
+	mdl := ""
+	if len(model) > 0 && model[0] != "" {
+		mdl = model[0]
+	}
+	req := SubagentRequest{
+		Task:      prompt,
+		Role:      "planner",
+		Team:      teamName(ar.team),
+		Workdir:   workdir,
+		Timeout:   timeout,
+		MaxIters:  1,
+		MaxCalls:  1,
+		ReportCap: -1, // never truncate the plan JSON
+	}
+	if mdl != "" {
+		req.Model = mdl
+	}
+	req.MaxTokens = effectiveMaxTokens(0, mdl)
 
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()

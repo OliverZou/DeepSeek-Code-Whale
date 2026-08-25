@@ -51,6 +51,49 @@ func TestRefreshMCPToolsSetsUpDeferredCatalog(t *testing.T) {
 	}
 }
 
+func TestRefreshMCPToolsPreservesTeamTools(t *testing.T) {
+	mgr := newMCPRuntimeTestManager(t, "echoes a message")
+	app := newMCPRuntimeTestApp(mgr)
+	if err := seedTestTeamRegistries(app); err != nil {
+		t.Fatalf("seed registries: %v", err)
+	}
+	if app.toolRegistry.Get("team_run_plan") == nil {
+		t.Fatal("seed did not register team_run_plan (test is meaningless)")
+	}
+	if err := app.refreshMCPTools(); err != nil {
+		t.Fatalf("refreshMCPTools: %v", err)
+	}
+	for _, name := range []string{"team_run_plan", "team_status", "team_run", "team_feedback", "team_result"} {
+		if app.baseToolRegistry.Get(name) == nil {
+			t.Fatalf("baseToolRegistry lost %s after refresh", name)
+		}
+		if app.subagentToolRegistry.Get(name) == nil {
+			t.Fatalf("subagentToolRegistry lost %s after refresh", name)
+		}
+		if app.toolRegistry.Get(name) == nil {
+			t.Fatalf("toolRegistry lost %s after refresh", name)
+		}
+	}
+}
+
+func seedTestTeamRegistries(app *App) error {
+	base := append([]core.Tool{}, app.toolset.Tools()...)
+	base = append(base, app.toolset.TeamEngineTools()...)
+	if err := app.baseToolRegistry.ReplaceTools(base); err != nil {
+		return err
+	}
+	subagent := append([]core.Tool{}, app.toolset.TeamEngineTools()...)
+	subagent = append(subagent, app.pluginTools...)
+	if err := app.subagentToolRegistry.ReplaceTools(subagent); err != nil {
+		return err
+	}
+	full := append([]core.Tool{}, base...)
+	full = append(full, app.taskTools...)
+	full = append(full, app.goalTools...)
+	full = append(full, app.workflowTools...)
+	return app.toolRegistry.ReplaceTools(full)
+}
+
 func TestRefreshMCPToolsAllowsIdentityAfterFreeze(t *testing.T) {
 	mgr := newMCPRuntimeTestManager(t, "echoes a message")
 	app := newMCPRuntimeTestApp(mgr)

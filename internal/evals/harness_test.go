@@ -5,11 +5,15 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
 
 func TestRunScenarioOfflineToolLoop(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX shell scenario fixture not supported on Windows")
+	}
 	recordPath := filepath.Join(t.TempDir(), "offline-tool-loop.jsonl")
 	run, err := RunScenario(context.Background(), ScenarioSpec{
 		Name:       "offline-tool-loop",

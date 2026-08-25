@@ -2,13 +2,21 @@ package team_engine
 
 // MasterTask represents a top-level task (总任务).
 type MasterTask struct {
-	ID            string `json:"id"`
-	Goal          string `json:"goal"`
-	Agent         string `json:"agent,omitempty"`
-	SessionID     string `json:"session_id,omitempty"`
-	WorkspacePath string `json:"workspace_path,omitempty"`
-	Status        string `json:"status"`
-	CreatedAt     string `json:"created_at,omitempty"`
+	ID string `json:"id"`
+	// Goal is the task goal string provided by the initiator.
+	Goal string `json:"goal"`
+	// Agent is the team/expert label for display (team:foo / expert:bar).
+	Agent string `json:"agent,omitempty"`
+	// SessionID is the initiator session — who launched the run, who receives
+	// the final report.
+	SessionID string `json:"session_id,omitempty"`
+	// LeaderSessionID is the Leader subagent session spawned for this run (P2).
+	// Addresses the Leader for continuation (the drive turn, user
+	// conversations, prompt/fork/summarize).
+	LeaderSessionID string `json:"leader_session_id,omitempty"`
+	WorkspacePath   string `json:"workspace_path,omitempty"`
+	Status          string `json:"status"`
+	CreatedAt       string `json:"created_at,omitempty"`
 }
 
 // StateHistoryEntry records a state transition for auditing.

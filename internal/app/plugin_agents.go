@@ -6,14 +6,19 @@ import (
 )
 
 func taskAgentDefinitions(in []plugins.AgentDefinition) []tasks.AgentDefinition {
-	if len(in) == 0 {
-		return nil
+	// System-provided built-in agents (system verifier) are always available,
+	// independent of plugins.
+	all := []tasks.AgentDefinition{}
+	if defs, err := tasks.SystemAgentDefinitions(); err == nil {
+		all = append(all, defs...)
 	}
-	out := make([]tasks.AgentDefinition, 0, len(in))
+	if len(in) == 0 {
+		return all
+	}
 	for _, agent := range in {
 		tools := append([]string(nil), agent.Capabilities...)
 		tools = append(tools, agent.AllowedTools...)
-		out = append(out, tasks.AgentDefinition{
+		all = append(all, tasks.AgentDefinition{
 			Name:            agent.Name,
 			Description:     agent.Description,
 			Prompt:          agent.SystemPrompt,
@@ -25,5 +30,5 @@ func taskAgentDefinitions(in []plugins.AgentDefinition) []tasks.AgentDefinition 
 			DisallowedTools: append([]string(nil), agent.DisallowedTools...),
 		})
 	}
-	return out
+	return all
 }

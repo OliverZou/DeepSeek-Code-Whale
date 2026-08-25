@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -214,6 +215,9 @@ func TestTaskExpectedToolFailureStopsCleanly(t *testing.T) {
 }
 
 func TestTaskBackgroundShellRunningThenFailed(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX shell scenario fixture not supported on Windows")
+	}
 	_, err := RunTask(context.Background(), TaskSpec{
 		ID:    "background-shell-running-then-failed",
 		Suite: SuiteRegression,
@@ -274,6 +278,9 @@ func TestTaskBackgroundShellRunningThenFailed(t *testing.T) {
 }
 
 func TestTaskPreToolHookBlockSkipsWrite(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX shell scenario fixture not supported on Windows")
+	}
 	_, err := RunTask(context.Background(), TaskSpec{
 		ID:    "pre-tool-hook-block",
 		Suite: SuiteRegression,

@@ -5,7 +5,8 @@
 // Directory layout (rooted at master task dir):
 //
 //	{masterTaskID}/
-//	├── engine.log
+//	├── logs/
+//	│   └── engine.log
 //	├── leader_decompose_001.md
 //	├── leader_elaborate_001.md
 //	├── {taskID}/
@@ -37,21 +38,10 @@ type Loggers struct {
 }
 
 // New creates a Loggers rooted at baseDir (usually the master task directory).
+// 惰性创建：logs/ 目录与 engine.log 只在首次写入时产生——只读命令（status/
+// list/analyze）不应在未执行任务的位置留下 .whale 目录。
 func New(baseDir string) (*Loggers, error) {
-	if err := os.MkdirAll(baseDir, 0755); err != nil {
-		return nil, fmt.Errorf("create log dir: %w", err)
-	}
-
-	f, err := os.OpenFile(filepath.Join(baseDir, "engine.log"),
-		os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-	if err != nil {
-		return nil, fmt.Errorf("open engine.log: %w", err)
-	}
-
-	return &Loggers{
-		baseDir:   baseDir,
-		engineLog: f,
-	}, nil
+	return &Loggers{baseDir: baseDir}, nil
 }
 
 // SetBaseDir redirects all future log output to a new base directory.
@@ -66,11 +56,12 @@ func (l *Loggers) SetBaseDir(baseDir string) error {
 		l.engineLog.Close()
 	}
 
-	if err := os.MkdirAll(baseDir, 0755); err != nil {
+	logDir := filepath.Join(baseDir, "logs")
+	if err := os.MkdirAll(logDir, 0755); err != nil {
 		return fmt.Errorf("create log dir: %w", err)
 	}
 
-	f, err := os.OpenFile(filepath.Join(baseDir, "engine.log"),
+	f, err := os.OpenFile(filepath.Join(logDir, "engine.log"),
 		os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
 		return fmt.Errorf("open engine.log: %w", err)
@@ -98,7 +89,16 @@ func (l *Loggers) Engine(format string, args ...interface{}) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if l.engineLog == nil {
-		return
+		logDir := filepath.Join(l.baseDir, "logs")
+		if err := os.MkdirAll(logDir, 0755); err != nil {
+			return
+		}
+		f, err := os.OpenFile(filepath.Join(logDir, "engine.log"),
+			os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+		if err != nil {
+			return
+		}
+		l.engineLog = f
 	}
 	ts := time.Now().Format(time.RFC3339)
 	msg := fmt.Sprintf(format, args...)
@@ -134,11 +134,14 @@ func (l *Loggers) LogAgent(role, taskID string, round int, prompt, systemPrompt,
 
 	var dir, filename string
 	if role == "leader" {
-		dir = l.baseDir
+		// 日志归位到 logs/leader/（v47：原来直接铺在与 team_tasks 同级/根目录）；
+		// 文件名带会话时间戳防止多引擎（每次 /team 新建）序号重数覆盖。
+		dir = filepath.Join(l.baseDir, "logs", "leader")
+		os.MkdirAll(dir, 0755)
 		seq := l.nextLeaderSeq()
-		filename = fmt.Sprintf("leader_%s_%03d.md", taskID, seq)
+		filename = fmt.Sprintf("%s_%s_%02d_%03d.md", taskID, time.Now().Format("150405"), seq%100, seq)
 	} else {
-		dir = filepath.Join(l.baseDir, taskID)
+		dir = filepath.Join(l.baseDir, "logs", "tasks", taskID)
 		os.MkdirAll(dir, 0755)
 		filename = fmt.Sprintf("%s_%03d.md", role, round)
 	}

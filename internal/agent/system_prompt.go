@@ -27,6 +27,16 @@ func (a *Agent) buildImmutableSystemBlocksWithTools(_ *core.ToolRegistry, opts .
 			systemBlocks = append(systemBlocks, trimmed)
 		}
 	}
+	// Child agents (subagents/team workers) have no TUI, no mode switching,
+	// no delegation tools, and no user interaction — those interactive-only
+	// blocks are noise (and delegation/mode guidance actively conflicts with
+	// the child's "do not spawn, do not ask the user" instructions).
+	// Tool policy and minimal-change discipline still apply to workers.
+	if a.childAgent {
+		systemBlocks = append(systemBlocks, renderToolPolicyBlock())
+		systemBlocks = append(systemBlocks, renderMinimalChangeBlock())
+		return systemBlocks
+	}
 	systemBlocks = append(systemBlocks, "Mode switching commands are /agent, /ask, and /plan. Shift+Tab cycles modes in the TUI. Do not tell users to run /mode agent, /mode ask, or /mode plan; those commands do not exist.")
 	systemBlocks = append(systemBlocks, renderModeContractBlock())
 	systemBlocks = append(systemBlocks, renderDelegationPolicyBlock())
@@ -43,15 +53,20 @@ func (a *Agent) buildRuntimeSystemBlocks(opts ...RunOptions) []string {
 	if len(opts) > 0 {
 		turnOpts = opts[0]
 	}
-	if strings.TrimSpace(a.workspaceRoot) != "" {
-		discovered := skills.Filter(skills.Discover(skills.DefaultRoots(a.workspaceRoot)), a.disabledSkills)
-		discovered = append(discovered, skills.Filter(a.extraSkills, a.disabledSkills)...)
-		discovered = skills.Sort(skills.Deduplicate(discovered))
-		if rendered := skills.RenderAvailableSkills(discovered); rendered != "" {
-			systemBlocks = append(systemBlocks, rendered)
+	// Child agents skip the skills index and the request_user_input
+	// guidance: a team worker completes its bounded task with its given
+	// tools and never asks the user for input.
+	if !a.childAgent {
+		if strings.TrimSpace(a.workspaceRoot) != "" {
+			discovered := skills.Filter(skills.Discover(skills.DefaultRoots(a.workspaceRoot)), a.disabledSkills)
+			discovered = append(discovered, skills.Filter(a.extraSkills, a.disabledSkills)...)
+			discovered = skills.Sort(skills.Deduplicate(discovered))
+			if rendered := skills.RenderAvailableSkills(discovered); rendered != "" {
+				systemBlocks = append(systemBlocks, rendered)
+			}
 		}
+		systemBlocks = append(systemBlocks, "For branch decisions or key assumptions requiring user choice, call request_user_input instead of presenting long A/B/C prose menus.")
 	}
-	systemBlocks = append(systemBlocks, "For branch decisions or key assumptions requiring user choice, call request_user_input instead of presenting long A/B/C prose menus.")
 	if a.projectMemoryEnabled {
 		if mem, ok := memory.ReadProjectMemory(a.workspaceRoot, a.projectMemoryFileOrder, a.projectMemoryMaxChars); ok {
 			systemBlocks = append(systemBlocks,

@@ -357,6 +357,168 @@ func ResolveTeamRoles(tc *TeamConfig) {
 	}
 }
 
+// leaderOrchestrationText returns the leader definition file's 编排/工作流
+// sections so the LLM can read and follow them when decomposing and assigning
+// tasks. Rather than the engine parsing the leader's written routing rules,
+// the leader's own orchestration info is handed to the LLM as task context.
+// The file lives at <TeamDir>/agents/<Leader.Role>.md. Returns "" when there
+// is no team directory or no leader definition file.
+func (tc *TeamConfig) leaderOrchestrationText() string {
+	if tc == nil || tc.TeamDir == "" || tc.Leader.Role == "" {
+		return ""
+	}
+	data, err := os.ReadFile(filepath.Join(tc.TeamDir, "agents", tc.Leader.Role+".md"))
+	if err != nil {
+		return ""
+	}
+	body := string(data)
+	// Strip YAML frontmatter (--- ... ---) so only the orchestration prose is
+	// injected — the frontmatter carries name/description, not routing rules.
+	if strings.HasPrefix(body, "---") {
+		if end := strings.Index(body[3:], "---"); end >= 0 {
+			body = strings.TrimSpace(body[3+end+3:])
+		}
+	}
+	return body
+}
+
+// PersonaSummary returns a compact "who am I + who are the members" block for
+// the INLINE leader narration. It extracts ONLY identity lines — the leader
+// headline and one line per member (display name + one-line duty) — from the
+// team's agent definitions. It deliberately does NOT load member definitions
+// (no SOPs, no tools, no skill lists): task orchestration only needs names and
+// duties, never the members' full definitions.
+func (tc *TeamConfig) PersonaSummary() string {
+	if tc == nil || tc.TeamDir == "" {
+		return ""
+	}
+	bodyOf := func(agent string) string {
+		if agent == "" {
+			return ""
+		}
+		data, err := os.ReadFile(filepath.Join(tc.TeamDir, "agents", agent+".md"))
+		if err != nil {
+			return ""
+		}
+		body := string(data)
+		if strings.HasPrefix(body, "---") {
+			if end := strings.Index(body[3:], "---"); end > 0 {
+				body = strings.TrimSpace(body[3+end+3:])
+			}
+		}
+		return body
+	}
+	headline := func(agent string) string {
+		body := bodyOf(agent)
+		if body == "" {
+			return ""
+		}
+		// Persona headline rules:
+		// 1) a "## " line that carries a name marker (（ or ·) — e.g. “齐活林（Qi） · 交付总监”;
+		// 2) else the "# " title with a "Role - Name" suffix stripped (e.g. "Engineer - Alex" → "Alex");
+		// 3) else "" — structural sections like "## Core Identity" are never names.
+		for _, line := range strings.Split(body, "\n") {
+			line = strings.TrimSpace(line)
+			if strings.HasPrefix(line, "## ") && (strings.Contains(line, "（") || strings.Contains(line, "·")) {
+				return strings.TrimSpace(strings.TrimPrefix(line, "## "))
+			}
+		}
+		for _, line := range strings.Split(body, "\n") {
+			line = strings.TrimSpace(line)
+			if strings.HasPrefix(line, "# ") {
+				h := strings.TrimSpace(strings.TrimPrefix(line, "# "))
+				if idx := strings.Index(h, " - "); idx > 0 {
+					h = strings.TrimSpace(h[idx+3:])
+				}
+				return h
+			}
+		}
+		return ""
+	}
+
+	var sb strings.Builder
+	if tc.Leader.Role != "" {
+		if h := headline(tc.Leader.Role); h != "" {
+			sb.WriteString(fmt.Sprintf("你是团队主理人：%s。\n", h))
+		} else {
+			sb.WriteString(fmt.Sprintf("你是团队主理人：%s。\n", tc.RoleDisplayName(tc.Leader.Role)))
+		}
+	}
+	if len(tc.Roles) > 0 {
+		sb.WriteString("团队成员（编排只需知道名字与职责）：\n")
+		names := memberNamesFromLeader(bodyOf(tc.Leader.Role))
+		for _, ref := range tc.Roles {
+			if tc.Leader.Role != "" && (ref == tc.Leader.Role || tc.RoleAgentName(ref) == tc.Leader.Role) {
+				continue // the narrator IS the leader; do not list it as a member
+			}
+			agent := tc.RoleAgentName(ref)
+			name := headline(agent)
+			if name == "" {
+				name = tc.RoleDisplayName(ref)
+			}
+			if n, ok := names[agent]; ok && n != "" {
+				name = n
+			}
+			desc := tc.RoleDisplayDesc(ref)
+			if desc == ref || desc == name || desc == "" {
+				desc = ""
+			} else if runes := []rune(desc); len(runes) > 60 {
+				desc = string(runes[:60]) + "…"
+			}
+			if desc != "" {
+				sb.WriteString(fmt.Sprintf("- %s（%s）：%s\n", name, agent, desc))
+			} else {
+				sb.WriteString(fmt.Sprintf("- %s（%s）\n", name, agent))
+			}
+		}
+	}
+	return strings.TrimSpace(sb.String())
+}
+
+// memberNamesFromLeader parses a leader definition's member table
+// (| 成员 | 姓名 | 文件 | 职责 |) into agent filename → display name, so the
+// narrator addresses members by their human names (e.g. 宫豆码啁 Kou).
+// Returns an empty map when the leader file has no such table; callers fall
+// back to headline/role titles.
+func memberNamesFromLeader(body string) map[string]string {
+	out := map[string]string{}
+	if body == "" {
+		return out
+	}
+	lines := strings.Split(body, "\n")
+	headerIdx := -1
+	for i, line := range lines {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "|") && strings.Contains(line, "姓名") && strings.Contains(line, "文件") {
+			headerIdx = i
+			break
+		}
+	}
+	if headerIdx < 0 {
+		return out
+	}
+	for _, line := range lines[headerIdx+1:] {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "|") {
+			continue
+		}
+		cols := strings.Split(strings.Trim(line, "|"), "|")
+		if len(cols) < 3 {
+			continue
+		}
+		name := strings.TrimSpace(cols[1])
+		file := strings.TrimSpace(cols[2])
+		if !strings.HasSuffix(file, ".md") || strings.Contains(file, "\u2016") || strings.Contains(file, "|") {
+			continue
+		}
+		agent := strings.TrimSuffix(file, ".md")
+		if agent != "" && name != "" {
+			out[agent] = name
+		}
+	}
+	return out
+}
+
 // DefaultTeamRoots returns the team discovery roots for a workspace.
 // Priority: workspace > global home > bundled (next to the executable).
 func DefaultTeamRoots(workspaceRoot string) []string {
@@ -509,6 +671,18 @@ func (tc *TeamConfig) BuildLeaderPrompt(basePrompt string) string {
 		for i, rule := range tc.Leader.Rules {
 			sb.WriteString(fmt.Sprintf("%d. %s\n", i+1, rule))
 		}
+	}
+
+	// The leader's own orchestration info (工作流路由 / 标准SOP / 快速模式 /
+	// 圆桌编排 …) is handed to the LLM so it understands and follows the
+	// team's编排 semantics when decomposing and assigning tasks — the engine
+	// does NOT parse these rules deterministically; the LLM reads them.
+	if orchestration := tc.leaderOrchestrationText(); orchestration != "" {
+		sb.WriteString("\n## 团队编排与工作流（Leader 定义，必须遵循）\n")
+		sb.WriteString("以下是本团队 Leader 的编排定义。你的任务分解与角色分配必须理解并遵循其中的\n")
+		sb.WriteString("工作流路由判断标准、各工作模式（快速模式/BugFix/标准SOP/部分工作流/圆桌编排）的\n")
+		sb.WriteString("成员调度顺序与产出流转规则。\n\n")
+		sb.WriteString(orchestration)
 	}
 
 	return sb.String()

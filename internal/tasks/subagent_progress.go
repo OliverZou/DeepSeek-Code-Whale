@@ -26,6 +26,11 @@ func emitSubagentProgressWithSteps(progress func(core.ToolProgress), role, model
 		Summary:  strings.TrimSpace(summary),
 		Metadata: metadata,
 	}
+	// 子代理进度事件里的 child_tool 才是真实工具名（read_file/bash/…）；
+	// 顶层 ToolName 默认 spawn_subagent 会让引擎探针的 top_tools 失真。
+	if ct, ok := metadata["child_tool"].(string); ok && ct != "" {
+		p.ToolName = ct
+	}
 	if len(steps) > 0 {
 		p.ProgressMessages = steps
 	}

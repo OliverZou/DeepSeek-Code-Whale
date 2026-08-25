@@ -492,8 +492,7 @@ func TestVerifierBuildPromptAcceptanceCriteria(t *testing.T) {
 	task.AcceptanceCriteria = []string{"给定输入 → 期望输出"}
 	eng.Whiteboard.WriteOutput(task.ID, "worker output")
 
-	verifyDir := filepath.Join(eng.Whiteboard.TaskDir(task.ID), "verify")
-	v := NewVerifier(eng.Whiteboard, eng.Runner, eng.Router, 0).WithVerifyDir(verifyDir)
+	v := NewVerifier(eng.Whiteboard, eng.Runner, eng.Router, 0)
 	prompt := v.BuildPrompt(task)
 
 	if !strings.Contains(prompt, "ACCEPTANCE CRITERIA") {
@@ -502,7 +501,77 @@ func TestVerifierBuildPromptAcceptanceCriteria(t *testing.T) {
 	if !strings.Contains(prompt, "给定输入 → 期望输出") {
 		t.Errorf("verifier prompt should list the criteria")
 	}
-	if !strings.Contains(prompt, verifyDir) {
-		t.Errorf("verifier prompt should reference verifyDir %q", verifyDir)
+	// The verifier is an inspector, not an editor: the prompt must forbid
+	// writing files (no verify/ drop dir any more).
+	if !strings.Contains(prompt, "禁止修改交付物或写入任何文件") {
+		t.Errorf("verifier prompt should forbid writing files")
+	}
+	// The verification strategy must be delegated to the LLM per task
+	// characteristics (行为原则 3), and the report must state the chosen
+	// method — the engine does not pre-classify what/how to verify.
+	if !strings.Contains(prompt, "多步骤链路") || !strings.Contains(prompt, "不可逆/高影响交付") {
+		t.Errorf("verifier prompt should carry the task-characteristic strategy table")
+	}
+	if !strings.Contains(prompt, "METHOD:") {
+		t.Errorf("verifier prompt should require a METHOD: line")
+	}
+}
+
+// TestVerifierBuildPromptReReview locks the re-review contract: on a retry
+// round the previous report is injected and the verifier is constrained to
+// re-verify only 未通过/无法验证 items — pass items are not re-checked, so
+// retry rounds do not re-pay the full verification cost.
+func TestVerifierBuildPromptReReview(t *testing.T) {
+	eng := newTestEngine(t)
+	defer eng.Close()
+
+	task, _ := eng.CreateTask("T", "desc", RoleDeveloper, "", nil, 0, ".", "", "", "")
+	task.AcceptanceCriteria = []string{"criterion A"}
+	eng.Whiteboard.WriteOutput(task.ID, "worker output")
+
+	v := NewVerifier(eng.Whiteboard, eng.Runner, eng.Router, 0)
+	prompt := v.BuildPrompt(task)
+	if strings.Contains(prompt, "PREVIOUS VERIFICATION REPORT") {
+		t.Errorf("first round must not carry a previous report")
+	}
+
+	v2 := NewVerifier(eng.Whiteboard, eng.Runner, eng.Router, 0).WithPreviousReport("VERDICT: FAIL\nISSUES: - criterion A failed")
+	prompt2 := v2.BuildPrompt(task)
+	if !strings.Contains(prompt2, "PREVIOUS VERIFICATION REPORT") || !strings.Contains(prompt2, "RE-REVIEW CONTRACT") {
+		t.Errorf("re-review prompt must inject the previous report and the contract")
+	}
+	if !strings.Contains(prompt2, "只对上一轮标记为「未通过/无法验证」的验收点做复审") {
+		t.Errorf("re-review contract must restrict scope to failed/unverifiable items")
+	}
+}
+
+// TestDeriveState_VerifierReportAloneIsNotDone guards the false-green regression:
+// a FAILED verification writes a verifier.md report (the verifier records its
+// verdict there regardless of outcome), so a task dir with output.md +
+// verifier.md but NO verify.md must NOT derive as done — otherwise a failed
+// task survives batch reset as "done" and the batch is reported passed
+// (run_report: 2/2 passed while the integration task's verdict was FAIL).
+func TestDeriveState_VerifierReportAloneIsNotDone(t *testing.T) {
+	dir := t.TempDir()
+	store := &FileTaskStore{baseDir: t.TempDir()}
+
+	mk := func(name string) {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("x"), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// output + verifier.md (FAIL report) → NOT done (the regression).
+	mk("output.md")
+	mk("verifier.md")
+	if got := store.DeriveState(dir); got == TaskStateDone {
+		t.Fatalf("output.md + verifier.md (no verify.md) must NOT derive as done; got %s", got)
+	}
+
+	// output + verify.md → done (the correct marker).
+	os.Remove(filepath.Join(dir, "verifier.md"))
+	mk("verify.md")
+	if got := store.DeriveState(dir); got != TaskStateDone {
+		t.Fatalf("output.md + verify.md should derive as done; got %s", got)
 	}
 }

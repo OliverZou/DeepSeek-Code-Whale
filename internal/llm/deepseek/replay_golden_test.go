@@ -31,7 +31,11 @@ func assertReplayGolden(t *testing.T, name, got string) {
 	if err != nil {
 		t.Fatalf("read golden %s: %v (regenerate with UPDATE_GOLDEN=1)", path, err)
 	}
-	if string(want) != got {
+	// Golden files are committed LF but may be checked out with CRLF when the
+	// host enables core.autocrlf; normalize line endings so the byte
+	// comparison is platform-independent.
+	gotNorm := strings.ReplaceAll(got, "\r\n", "\n")
+	if wantNorm := strings.ReplaceAll(string(want), "\r\n", "\n"); wantNorm != gotNorm {
 		t.Fatalf("golden mismatch for %s:\nwant: %s\ngot:  %s", name, want, got)
 	}
 }

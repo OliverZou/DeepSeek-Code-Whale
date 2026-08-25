@@ -2,7 +2,6 @@ package team_engine
 
 import (
 	"context"
-	"path/filepath"
 	"testing"
 	"time"
 )
@@ -19,13 +18,12 @@ func (c *capturingSpawner) SpawnSubagent(_ context.Context, req SubagentRequest)
 	return c.resp, nil
 }
 
-// TestRunDecomposerResolvesLeaderAgentName verifies the P0 change: the Leader's
-// decompose spawn now carries the leader's AgentName and TeamAgentsDir so the
-// native adapter resolves the team's agents/<leader-role>.md definition (its
-// tools, permission mode, and persona) instead of the old session-less lite
-// path. Role stays "planner" (the semantic category) while AgentName carries
-// the concrete .md identity — mirroring worker/verifier resolution.
-func TestRunDecomposerResolvesLeaderAgentName(t *testing.T) {
+// TestRunDecomposerIsLeanPlanner verifies the lean decompose contract: the
+// one-shot task split spawns a plain "planner" session with NO team .md
+// persona, NO team agent directory, and a single generation pass (1/1) —
+// persona and orchestration tools belong to the turn-2 drive/review session
+// (RunLeaderBootstrap), not to pure decomposition.
+func TestRunDecomposerIsLeanPlanner(t *testing.T) {
 	teamDir := t.TempDir()
 	team := &TeamConfig{
 		TeamDir: teamDir,
@@ -42,11 +40,14 @@ func TestRunDecomposerResolvesLeaderAgentName(t *testing.T) {
 	if !res.Success {
 		t.Fatalf("RunDecomposer failed: %s", res.Stderr)
 	}
-	if capture.req.AgentName != "software-team-lead" {
-		t.Errorf("AgentName = %q, want %q", capture.req.AgentName, "software-team-lead")
+	if capture.req.AgentName != "" {
+		t.Errorf("AgentName = %q, want %q (lean decomposer carries no persona)", capture.req.AgentName, "")
 	}
-	if want := filepath.Join(teamDir, "agents"); capture.req.TeamAgentsDir != want {
-		t.Errorf("TeamAgentsDir = %q, want %q", capture.req.TeamAgentsDir, want)
+	if capture.req.TeamAgentsDir != "" {
+		t.Errorf("TeamAgentsDir = %q, want %q (lean decomposer resolves no agent)", capture.req.TeamAgentsDir, "")
+	}
+	if capture.req.MaxIters != 1 || capture.req.MaxCalls != 1 {
+		t.Errorf("MaxIters/MaxCalls = %d/%d, want 1/1 (single generation pass)", capture.req.MaxIters, capture.req.MaxCalls)
 	}
 	if capture.req.Role != "planner" {
 		t.Errorf("Role = %q, want %q", capture.req.Role, "planner")

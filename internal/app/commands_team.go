@@ -1,7 +1,6 @@
 package app
 
 import (
-	"context"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -29,41 +28,7 @@ func (a *App) teamEngineForGoal() (*team_engine.TeamEngine, error) {
 	return eng, nil
 }
 
-// startTeamGoal creates a team run for the goal and executes it in the
-// background. The run's artifacts live under .whale/team_tasks/<masterID>/
-// (board.md, plan.md, output.md, per-task inbox/out), so the user keeps
-// working in the main agent and checks deliverables there or via
-// `/team list` / `whale team status`.
-func (a *App) startTeamGoal(goal, teamName string) (string, error) {
-	eng, err := a.teamEngineForGoal()
-	if err != nil {
-		return "", fmt.Errorf("init engine: %w", err)
-	}
-	if teamName != "" {
-		roots := team_engine.DefaultTeamRoots(a.workspaceRoot)
-		tc, err := team_engine.FindTeamInRoots(roots, teamName)
-		if err != nil {
-			eng.Close()
-			return "", fmt.Errorf("load team %q: %w", teamName, err)
-		}
-		eng.SetTeam(tc)
-	}
-
-	masterTask, err := eng.CreateMasterTask(goal, a.workspaceRoot, a.sessionID)
-	if err != nil {
-		eng.Close()
-		return "", fmt.Errorf("create master task: %w", err)
-	}
-
-	go func() {
-		defer eng.Close()
-		_, _ = eng.TeamCycle(context.Background(), goal, a.workspaceRoot, masterTask.ID)
-	}()
-
-	dir := filepath.Join(a.workspaceRoot, ".whale", "team_tasks", masterTask.ID)
-	return fmt.Sprintf("👥 Team run started\n\nmaster:  %s\ngoal:    %s\nartifacts: %s\n\nRun `/team list` for status, or `whale team status %s` for detail.\nDeliverables land in `%s/output.md` when the run accepts.",
-		masterTask.ID, goal, dir, masterTask.ID, dir), nil
-}
+// startTeamGoal runs the explicit --subagent mode (implemented in inline_leader.go).
 
 // listTeamGoals renders the team runs started by this app session.
 func (a *App) listTeamGoals() (string, error) {

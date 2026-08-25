@@ -14,7 +14,7 @@ func TestPathInsideAllowsMissingChildUnderSymlinkedParent(t *testing.T) {
 	}
 	linkWorkspace := filepath.Join(tmp, "workspace-link")
 	if err := os.Symlink(realWorkspace, linkWorkspace); err != nil {
-		t.Fatalf("symlink workspace: %v", err)
+		t.Skipf("symlink unavailable: %v", err)
 	}
 
 	ok, err := PathInside(filepath.Join(linkWorkspace, "new", "file.txt"), linkWorkspace)
@@ -37,7 +37,7 @@ func TestPathInsideRejectsMissingChildThroughSymlinkEscape(t *testing.T) {
 		t.Fatalf("mkdir outside: %v", err)
 	}
 	if err := os.Symlink(outside, filepath.Join(workspace, "outside-link")); err != nil {
-		t.Fatalf("symlink outside: %v", err)
+		t.Skipf("symlink unavailable: %v", err)
 	}
 
 	ok, err := PathInside(filepath.Join(workspace, "outside-link", "new.txt"), workspace)

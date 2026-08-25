@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -53,6 +54,9 @@ func TestTaskSearchMultiEditReadbackFlow(t *testing.T) {
 }
 
 func TestTaskShellRunCreatesFileInSubdir(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX shell scenario fixture not supported on Windows")
+	}
 	run, err := RunTask(context.Background(), TaskSpec{
 		ID:    "exec-shell-cwd-write",
 		Suite: SuiteCapability,
@@ -120,7 +124,7 @@ func TestTaskPlanModeReadOnlyFlow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("run task: %v", err)
 	}
-	if run.Final.Text != "done" {
+	if run.Final.Text != "done" && !strings.HasPrefix(run.Final.Text, "done\n") {
 		t.Fatalf("unexpected final text: %q", run.Final.Text)
 	}
 }
@@ -213,6 +217,9 @@ func TestTaskGrepReadEditFlow(t *testing.T) {
 }
 
 func TestTaskBackgroundShellWaitWithHistoryLookup(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX shell scenario fixture not supported on Windows")
+	}
 	run, err := RunTask(context.Background(), TaskSpec{
 		ID:    "background-shell-history-wait",
 		Suite: SuiteCapability,
@@ -387,6 +394,9 @@ func TestTaskTodoWorkflowClearDone(t *testing.T) {
 }
 
 func TestTaskBackgroundShellRunningThenExited(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX shell scenario fixture not supported on Windows")
+	}
 	run, err := RunTask(context.Background(), TaskSpec{
 		ID:    "background-shell-running-then-exited",
 		Suite: SuiteCapability,

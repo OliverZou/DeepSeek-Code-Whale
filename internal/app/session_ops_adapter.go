@@ -77,6 +77,10 @@ func (rt *TeamRuntime) Prompt(ctx context.Context, sessionID, task string) (stri
 		return "", fmt.Errorf("no recorded agent for session %s; cannot continue a non-native (shell) session", sessionID)
 	}
 	req.Task = task
+	// Continued turns are appended turns, not the first structured turn — the
+	// spawn-time OutputSchema (e.g. the leader's plan schema) must not force the
+	// appended prompt into the same structured shape. Clear it for the rebuild.
+	req.OutputSchema = nil
 	resp, err := rt.runner.ContinueSubagent(ctx, req, sessionID)
 	if err != nil {
 		return "", err
@@ -94,6 +98,10 @@ func (rt *TeamRuntime) Continue(ctx context.Context, sessionID, task string) (te
 		return team_engine.SubagentResponse{}, fmt.Errorf("no recorded agent for session %s; cannot continue a non-native (shell) session", sessionID)
 	}
 	req.Task = task
+	// Continued turns are appended turns, not the first structured turn — the
+	// spawn-time OutputSchema (e.g. the leader's plan schema) must not force the
+	// appended prompt into the same structured shape. Clear it for the rebuild.
+	req.OutputSchema = nil
 	resp, err := rt.runner.ContinueSubagent(ctx, req, sessionID)
 	if err != nil {
 		return team_engine.SubagentResponse{}, err

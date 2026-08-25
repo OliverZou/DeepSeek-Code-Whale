@@ -446,7 +446,10 @@ func TestAgentToolIterBackstopForcesSummary(t *testing.T) {
 		t.Fatalf("expected uncapped main agent, got maxToolIters=%d", a.maxToolIters)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	// This test runs 500 tool iterations end to end. Under go test ./... the
+	// package is compiled/run in parallel with others, so CPU contention can
+	// stretch each iteration substantially; the deadline must hold ample slack.
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 	events, err := a.RunStream(ctx, "s-backstop", "go")
 	if err != nil {

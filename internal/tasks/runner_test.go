@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -1550,6 +1551,9 @@ func TestSpawnSubagentMCPServersLimitVisibleMCPTools(t *testing.T) {
 }
 
 func TestSpawnSubagentAppliesAgentPreToolHooks(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("hook command uses POSIX printf syntax not supported on Windows")
+	}
 	calls := 0
 	factory := func(_ string, _ int) (llm.Provider, error) {
 		return providerFunc(func(_ context.Context, _ []core.Message, _ []core.Tool) <-chan llm.ProviderEvent {
@@ -1610,6 +1614,9 @@ func TestSpawnSubagentAppliesAgentPreToolHooks(t *testing.T) {
 }
 
 func TestSpawnSubagentUsesSubagentStartHookContext(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("hook command uses POSIX printf syntax not supported on Windows")
+	}
 	var capturedPrompt string
 	factory := func(_ string, _ int) (llm.Provider, error) {
 		return providerFunc(func(_ context.Context, history []core.Message, _ []core.Tool) <-chan llm.ProviderEvent {

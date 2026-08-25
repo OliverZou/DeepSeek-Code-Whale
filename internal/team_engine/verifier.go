@@ -21,7 +21,6 @@ type Verifier struct {
 	model      string
 	agentName  string
 	workdir    string
-	verifyDir  string
 	LastPrompt string
 	// LastSystemPrompt captures the assembled extra system-prompt content the
 	// verifier ran with (adapter only; "" for shell) — logged for auditability.
@@ -30,6 +29,14 @@ type Verifier struct {
 	// most recent Verify run (worker+verifier accounting; 0 when unavailable).
 	LastPromptTokens     int
 	LastCompletionTokens int
+	// previousReport is the last verification report when this run is a
+	// re-review (worker retried after a FAIL): the verifier must only re-verify
+	// the items marked failed/unverifiable, not re-verify the whole deliverable.
+	previousReport string
+	// LastCapRetries counts tool-cap interruptions observed in the last Verify
+	// call (including the automatic minimal re-run) — surfaced in run_report
+	// as verifier_cap_count for bottleneck analysis.
+	LastCapRetries int
 }
 
 // NewVerifier creates a Verifier.
@@ -56,19 +63,19 @@ func (v *Verifier) WithAgentName(name string) *Verifier {
 }
 
 // WithWorkdir overrides the directory the Verifier inspects. By default the
-// Verifier inspects task.Workdir (the original workspace); callers that run the
-// Worker in a sandboxed out/ directory must point the Verifier there instead,
-// otherwise it looks for deliverables in the wrong place.
+// Verifier inspects task.Workdir, where the Worker writes its deliverables
+// directly.
 func (v *Verifier) WithWorkdir(wd string) *Verifier {
 	v.workdir = wd
 	return v
 }
 
-// WithVerifyDir sets the directory where the Verifier writes its verification
-// artifacts (acceptance-level black-box tests, checklists). It lives beside the
-// deliverable out/ dir and is not propagated to the user workspace.
-func (v *Verifier) WithVerifyDir(dir string) *Verifier {
-	v.verifyDir = dir
+// WithPreviousReport seeds a re-review: the previous verification report is
+// injected into the prompt and the verifier is told to re-verify only the
+// items it previously marked 未通过/无法验证 — pass items are not re-checked
+// (collaboration protocol, and avoids re-paying the same verification cost).
+func (v *Verifier) WithPreviousReport(report string) *Verifier {
+	v.previousReport = report
 	return v
 }
 
@@ -91,11 +98,6 @@ func (v *Verifier) BuildPrompt(task *Task) string {
 		workdir = "."
 	}
 
-	verifyDir := v.verifyDir
-	if verifyDir == "" {
-		verifyDir = filepath.Join(workdir, "verify")
-	}
-
 	desc := stripVerifierFeedback(task.Description)
 	var b strings.Builder
 	b.WriteString(fmt.Sprintf(`TASK:
@@ -103,7 +105,7 @@ func (v *Verifier) BuildPrompt(task *Task) string {
 
 WORKER OUTPUT (%d chars):
 %s
-`, desc, len(workerOutput), truncateStr(workerOutput, 3000)))
+`, desc, len(workerOutput), truncateStr(workerOutput, 2000)))
 
 	if len(task.AcceptanceCriteria) > 0 {
 		b.WriteString("\nACCEPTANCE CRITERIA（独立验收标准，逐条核对）:\n")
@@ -134,20 +136,39 @@ explore — look for recently created/modified files.
 `, len(workerOutput), workdir))
 	}
 
-	b.WriteString(fmt.Sprintf(`
+	if v.previousReport != "" {
+		b.WriteString(fmt.Sprintf(`
+PREVIOUS VERIFICATION REPORT (attempt before this run):
+%s
 
-VERIFICATION METHOD (独立验证，不依赖 worker 的结论转述):
-1. 基于 ACCEPTANCE CRITERIA 逐条独立验收，判断交付物是否满足每一条。
-2. 按交付物性质选择验证手段（以比重新执行任务更低的成本）：
-   - 可执行代码/脚本：编写并运行黑盒测试（断言行为符合契约），用 write
-     工具直接写文件到验证产物目录 %s 下（禁止用 shell 命令落盘，如
-     mkdir/cat heredoc——Windows 下会写出 -p 目录等垃圾文件）；审查 worker
-     的单元测试是否覆盖边界/异常分支——只报告遗漏，不替 worker 补写。
-   - 文档/研究/设计/其他：逐条核对验收标准，核查事实、引用、逻辑一致性。
-3. 所有结论必须能被文件内容或工具输出证明，不凭空臆断。
+RE-REVIEW CONTRACT:
+- 这是复审轮：只对上一轮标记为「未通过/无法验证」的验收点做复审，已通过项不要重复验证。
+- 逐项核对上一轮的问题是否已被修复；修复不完整的分项列出仍缺失的部分。
+- 若上一轮全部通过（不应发生），直接对交付物做一次快速确认并说明。
+- 不要重新通读全文、不要重跑已通过的整体验证，成本应显著低于首轮。
+`, truncateStr(v.previousReport, 2500)))
+	}
+
+	b.WriteString(`
+
+VERIFICATION METHOD (独立验证，不依赖 worker 的结论转述; 手段与粒度由你按任务特征判定，引擎不预设):
+1. 判定任务特征（可多个），据此选择验证策略：
+   - 有客观正确答案（计算、事实查询）→ 独立核算或交叉查证关键结论（不重算全部）。
+   - 有明确格式/结构规范 → 逐项核对结构合规性；读一次，用 grep/搜索定位片段。
+   - 依赖主观判断（文案、设计）→ 检查是否满足显式约束，对标参考基准，不评判审美偏好。
+   - 涉及多步骤链路 → 检查关键环节是否有断裂或遗漏，抽样验证中间产出，不必全链路重走。
+   - 不可逆/高影响交付 → 全量核对，不做抽样。
+2. 成本纪律：优先选择成本最低且能给出确定性结论的手段；同一文件本次会话最多读一次，
+   需要定位时用 grep 搜索；抽样能判定就不要全量；不要重复读取或重跑结论的产出过程。
+3. 基于 ACCEPTANCE CRITERIA 逐条独立验收，对每一条明确判定：通过 / 未通过 / 无法验证。
+   「无法验证」不等于「通过」——证据不足以判定通过时必须标 FAIL 并说明缺什么。
+4. 你是检查者，不是写作者：禁止修改交付物或写入任何文件（含测试脚本）；验证产物
+   （命令输出、检查清单）只出现在你的最终报告中。
+5. 所有结论必须能被文件内容或工具输出证明，不凭空臆断；引用具体文件/行号/命令输出。
 
 OUTPUT FORMAT (REQUIRED):
 VERDICT: PASS | FAIL | RETRY
+METHOD: <一句话：任务特征 → 你选用的验证手段与粒度（如：计算类→独立核算关键结论；多步链路→抽样2处）>
 ISSUES:
 - [specific issues, or "none" if PASS]
 
@@ -157,7 +178,8 @@ ISSUES:
   {"id": "unique", "title": "one-line summary", "severity": "critical|major|minor", "evidence": "tool output"}
 ]
 ---
-`, verifyDir))
+
+篇幅限制（严格遵守）：最终报告整体 ≤ 1200 字；逐项验收表最多 12 行，每行证据只写文件行号/命令输出结论，禁止复制源码或完整日志原文；ISSUES 只列未通过/无法验证项，通过项不逐条重复。`)
 
 	v.LastPrompt = b.String()
 	return v.LastPrompt
@@ -181,7 +203,7 @@ func (v *Verifier) Verify(task *Task) (passed bool, retry bool, feedback string,
 
 	timeout := time.Duration(v.router.ResolveTimeout(task.Role, true)) * time.Second
 	model := v.model
-	vIters, vCalls, vTokens := iterationBudget(task.Complexity, true)
+	vIters, vCalls, vTokens := effectiveVerifierBudget(task)
 
 	v.LastPrompt = prompt
 	result := v.runner.RunVerifier(prompt, workdir, timeout, vIters, vCalls, vTokens, v.agentName, model)
@@ -203,6 +225,21 @@ func (v *Verifier) Verify(task *Task) (passed bool, retry bool, feedback string,
 		output = result2.Stdout
 	}
 
+	// Tool-cap interruption (输出 "auto-interrupted") ≠ 交付物缺陷：再给一次
+	// 最小化验证机会（只对最关键的验收点给结论），避免 run_task 的挂起 guard
+	// 把一次可修复的中断升级成批次失败（v41/v43 模式）。第二次仍中断才走挂起。
+	if isVerifierCapInterrupt(output) {
+		v.LastCapRetries++
+		minimalPrompt := "YOUR PREVIOUS VERIFICATION TURN WAS INTERRUPTED (tool iteration cap). " +
+			"Finish with a MINIMAL pass: check only the 2 most critical acceptance points, " +
+			"use at most 2 tool calls, and mark everything else 无法验证 with a reason.\n\n" +
+			prompt
+		result2 := v.runner.RunVerifier(minimalPrompt, workdir, timeout, vIters, vCalls, vTokens, v.agentName, model)
+		v.LastPromptTokens += result2.UsagePrompt
+		v.LastCompletionTokens += result2.UsageCompletion
+		output = result2.Stdout
+	}
+
 	// Write verifier result to whiteboard.
 	if err := v.whiteboard.WriteVerifier(task.ID, output); err != nil {
 		return false, false, output, fmt.Errorf("write verifier result: %w", err)
@@ -210,6 +247,16 @@ func (v *Verifier) Verify(task *Task) (passed bool, retry bool, feedback string,
 
 	passed, retry = parseVerdict(output)
 	return passed, retry, output, nil
+}
+
+// isVerifierCapInterrupt reports whether a verifier output is the tool-cap
+// interruption template (not a real verdict): the turn was force-stopped, so
+// anything inside it is NOT evidence about the deliverable.
+func isVerifierCapInterrupt(output string) bool {
+	lower := strings.ToLower(output)
+	return strings.Contains(lower, "auto-interrupted") ||
+		strings.Contains(lower, "tool iteration cap") ||
+		strings.Contains(lower, "iteration cap reached")
 }
 
 // ---------------------------------------------------------------------------

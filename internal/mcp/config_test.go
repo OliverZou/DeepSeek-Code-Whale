@@ -3,6 +3,7 @@ package mcp
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -117,6 +118,9 @@ func TestTransportKindRejectsConflictsAndUnsupportedValues(t *testing.T) {
 }
 
 func TestFilesystemAllowedDirsExtractsServerFilesystemArgs(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fixture resolves ~ via os.UserHomeDir, which ignores HOME on Windows")
+	}
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	rel := filepath.Join(t.TempDir(), "workspace")

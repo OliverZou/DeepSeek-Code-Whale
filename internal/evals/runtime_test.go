@@ -3,6 +3,7 @@ package evals
 import (
 	"context"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -487,6 +488,9 @@ func (p *backgroundShellProvider) StreamResponse(_ context.Context, history []co
 }
 
 func TestRuntimeShellWaitReturnsRunningOnShortTimeout(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX shell scenario fixture not supported on Windows")
+	}
 	root := t.TempDir()
 	toolset, err := tools.NewToolset(root)
 	if err != nil {
@@ -616,6 +620,9 @@ func (p *backgroundShellDoneProvider) StreamResponse(_ context.Context, history 
 }
 
 func TestRuntimeShellWaitReturnsExitedResult(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX shell scenario fixture not supported on Windows")
+	}
 	root := t.TempDir()
 	toolset, err := tools.NewToolset(root)
 	if err != nil {
@@ -1430,6 +1437,9 @@ func (p *hookToolProvider) StreamResponse(_ context.Context, _ []core.Message, _
 }
 
 func TestRuntimePreToolHookBlockSkipsDispatch(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX shell scenario fixture not supported on Windows")
+	}
 	counting := &countingTool{}
 	a := agent.NewAgentWithRegistry(
 		&hookToolProvider{},
@@ -1463,6 +1473,9 @@ func TestRuntimePreToolHookBlockSkipsDispatch(t *testing.T) {
 }
 
 func TestRuntimePostToolHookWarnEmitsWarning(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX shell scenario fixture not supported on Windows")
+	}
 	counting := &countingTool{}
 	a := agent.NewAgentWithRegistry(
 		&hookToolProvider{},

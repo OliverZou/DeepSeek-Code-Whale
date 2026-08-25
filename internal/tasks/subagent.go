@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/usewhale/whale/internal/agent"
@@ -22,15 +23,20 @@ import (
 )
 
 type SpawnSubagentRequest struct {
-	Task              string          `json:"task"`
-	Role              string          `json:"role,omitempty"`
-	Team              string          `json:"team,omitempty"` // team name, recorded into session meta for picker rendering
-	Agent             AgentDefinition `json:"agent,omitempty"`
-	Model             string          `json:"model,omitempty"`
-	MaxToolIters      int             `json:"max_tool_iters,omitempty"`
-	MaxToolCalls      int             `json:"max_tool_calls,omitempty"`
-	Tools             []string        `json:"tools,omitempty"`
-	OutputSchema      map[string]any  `json:"output_schema,omitempty"`
+	Task         string          `json:"task"`
+	Role         string          `json:"role,omitempty"`
+	Team         string          `json:"team,omitempty"` // team name, recorded into session meta for picker rendering
+	Agent        AgentDefinition `json:"agent,omitempty"`
+	Model        string          `json:"model,omitempty"`
+	MaxToolIters int             `json:"max_tool_iters,omitempty"`
+	MaxToolCalls int             `json:"max_tool_calls,omitempty"`
+	Tools        []string        `json:"tools,omitempty"`
+	OutputSchema map[string]any  `json:"output_schema,omitempty"`
+	// ReportCap overrides the runner's default report cap for the final
+	// report: >0 caps at that many chars (full text is saved to the session
+	// dir when exceeded), <0 disables the cap entirely (full report always
+	// returned in-place), 0 uses the runner default.
+	ReportCap         int             `json:"report_cap,omitempty"`
 	ParentToolCallID  string          `json:"-"`
 	WorkflowRunID     string          `json:"-"`
 	WorkflowName      string          `json:"-"`
@@ -240,6 +246,10 @@ func (r *Runner) runSubagent(ctx context.Context, req SpawnSubagentRequest, prog
 	model := cfg.Model
 	maxToolIters := cfg.MaxToolIters
 	maxToolCalls := cfg.MaxToolCalls
+	reportCap := req.ReportCap
+	if reportCap == 0 {
+		reportCap = r.summaryMaxChars
+	}
 	workspace, err := r.resolveSubagentWorkspace(cfg, sessionID, role)
 	if err != nil {
 		return SpawnSubagentResponse{}, err
@@ -329,6 +339,7 @@ func (r *Runner) runSubagent(ctx context.Context, req SpawnSubagentRequest, prog
 	systemPrompt := strings.Join(extraBlocks, "\n\n---\n\n")
 	newChild := func(registry *core.ToolRegistry, maxIters int) *agent.Agent {
 		return agent.NewAgentWithRegistry(provider, childStore, registry,
+			agent.WithChildAgentMode(),
 			agent.WithSessionMode(childSessionMode(cfg.PermissionProfile)),
 			agent.WithToolPolicy(childToolPolicy(r.parentPolicy, cfg.PermissionProfile, workspace.WorkspaceRoot, cfg.ToolSelectors)),
 			// The child registry is capability-restricted, but policy decisions
@@ -462,7 +473,7 @@ func (r *Runner) runSubagent(ctx context.Context, req SpawnSubagentRequest, prog
 				case agent.AgentEventTypeDone:
 					if ev.Message != nil {
 						fullText := strings.TrimSpace(ev.Message.Text)
-						report, reportFile, truncated = saveSubagentReport(r.sessionsDir, sessionID, fullText, r.summaryMaxChars)
+						report, reportFile, truncated = saveSubagentReport(r.sessionsDir, sessionID, fullText, reportCap)
 						progressSummary := subagentSummaryLine(report)
 						if progressSummary == "" {
 							progressSummary = "child completed"
@@ -555,7 +566,7 @@ func (r *Runner) runSubagent(ctx context.Context, req SpawnSubagentRequest, prog
 			if strings.TrimSpace(report) == "" {
 				if b, err := core.MarshalToolJSON(value); err == nil {
 					fullText := string(b)
-					report, reportFile, truncated = saveSubagentReport(r.sessionsDir, sessionID, fullText, r.summaryMaxChars)
+					report, reportFile, truncated = saveSubagentReport(r.sessionsDir, sessionID, fullText, reportCap)
 				}
 			}
 		}
@@ -802,10 +813,15 @@ func (r *Runner) contextWindowForModel(model string) int {
 	return defaults.ContextWindowForModel(model)
 }
 
+// childIDCounter disambiguates concurrent UnixNano samples. On coarse-tick
+// platforms (Windows), two spawns landing on the same clock tick would return
+// the identical nanosecond value, colliding two subagent sessions into one.
+var childIDCounter atomic.Uint64
+
 func (r *Runner) childSessionID(parentToolCallID string) string {
 	childID := safeSessionPart(parentToolCallID)
 	if childID == "" {
-		childID = fmt.Sprintf("%d", time.Now().UnixNano())
+		childID = fmt.Sprintf("%d-%d", time.Now().UnixNano(), childIDCounter.Add(1))
 	}
 	parentID := safeSessionPart(r.currentParentSessionID())
 	if parentID == "" {

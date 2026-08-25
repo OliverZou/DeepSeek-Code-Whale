@@ -66,6 +66,10 @@ func serviceIntentKind(kind protocol.IntentKind) IntentKind {
 		return IntentSelectSession
 	case protocol.IntentRequestSessions:
 		return IntentRequestSessions
+	case protocol.IntentTeamSessionOpen:
+		return IntentTeamSessionOpen
+	case protocol.IntentTeamAbort:
+		return IntentTeamAbort
 	case protocol.IntentRequestExit:
 		return IntentRequestExit
 	case protocol.IntentShutdown:

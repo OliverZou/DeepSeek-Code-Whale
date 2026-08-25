@@ -5,16 +5,17 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestOutDeliverables(t *testing.T) {
 	t.Run("pure new", func(t *testing.T) {
-		outDir := t.TempDir()
 		workdir := t.TempDir()
-		if err := os.WriteFile(filepath.Join(outDir, "game.js"), []byte("// x"), 0644); err != nil {
+		if err := os.WriteFile(filepath.Join(workdir, "game.js"), []byte("// x"), 0644); err != nil {
 			t.Fatal(err)
 		}
-		count, touches, err := outDeliverables(outDir, workdir)
+		// Baseline taken before the worker ran, with no game.js in it → purely new.
+		count, touches, err := outDeliverables(workdir, map[string]time.Time{})
 		if err != nil {
 			t.Fatalf("outDeliverables: %v", err)
 		}
@@ -27,15 +28,13 @@ func TestOutDeliverables(t *testing.T) {
 	})
 
 	t.Run("touches existing", func(t *testing.T) {
-		outDir := t.TempDir()
 		workdir := t.TempDir()
-		if err := os.WriteFile(filepath.Join(workdir, "game.js"), []byte("old"), 0644); err != nil {
+		if err := os.WriteFile(filepath.Join(workdir, "game.js"), []byte("new"), 0644); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(filepath.Join(outDir, "game.js"), []byte("new"), 0644); err != nil {
-			t.Fatal(err)
-		}
-		count, touches, err := outDeliverables(outDir, workdir)
+		// Baseline records an older modtime for the same file → modified, not new.
+		baseline := map[string]time.Time{"game.js": time.Now().Add(-time.Hour)}
+		count, touches, err := outDeliverables(workdir, baseline)
 		if err != nil {
 			t.Fatalf("outDeliverables: %v", err)
 		}
@@ -48,26 +47,24 @@ func TestOutDeliverables(t *testing.T) {
 	})
 
 	t.Run("empty out", func(t *testing.T) {
-		outDir := t.TempDir()
-		count, touches, err := outDeliverables(outDir, t.TempDir())
+		workdir := t.TempDir()
+		count, touches, err := outDeliverables(workdir, map[string]time.Time{})
 		if err != nil {
 			t.Fatalf("outDeliverables: %v", err)
 		}
 		if count != 0 {
-			t.Fatalf("expected 0 deliverables for empty out, got %d", count)
+			t.Fatalf("expected 0 deliverables for empty workdir, got %d", count)
 		}
 		if touches {
-			t.Fatal("expected no touches for empty out")
+			t.Fatal("expected no touches for empty workdir")
 		}
 	})
 
 	t.Run("ignores .whale metadata", func(t *testing.T) {
-		outDir := t.TempDir()
 		workdir := t.TempDir()
-		// whale exec writes its own engine log into out/.whale; the master engine
-		// writes the same relative path under the workspace. This path overlap must
-		// not be treated as a regression touch — .whale is tool metadata, not a
-		// deliverable.
+		// whale writes metadata into .whale under the workspace; that path overlap
+		// must not be treated as a regression touch — .whale is tool metadata,
+		// not a deliverable.
 		metaRel := filepath.Join(".whale", "team_tasks", "logs", "team_engine.log")
 		if err := os.MkdirAll(filepath.Dir(filepath.Join(workdir, metaRel)), 0755); err != nil {
 			t.Fatal(err)
@@ -75,16 +72,10 @@ func TestOutDeliverables(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(workdir, metaRel), []byte("master log"), 0644); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.MkdirAll(filepath.Dir(filepath.Join(outDir, metaRel)), 0755); err != nil {
+		if err := os.WriteFile(filepath.Join(workdir, "game.js"), []byte("// x"), 0644); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(filepath.Join(outDir, metaRel), []byte(""), 0644); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(filepath.Join(outDir, "game.js"), []byte("// x"), 0644); err != nil {
-			t.Fatal(err)
-		}
-		count, touches, err := outDeliverables(outDir, workdir)
+		count, touches, err := outDeliverables(workdir, map[string]time.Time{})
 		if err != nil {
 			t.Fatalf("outDeliverables: %v", err)
 		}
@@ -97,74 +88,137 @@ func TestOutDeliverables(t *testing.T) {
 	})
 }
 
-func TestShouldSkipVerifier(t *testing.T) {
+func TestVerifyDepth(t *testing.T) {
 	eng := newTestEngine(t)
 	defer eng.Close()
 
-	t.Run("pure new no role skips", func(t *testing.T) {
-		outDir := t.TempDir()
-		if err := os.WriteFile(filepath.Join(outDir, "game.js"), []byte("// x"), 0644); err != nil {
+	t.Run("pure new no role mechanical", func(t *testing.T) {
+		workdir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(workdir, "game.js"), []byte("// x"), 0644); err != nil {
 			t.Fatal(err)
 		}
 		// An automated test must be present for the mechanical gate to be
-		// non-vacuous; otherwise the skip is forbidden.
-		if err := os.WriteFile(filepath.Join(outDir, "game.test.js"), []byte("// test"), 0644); err != nil {
+		// non-vacuous; otherwise mechanical depth is forbidden.
+		if err := os.WriteFile(filepath.Join(workdir, "game.test.js"), []byte("// test"), 0644); err != nil {
 			t.Fatal(err)
 		}
-		task := &Task{ID: "t1", UseDW: false, VerifierRole: "", Workdir: t.TempDir()}
-		if !eng.shouldSkipVerifier(task, outDir) {
-			t.Fatal("expected skip for pure-new mechanical deliverable")
+		// Pre-worker baseline: nothing existed → all deliverables new.
+		task := &Task{ID: "t1", Workdir: workdir}
+		if got := eng.verifyDepth(task, workdir, map[string]time.Time{}); got != "mechanical" {
+			t.Fatalf("expected mechanical depth for pure-new deliverable, got %q", got)
 		}
 	})
 
-	t.Run("no automated tests does not skip", func(t *testing.T) {
-		outDir := t.TempDir()
-		if err := os.WriteFile(filepath.Join(outDir, "game.js"), []byte("// x"), 0644); err != nil {
-			t.Fatal(err)
-		}
-		task := &Task{ID: "t1c", UseDW: false, VerifierRole: "", Workdir: t.TempDir()}
-		if eng.shouldSkipVerifier(task, outDir) {
-			t.Fatal("expected verify when no automated test command is present")
-		}
-	})
-
-	t.Run("empty out does not skip", func(t *testing.T) {
-		task := &Task{ID: "t1b", UseDW: false, VerifierRole: "", Workdir: t.TempDir()}
-		if eng.shouldSkipVerifier(task, t.TempDir()) {
-			t.Fatal("expected verify when worker produced no deliverable")
-		}
-	})
-
-	t.Run("touches existing does not skip", func(t *testing.T) {
-		outDir := t.TempDir()
+	t.Run("explicit verify_mode wins over heuristic", func(t *testing.T) {
 		workdir := t.TempDir()
-		if err := os.WriteFile(filepath.Join(workdir, "game.js"), []byte("old"), 0644); err != nil {
+		if err := os.WriteFile(filepath.Join(workdir, "game.js"), []byte("// x"), 0644); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(filepath.Join(outDir, "game.js"), []byte("new"), 0644); err != nil {
-			t.Fatal(err)
+		// Heuristic: no test command → semantic. Explicit mode must still win.
+		task := &Task{ID: "tm1", VerifyMode: "mechanical", Workdir: workdir}
+		if got := eng.verifyDepth(task, workdir, nil); got != "mechanical" {
+			t.Fatalf("expected explicit mechanical depth, got %q", got)
 		}
-		task := &Task{ID: "t2", UseDW: false, VerifierRole: "", Workdir: workdir}
-		if eng.shouldSkipVerifier(task, outDir) {
-			t.Fatal("expected verify when deliverable touches existing file")
+		// And explicit semantic on the same low-risk deliverable must not
+		// collapse to mechanical.
+		task.VerifyMode = "semantic"
+		if got := eng.verifyDepth(task, workdir, nil); got != "semantic" {
+			t.Fatalf("expected explicit semantic depth, got %q", got)
 		}
 	})
 
-	t.Run("verifier role does not skip", func(t *testing.T) {
-		outDir := t.TempDir()
-		if err := os.WriteFile(filepath.Join(outDir, "game.js"), []byte("// x"), 0644); err != nil {
+	t.Run("no automated tests semantic", func(t *testing.T) {
+		workdir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(workdir, "game.js"), []byte("// x"), 0644); err != nil {
 			t.Fatal(err)
 		}
-		task := &Task{ID: "t3", UseDW: false, VerifierRole: "architect", Workdir: t.TempDir()}
-		if eng.shouldSkipVerifier(task, outDir) {
-			t.Fatal("expected verify for key role even when pure-new")
+		task := &Task{ID: "t1c", Workdir: workdir}
+		if got := eng.verifyDepth(task, workdir, map[string]time.Time{}); got != "semantic" {
+			t.Fatal("expected semantic depth when no automated test command is present")
 		}
 	})
 
-	t.Run("DW does not skip", func(t *testing.T) {
-		task := &Task{ID: "t4", UseDW: true, VerifierRole: "", Workdir: t.TempDir()}
-		if eng.shouldSkipVerifier(task, t.TempDir()) {
-			t.Fatal("expected verify for DW tasks")
+	t.Run("empty out semantic", func(t *testing.T) {
+		task := &Task{ID: "t1b", Workdir: t.TempDir()}
+		if got := eng.verifyDepth(task, t.TempDir(), map[string]time.Time{}); got != "semantic" {
+			t.Fatal("expected semantic depth when worker produced no deliverable")
+		}
+	})
+
+	t.Run("touches existing semantic", func(t *testing.T) {
+		workdir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(workdir, "game.js"), []byte("new"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		// Baseline recorded the file with an older modtime → the worker modified
+		// an existing file, regression risk, semantic depth.
+		baseline := map[string]time.Time{"game.js": time.Now().Add(-time.Hour)}
+		task := &Task{ID: "t2", Workdir: workdir}
+		if got := eng.verifyDepth(task, workdir, baseline); got != "semantic" {
+			t.Fatal("expected semantic depth when deliverable touches existing file")
+		}
+	})
+
+	t.Run("no baseline semantic", func(t *testing.T) {
+		// Resume-with-existing-output has no pre-worker baseline — new vs
+		// modified files cannot be told apart, so stay conservative.
+		workdir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(workdir, "game.js"), []byte("// x"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		task := &Task{ID: "t2b", Workdir: workdir}
+		if got := eng.verifyDepth(task, workdir, nil); got != "semantic" {
+			t.Fatal("expected semantic depth when baseline is missing")
+		}
+	})
+
+	t.Run("verifier role semantic", func(t *testing.T) {
+		workdir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(workdir, "game.js"), []byte("// x"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		task := &Task{ID: "t3", VerifierRole: "architect", Workdir: workdir}
+		if got := eng.verifyDepth(task, workdir, map[string]time.Time{}); got != "semantic" {
+			t.Fatal("expected semantic depth for key role even when pure-new")
+		}
+	})
+
+	t.Run("DW semantic", func(t *testing.T) {
+		task := &Task{ID: "t4", UseDW: true, Workdir: t.TempDir()}
+		if got := eng.verifyDepth(task, t.TempDir(), nil); got != "semantic" {
+			t.Fatal("expected semantic depth for DW tasks")
+		}
+	})
+
+	t.Run("declared output missing semantic", func(t *testing.T) {
+		// The workdir is non-empty and has a test gate, and nothing was touched
+		// (touches=false, count>0) — all conditions for a mechanical SKIP. But the
+		// declared deliverable game.js is absent, which must force semantic.
+		workdir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(workdir, "other.txt"), []byte("x"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(workdir, "game.test.js"), []byte("// test"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		task := &Task{ID: "t1d", Output: "game.js", Workdir: workdir}
+		if got := eng.verifyDepth(task, workdir, map[string]time.Time{}); got != "semantic" {
+			t.Fatalf("expected semantic when declared deliverable is missing, got %q", got)
+		}
+	})
+
+	t.Run("declared output present mechanical", func(t *testing.T) {
+		// Declared deliverable exists + test gate present + pure-new → mechanical.
+		workdir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(workdir, "game.js"), []byte("// x"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(workdir, "game.test.js"), []byte("// test"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		task := &Task{ID: "t1e", Output: "game.js", Workdir: workdir}
+		if got := eng.verifyDepth(task, workdir, map[string]time.Time{}); got != "mechanical" {
+			t.Fatalf("expected mechanical when declared deliverable exists, got %q", got)
 		}
 	})
 }

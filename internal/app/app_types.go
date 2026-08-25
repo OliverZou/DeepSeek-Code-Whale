@@ -138,6 +138,7 @@ type App struct {
 	workspaceRoot         string
 	branch                string
 	msgStore              *store.JSONLStore
+	leaderProgressState   *leaderProgress // inline-leader 事件进展桥（app_start 注册全局 sink）
 	toolRegistry          *core.ToolRegistry
 	baseToolRegistry      *core.ToolRegistry
 	subagentToolRegistry  *core.ToolRegistry

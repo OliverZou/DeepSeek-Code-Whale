@@ -64,13 +64,24 @@ type approvalPromptState struct {
 }
 
 type model struct {
-	runtime   Runtime
-	dispatch  func(protocol.Intent)
-	input     composer.Composer
-	viewport  viewport.Model
-	chat      chatList
-	assembler *tuirender.Assembler
-	timeline  *timeline.TurnTimelineBuilder
+	runtime          Runtime
+	dispatch         func(protocol.Intent)
+	input            composer.Composer
+	viewport         viewport.Model
+	chat             chatList
+	assembler        *tuirender.Assembler
+	timeline         *timeline.TurnTimelineBuilder
+	teamStatusActive bool                    // 团队运行状态行（浮动显示）
+	teamStatusLine   string                  // 状态行文本（不含 spinner）
+	teamStatusFinal  string                  // 完结状态行（✅ 团队已完成）
+	teamSpinFrame    int                     // spinner 帧号
+	teamSessions     []protocol.SessionPick  // /team session 选择器条目
+	teamPickIdx      int                     // 选择器当前索引
+	teamAbortRuns    []protocol.RunPick      // /team abort 选择器条目
+	teamAbortIdx     int                     // abort 选择器当前索引
+	teamAbortConfirm bool                    // abort 二次确认（enter 后 enter/y 才执行）
+	subagentPicks    []protocol.SubagentPick // /subagent 选择器条目
+	subagentPickIdx  int                     // subagent 选择器当前索引
 	// timelineItemSeq orders timeline (tool) rows against assembler text rows
 	// within the current live turn. Each new timeline item is anchored to the
 	// assembler's SeqFloor at creation time plus a monotonic tiebreak, so a tool
@@ -315,6 +326,7 @@ type errMsg struct{ err error }
 type quitTimeoutMsg struct{}
 type busyTickMsg struct{}
 type bgShellTickMsg struct{}
+type teamSpinTickMsg struct{}
 
 // bgShellTickInterval polls the background-shell set while at least one task is
 // running, so a task that exits on its own between turns (no tool-result event)
@@ -447,6 +459,13 @@ func busyTickCmd() tea.Cmd {
 	return tea.Tick(time.Second, func(time.Time) tea.Msg { return busyTickMsg{} })
 }
 
+// teamSpinFrames: the animated spinner frames for the team-run status line.
+var teamSpinFrames = []string{"⣷", "⣯", "⣟", "⣿", "⢿", "⣻", "⣽", "⣾"}
+
+func teamSpinCmd() tea.Cmd {
+	return tea.Tick(450*time.Millisecond, func(time.Time) tea.Msg { return teamSpinTickMsg{} })
+}
+
 func bgShellTickCmd() tea.Cmd {
 	return tea.Tick(bgShellTickInterval, func(time.Time) tea.Msg { return bgShellTickMsg{} })
 }
@@ -517,6 +536,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case busyTickMsg:
 		if m.busy {
 			return m, m.sequenceCmds(busyTickCmd())
+		}
+		return m, m.sequenceCmds()
+	case teamSpinTickMsg:
+		m.teamSpinFrame++
+		if m.teamStatusActive {
+			return m, m.sequenceCmds(teamSpinCmd())
 		}
 		return m, m.sequenceCmds()
 	case bgShellTickMsg:

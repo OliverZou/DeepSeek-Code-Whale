@@ -2,9 +2,11 @@ package service
 
 import (
 	"fmt"
+	"strings"
+
+	"github.com/usewhale/whale/internal/agent"
 	"github.com/usewhale/whale/internal/app"
 	appcommands "github.com/usewhale/whale/internal/commands"
-	"strings"
 )
 
 func (s *Service) enqueueLocalSubmit(line string) {
@@ -134,7 +136,13 @@ func (s *Service) handleLocalSubmit(line string) {
 	}
 	if cmd.Handled {
 		if cmd.Turn != nil {
-			s.emit(localSubmitResultEvent("error", "command starts an agent turn and cannot run as a local submit"))
+			// 命令需要 agent turn（如 /team inline leader）：本地提交模式下也
+			// 直接启动注入式 agent turn——用户输入即期待开始执行。
+			s.runInjectedTurnWithOptions(cmd.Turn.Input, "", agent.RunOptions{
+				ReadOnly:           cmd.Turn.ReadOnly,
+				GoalContinuation:   cmd.Turn.GoalContinuation,
+				ShellAllowPrefixes: append([]string(nil), cmd.Turn.ShellAllowPrefixes...),
+			})
 			return
 		}
 		if cmd.ClearScreen {
@@ -142,6 +150,18 @@ func (s *Service) handleLocalSubmit(line string) {
 		}
 		if cmd.ShouldExit {
 			s.requestExit()
+		}
+		if cmd.TeamAbortPicker {
+			s.emit(Event{Kind: EventTeamAbortPicker, TeamRuns: s.app.TeamRunPicks()})
+			return
+		}
+		if cmd.SubagentPicker {
+			s.emit(Event{Kind: EventSubagentPicker, Subagents: s.app.ListSubagentPicks()})
+			return
+		}
+		if cmd.TeamSessionPicker {
+			s.emit(Event{Kind: EventTeamSessionPicker, TeamSessions: s.app.TeamSessionPicks()})
+			return
 		}
 		if s.app.SessionID() != prevSessionID || cmd.HydrateSession {
 			s.emitSessionHydrated()
@@ -170,7 +190,11 @@ func (s *Service) handleLocalSubmit(line string) {
 			s.emit(ev)
 		}
 		if cmd.Turn != nil {
-			s.emit(localSubmitResultEvent("error", "command starts an agent turn and cannot run as a local submit"))
+			s.runInjectedTurnWithOptions(cmd.Turn.Input, "", agent.RunOptions{
+				ReadOnly:           cmd.Turn.ReadOnly,
+				GoalContinuation:   cmd.Turn.GoalContinuation,
+				ShellAllowPrefixes: append([]string(nil), cmd.Turn.ShellAllowPrefixes...),
+			})
 		}
 		return
 	}

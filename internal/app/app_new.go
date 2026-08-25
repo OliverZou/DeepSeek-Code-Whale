@@ -99,6 +99,7 @@ func New(ctx context.Context, cfg Config, start StartOptions) (*App, error) {
 	}
 	appRef = app
 
+	app.leaderProgressInit()
 	team_engine.SetLogger(teampglog.NewTeamLog(workspaceRoot))
 	team_engine.CleanupInterruptedTasks(filepath.Join(workspaceRoot, ".whale", "team_tasks"))
 

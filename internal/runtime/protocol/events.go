@@ -43,6 +43,11 @@ const (
 	EventPendingInputAccepted EventKind = "pending_input_accepted"
 	EventPendingInputRejected EventKind = "pending_input_rejected"
 	EventTurnDone             EventKind = "turn_done"
+	EventTeamStatus           EventKind = "team_status"         // 团队运行状态（进度提示，用户可见）
+	EventTeamSessionPicker    EventKind = "team_session_picker" // 团队成员会话选择器（列表）
+	EventTeamSessionOpen      EventKind = "team_session_open"   // 打开成员会话（Text=摘要对话）
+	EventSubagentPicker       EventKind = "subagent_picker"     // /subagent 选择器（列出活跃 subagent 供切换）
+	EventTeamAbortPicker      EventKind = "team_abort_picker"   // /team abort 选择器（列出 run 供选择停止）
 	EventViewModeChanged      EventKind = "view_mode_changed"
 	EventSkillLoaded          EventKind = "skill_loaded"
 	EventWorktreeExitPrompt   EventKind = "worktree_exit_prompt"
@@ -66,6 +71,33 @@ const (
 	EventReviewRequested               EventKind = "review_requested"
 	EventScreenClearRequested          EventKind = "screen_clear_requested"
 )
+
+// SessionPick is one selectable team member session in the picker.
+type SessionPick struct {
+	TaskID    string
+	Role      string
+	Title     string
+	State     string
+	SessionID string
+}
+
+// RunPick is one selectable team run (master) in the abort picker.
+type RunPick struct {
+	MasterID string
+	Goal     string
+	Status   string
+	Started  string
+}
+
+// SubagentPick is one selectable active subagent session in the /subagent
+// picker. SessionID is what gets passed to the resume switch.
+type SubagentPick struct {
+	SessionID   string
+	Title       string // 会话名（成员任务描述）
+	ParentTitle string // 主会话名
+	Role        string
+	Status      string
+}
 
 type Event struct {
 	Kind             EventKind            `json:"kind"`
@@ -91,6 +123,9 @@ type Event struct {
 	Count            int                  `json:"count,omitempty"`
 	DurationMS       int64                `json:"duration_ms,omitempty"`
 	ProgressMessages []ProgressStep       `json:"progress_messages,omitempty"`
+	TeamSessions     []SessionPick        `json:"team_sessions,omitempty"`
+	TeamRuns         []RunPick            `json:"team_runs,omitempty"`
+	Subagents        []SubagentPick       `json:"subagents,omitempty"`
 	Questions        []UserInputQuestion  `json:"questions,omitempty"`
 	Answers          []UserInputAnswer    `json:"answers,omitempty"`
 	Choices          []string             `json:"choices,omitempty"`

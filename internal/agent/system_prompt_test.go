@@ -513,3 +513,43 @@ func TestImmutableSystemPromptToolPolicyDoesNotDependOnToolRegistry(t *testing.T
 		t.Fatalf("immutable system prompt changed with tool registry\nwithout tools:\n%s\n\nwith tools:\n%s", a, b)
 	}
 }
+
+func TestChildAgentSystemPromptSkipsInteractiveOnlyBlocks(t *testing.T) {
+	a := NewAgentWithRegistry(nil, nil, core.NewToolRegistry(nil), WithChildAgentMode(), WithProjectMemory(false, 0, nil, "/repo"))
+	immutable := strings.Join(a.buildImmutableSystemBlocks(), "\n\n")
+	runtime := strings.Join(a.buildRuntimeSystemBlocks(), "\n\n")
+
+	// Interactive-only blocks must not reach a bounded tool-scoped worker:
+	// it has no TUI/mode switching, cannot delegate, and must not ask the user.
+	for _, notWant := range []string{
+		"Mode switching commands",
+		"Mode contract.",
+		"Plan Mode is a collaboration mode",
+		"Delegation policy.",
+		"spawn_subagent",
+		"request_user_input",
+		"Available skills",
+	} {
+		if strings.Contains(immutable, notWant) {
+			t.Fatalf("child immutable blocks leaked interactive-only text %q:\n%s", notWant, immutable)
+		}
+		if strings.Contains(runtime, notWant) {
+			t.Fatalf("child runtime blocks leaked interactive-only text %q:\n%s", notWant, runtime)
+		}
+	}
+
+	// Tool policy and minimal-change discipline still apply to workers.
+	for _, want := range []string{
+		"Tool use policy.",
+		"Choose tools by exact name and schema",
+		"Minimal change principle.",
+	} {
+		if !strings.Contains(immutable, want) {
+			t.Fatalf("child immutable blocks missing %q:\n%s", want, immutable)
+		}
+	}
+	// Runtime environment guidance still applies.
+	if !strings.Contains(runtime, "Current Whale runtime:") {
+		t.Fatalf("child runtime blocks missing runtime environment:\n%s", runtime)
+	}
+}

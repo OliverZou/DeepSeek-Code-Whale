@@ -34,6 +34,11 @@ func TestIsOverloadedTask(t *testing.T) {
 			desc: "确保页面在Chrome、Firefox最新版上运行正常，响应式布局无破版。",
 			want: false,
 		},
+		{
+			name: "样式实现含引用句（v26 style.css 误报回归）",
+			desc: "编写 style.css，实现 4x4 棋盘网格与数字方块样式，类名与 game.js 严格一致；移动端 ≤520px 通过 @media 媒体查询等比缩小，保证触屏可用。本产出被 index.html 与集成验证任务引用，输出路径为 style.css。",
+			want: false,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

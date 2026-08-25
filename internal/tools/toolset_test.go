@@ -2111,6 +2111,8 @@ func TestApprovedExternalReadRootsExpandHomeBeforeWorkspaceFallback(t *testing.T
 	workspace := t.TempDir()
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	// os.UserHomeDir() reads USERPROFILE (not HOME) on Windows, so isolate it too.
+	t.Setenv("USERPROFILE", home)
 	if err := os.MkdirAll(filepath.Join(workspace, "~"), 0o755); err != nil {
 		t.Fatalf("mkdir workspace tilde dir: %v", err)
 	}
@@ -2141,6 +2143,8 @@ func TestReadOnlyToolsCanReadDiscoveredGlobalSkillReferences(t *testing.T) {
 	workspace := t.TempDir()
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	// os.UserHomeDir() reads USERPROFILE (not HOME) on Windows, so isolate it too.
+	t.Setenv("USERPROFILE", home)
 	skillDir := filepath.Join(home, ".whale", "skills", "global-skill")
 	refDir := filepath.Join(skillDir, "references")
 	if err := os.MkdirAll(refDir, 0o755); err != nil {
@@ -2243,7 +2247,7 @@ func TestSkillReadPathDoesNotFollowSymlinkOutsideSkillDir(t *testing.T) {
 	}
 	link := filepath.Join(refDir, "outside.md")
 	if err := os.Symlink(outside, link); err != nil {
-		t.Fatalf("symlink: %v", err)
+		t.Skipf("symlink unavailable: %v", err)
 	}
 	ts, err := NewToolset(workspace)
 	if err != nil {
@@ -3858,18 +3862,26 @@ func TestShellRunCWDStaysInsideWorkspace(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new toolset: %v", err)
 	}
+	// "pwd" is a POSIX builtin and cmd.exe's "cd" may print the 8.3 short
+	// name, so neither output matches the long path byte-for-byte. Verify the
+	// cwd by the side effect of a marker file written relative to the cwd.
+	command := "echo marker > cwd-marker.txt"
 	res, err := ts.shellRun(context.Background(), tc("shell_run", map[string]any{
-		"command": "pwd",
+		"command": command,
 		"cwd":     "sub",
 	}))
 	if err != nil || res.IsError() {
 		t.Fatalf("shell_run cwd failed: err=%v res=%+v", err, res)
 	}
-	if !strings.Contains(res.ModelText, filepath.Join(dir, "sub")) || !strings.Contains(res.ModelText, `"cwd":"sub"`) {
-		t.Fatalf("expected command to run in subdir with cwd metadata: %s", res.ModelText)
+	if !strings.Contains(res.ModelText, `"cwd":"sub"`) {
+		t.Fatalf("expected cwd metadata: %s", res.ModelText)
+	}
+	marker, err := os.ReadFile(filepath.Join(dir, "sub", "cwd-marker.txt"))
+	if err != nil || !strings.Contains(string(marker), "marker") {
+		t.Fatalf("expected command to run in subdir, marker read err=%v got=%q", err, string(marker))
 	}
 	escaped, err := ts.shellRun(context.Background(), tc("shell_run", map[string]any{
-		"command": "pwd",
+		"command": command,
 		"cwd":     "../outside",
 	}))
 	if err != nil {

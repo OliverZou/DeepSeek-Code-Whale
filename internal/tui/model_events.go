@@ -24,6 +24,30 @@ func (m *model) setProviderRetryStatus(ev protocol.Event) {
 	m.providerRetryUntil = time.Now().Add(ttl)
 }
 
+// handleTeamStatusEvent updates the floating team-run status line and
+// (re)starts the spinner ticker while the run is active.
+func (m *model) handleTeamStatusEvent(text string) tea.Cmd {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return nil
+	}
+	if strings.HasPrefix(text, "✅") {
+		// 完结态不再永久占用底部状态行：该提示改为对话里的一条已提交消息，
+		// 随对话滚动消失（用户反馈：“团队完成后后续对话中不应再显示”）。
+		// teamStatusFinal 只保留瞬时，避免 renderTeamStatusLine 常驻渲染它。
+		m.teamStatusActive = false
+		m.teamStatusFinal = ""
+		m.teamStatusLine = ""
+		m.appendTranscript("notice", tuirender.KindNotice, text)
+		return nil
+	}
+	m.teamStatusActive = true
+	m.teamStatusFinal = ""
+	m.teamStatusLine = text
+	m.teamSpinFrame = 0
+	return teamSpinCmd()
+}
+
 func (m *model) clearProviderRetryStatus() {
 	m.providerRetryStatus = ""
 	m.providerRetryUntil = time.Time{}
@@ -141,6 +165,37 @@ func (m *model) handleServiceEvent(ev protocol.Event) (tea.Cmd, bool, bool) {
 	case protocol.EventLocalSubmitDone:
 		m.clearProviderRetryStatus()
 		return m.finishLocalSubmit(), false, false
+	case protocol.EventTeamStatus:
+		return m.handleTeamStatusEvent(ev.Text), false, false
+	case protocol.EventTeamSessionPicker:
+		m.teamSessions = ev.TeamSessions
+		m.teamPickIdx = 0
+		if len(m.teamSessions) == 0 {
+			m.appendTranscriptMessages([]tuirender.UIMessage{{Role: "info", Kind: tuirender.KindNotice, Text: "当前 run 还没有成员会话记录。"}})
+		} else {
+			m.mode = modeSessionPicker
+		}
+	case protocol.EventTeamAbortPicker:
+		m.teamAbortRuns = ev.TeamRuns
+		m.teamAbortIdx = 0
+		if len(m.teamAbortRuns) == 0 {
+			m.appendTranscriptMessages([]tuirender.UIMessage{{Role: "info", Kind: tuirender.KindNotice, Text: "当前会话没有团队 run 可停止。"}})
+		} else {
+			m.mode = modeSessionPicker
+		}
+	case protocol.EventSubagentPicker:
+		m.subagentPicks = ev.Subagents
+		m.subagentPickIdx = 0
+		if len(m.subagentPicks) == 0 {
+			m.appendTranscriptMessages([]tuirender.UIMessage{{Role: "info", Kind: tuirender.KindNotice, Text: "当前没有活跃的 subagent 会话。"}})
+		} else {
+			m.mode = modeSessionPicker
+		}
+	case protocol.EventTeamSessionOpen:
+		if text := strings.TrimSpace(ev.Text); text != "" {
+			m.appendTranscriptMessages([]tuirender.UIMessage{{Role: "info", Kind: tuirender.KindNotice, Text: text}})
+		}
+		m.refreshViewportContentFollow(true)
 	case protocol.EventTurnDone:
 		m.clearProviderRetryStatus()
 		return m.handleTurnDone(ev), false, false

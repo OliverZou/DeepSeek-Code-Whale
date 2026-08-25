@@ -228,10 +228,11 @@ func (m *model) syncViewportFromChat() {
 
 func (m model) renderChatLines(width int) []string {
 	messages := m.chatMessages()
-	if len(messages) == 0 {
-		return nil
+	var lines []string
+	if len(messages) > 0 {
+		lines = tuirender.ChatLines(messages, width)
 	}
-	return tuirender.ChatLines(messages, width)
+	return lines
 }
 
 func (m model) scrollbackText(messages []tuirender.UIMessage) string {

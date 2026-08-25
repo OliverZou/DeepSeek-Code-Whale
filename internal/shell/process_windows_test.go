@@ -13,6 +13,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"golang.org/x/sys/windows"
 )
 
 func TestWindowsRunCommandKillsProcessTree(t *testing.T) {
@@ -153,11 +155,16 @@ func TestWindowsProcessTreeHelper(t *testing.T) {
 
 func windowsPIDExists(t *testing.T, pid string) bool {
 	t.Helper()
-	out, err := exec.Command("tasklist", "/FI", "PID eq "+pid, "/FO", "CSV", "/NH").CombinedOutput()
+	p, err := strconv.Atoi(strings.TrimSpace(pid))
 	if err != nil {
-		t.Fatalf("tasklist failed: %v\n%s", err, string(out))
+		t.Fatalf("invalid pid %q: %v", pid, err)
 	}
-	return strings.Contains(string(out), `"`+pid+`"`)
+	h, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, uint32(p))
+	if err != nil {
+		return false
+	}
+	_ = windows.CloseHandle(h)
+	return true
 }
 
 func waitForFile(t *testing.T, path string, timeout time.Duration) {
