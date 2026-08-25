@@ -344,6 +344,14 @@ type Agent struct {
 	reviewClientOnce      sync.Once     // P2: guards reviewClient initialization
 	gateReadBeforeEdit    bool          // P1: configurable gate switch
 
+	// System-level write allowlist (team-engine ownership boundary). When
+	// non-empty, mutation tools may only write to these normalized absolute
+	// paths (the task's declared outputs) plus the exempt dirs below. Any other
+	// path is rejected BEFORE the tool runs — this is an internal invariant,
+	// not a prompt hint. Empty = disabled (no restriction).
+	writeAllowlist  map[string]bool
+	writeExemptDirs []string // normalized absolute dirs always writable (temp/artifacts)
+
 	// Turn-level state for review agent.
 	lastUserInput     string // P2: last user message text, for review agent context
 	lastAssistantText string // P4: last assistant reasoning text, for root cause cross-check
@@ -942,6 +950,33 @@ func WithVerifyConfig(cfg VerifyConfig) AgentOption {
 func WithGateConfig(readBeforeEdit bool) AgentOption {
 	return func(a *Agent) {
 		a.gateReadBeforeEdit = readBeforeEdit
+	}
+}
+
+// WithWriteAllowlist seeds the system-level write allowlist. Non-empty means
+// mutation tools may only write to these normalized absolute paths (plus any
+// dirs seeded via WithWriteExemptDirs). Empty = restriction disabled. This is
+// an internal invariant enforced in the tool-dispatch layer, not a prompt hint.
+func WithWriteAllowlist(files []string, exemptDirs ...string) AgentOption {
+	return func(a *Agent) {
+		if len(files) == 0 {
+			a.writeAllowlist = nil
+			a.writeExemptDirs = nil
+			return
+		}
+		a.writeAllowlist = make(map[string]bool, len(files))
+		for _, f := range files {
+			if strings.TrimSpace(f) == "" {
+				continue
+			}
+			a.writeAllowlist[normalizeAllowlistPath(f, a.workspaceRoot)] = true
+		}
+		for _, d := range exemptDirs {
+			if strings.TrimSpace(d) == "" {
+				continue
+			}
+			a.writeExemptDirs = append(a.writeExemptDirs, normalizeAllowlistPath(d, a.workspaceRoot))
+		}
 	}
 }
 

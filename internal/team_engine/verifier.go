@@ -251,12 +251,19 @@ func (v *Verifier) Verify(task *Task) (passed bool, retry bool, feedback string,
 
 // isVerifierCapInterrupt reports whether a verifier output is the tool-cap
 // interruption template (not a real verdict): the turn was force-stopped, so
-// anything inside it is NOT evidence about the deliverable.
+// anything inside it is NOT evidence about the deliverable. Matches both the
+// English interruption marker uses in the guard and the Chinese wording the
+// LLM verifier actually emits (工具调用上限中断 / cap-limited / 工具轮数预算),
+// else the guard in run_task never fires and a verifier that simply could not
+// finish is retried as if the deliverable were defective.
 func isVerifierCapInterrupt(output string) bool {
 	lower := strings.ToLower(output)
 	return strings.Contains(lower, "auto-interrupted") ||
 		strings.Contains(lower, "tool iteration cap") ||
-		strings.Contains(lower, "iteration cap reached")
+		strings.Contains(lower, "iteration cap reached") ||
+		strings.Contains(lower, "工具调用上限") ||
+		strings.Contains(lower, "工具轮数预算") ||
+		strings.Contains(lower, "cap-limited")
 }
 
 // ---------------------------------------------------------------------------

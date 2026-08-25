@@ -29,14 +29,16 @@ import (
 // session ID, enabling ContinueSubagent to reconstruct the agent on prompt.
 func resolveTeamSpawnRequest(req team_engine.SubagentRequest, library *tasks.AgentDefinitionLibrary) tasks.SpawnSubagentRequest {
 	tasksReq := tasks.SpawnSubagentRequest{
-		Task:         req.Task,
-		Role:         req.Role,
-		Team:         req.Team,
-		Model:        req.Model,
-		MaxToolIters: req.MaxIters,
-		MaxToolCalls: req.MaxCalls,
-		ReportCap:    req.ReportCap,
-		OutputSchema: req.OutputSchema,
+		Task:            req.Task,
+		Role:            req.Role,
+		Team:            req.Team,
+		Model:           req.Model,
+		MaxToolIters:    req.MaxIters,
+		MaxToolCalls:    req.MaxCalls,
+		ReportCap:       req.ReportCap,
+		OutputSchema:    req.OutputSchema,
+		WriteAllowlist:  req.WriteAllowlist,
+		WriteExemptDirs: req.WriteExemptDirs,
 	}
 
 	// The verifier is always the system-provided agent. Teams never define a

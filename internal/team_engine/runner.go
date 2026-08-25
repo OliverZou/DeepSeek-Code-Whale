@@ -132,15 +132,23 @@ type SubagentRequest struct {
 	// Leader's spawn so its continued turns can drive the team.
 	OrchestrationTools []string
 	Workdir            string // Working directory
-	Timeout            time.Duration
-	MaxIters           int
-	MaxCalls           int
-	MaxTokens          int                  // Completion token budget (0 = runner default)
-	ReportCap          int                  // Report cap override: <0 = never truncate, 0 = runner default
-	OutputSchema       map[string]any       // Force structured JSON output (nil = free text)
-	OnProgress         SubagentProgress     // Real-time progress callback (nil = no streaming)
-	OnPID              func(int)            // Called with PID when OS process starts (nil = no-op)
-	OnStdin            func(io.WriteCloser) // Called with stdin pipe for real-time messaging (nil = no-op)
+	// WriteAllowlist is the task's declared output files (normalized later in
+	// the agent layer). When non-empty, the spawned worker may only write these
+	// paths (+ WriteExemptDirs). This is a system-level internal invariant that
+	// prevents a worker from overwriting another task's deliverable.
+	WriteAllowlist []string
+	// WriteExemptDirs are dirs always writable regardless of the allowlist
+	// (e.g. system temp dir for verification scripts).
+	WriteExemptDirs []string
+	Timeout         time.Duration
+	MaxIters        int
+	MaxCalls        int
+	MaxTokens       int                  // Completion token budget (0 = runner default)
+	ReportCap       int                  // Report cap override: <0 = never truncate, 0 = runner default
+	OutputSchema    map[string]any       // Force structured JSON output (nil = free text)
+	OnProgress      SubagentProgress     // Real-time progress callback (nil = no streaming)
+	OnPID           func(int)            // Called with PID when OS process starts (nil = no-op)
+	OnStdin         func(io.WriteCloser) // Called with stdin pipe for real-time messaging (nil = no-op)
 }
 
 // SubagentResponse contains the result of a subagent execution.
@@ -195,7 +203,7 @@ func (ar *AgentRunner) SetLiteSpawner(s SubagentSpawner) {
 // IMPORTANT: RunWithContext creates its own derived context with the given
 // timeout.  The `ctx` parameter is used ONLY for cancellation — if the
 // parent context is cancelled (e.g. via Close()), the spawn is aborted.
-func (ar *AgentRunner) RunWithContext(ctx context.Context, prompt, workdir, tools string, timeout time.Duration, maxIters, maxCalls, maxTokens int, onProgress SubagentProgress, onPID func(int), onStdin func(io.WriteCloser), model ...string) *RunResult {
+func (ar *AgentRunner) RunWithContext(ctx context.Context, prompt, workdir, tools string, timeout time.Duration, maxIters, maxCalls, maxTokens int, writeAllowlist, writeExemptDirs []string, onProgress SubagentProgress, onPID func(int), onStdin func(io.WriteCloser), model ...string) *RunResult {
 	start := time.Now()
 
 	toolNames := parseToolList(tools)
@@ -218,19 +226,21 @@ func (ar *AgentRunner) RunWithContext(ctx context.Context, prompt, workdir, tool
 	}
 
 	req := SubagentRequest{
-		Task:          prompt,
-		Role:          role,
-		AgentName:     agentName,
-		Team:          teamName(ar.team),
-		TeamAgentsDir: teamAgentsDir(ar.team),
-		Tools:         toolNames,
-		Workdir:       workdir,
-		Timeout:       timeout,
-		MaxIters:      maxIters,
-		MaxCalls:      maxCalls,
-		OnProgress:    onProgress,
-		OnPID:         onPID,
-		OnStdin:       onStdin,
+		Task:            prompt,
+		Role:            role,
+		AgentName:       agentName,
+		Team:            teamName(ar.team),
+		TeamAgentsDir:   teamAgentsDir(ar.team),
+		Tools:           toolNames,
+		Workdir:         workdir,
+		WriteAllowlist:  writeAllowlist,
+		WriteExemptDirs: writeExemptDirs,
+		Timeout:         timeout,
+		MaxIters:        maxIters,
+		MaxCalls:        maxCalls,
+		OnProgress:      onProgress,
+		OnPID:           onPID,
+		OnStdin:         onStdin,
 	}
 	if len(model) > 0 && model[0] != "" {
 		req.Model = model[0]
@@ -275,7 +285,7 @@ func (ar *AgentRunner) RunWithContext(ctx context.Context, prompt, workdir, tool
 
 // Run is a convenience wrapper for RunWithContext with a background context.
 func (ar *AgentRunner) Run(prompt, workdir, tools string, timeout time.Duration, model ...string) *RunResult {
-	return ar.RunWithContext(context.Background(), prompt, workdir, tools, timeout, 80, 200, 0, nil, nil, nil, model...)
+	return ar.RunWithContext(context.Background(), prompt, workdir, tools, timeout, 80, 200, 0, nil, nil, nil, nil, nil, model...)
 }
 
 // RunVerifier spawns a verifier subagent.  The agent definition (the system

@@ -15,6 +15,7 @@ import (
 
 	"github.com/usewhale/whale/internal/core"
 	"github.com/usewhale/whale/internal/policy"
+	"github.com/usewhale/whale/internal/policy/shellrisk"
 	"github.com/usewhale/whale/internal/session"
 	"github.com/usewhale/whale/internal/telemetry"
 )
@@ -220,6 +221,27 @@ func (a *Agent) dispatchToolCalls(ctx context.Context, sc streamDispatchContext,
 		// is explicitly turned off via [gate] config.
 		if isMutationTool(call.Name) && a.gateReadBeforeEdit {
 			if blocked := a.checkReadBeforeEditGate(ctx, &sc, call, &results); blocked {
+				continue
+			}
+		}
+
+		// System-level write-allowlist gate — team workers may only write their
+		// declared outputs (+ exempt dirs). Enforced before the tool runs; any
+		// out-of-scope write to another task's file is rejected here.
+		if isMutationTool(call.Name) && a.writeAllowlist != nil {
+			if blocked := a.checkWriteAllowlistGate(ctx, &sc, call, &results); blocked {
+				continue
+			}
+		}
+
+		// shell_run is a potent write vector (`echo > other.js`, `cp`, `tee`)
+		// that has no declarative file_path, so it can't be checked against the
+		// allowlist by target. When a write allowlist is active, reject any
+		// shell command the classifier does not treat as a safe read-only
+		// operation. This forces the worker to write via the allowlisted
+		// write/edit tools instead of shell redirection.
+		if call.Name == "shell_run" && a.writeAllowlist != nil {
+			if blocked := a.checkShellWriteGate(ctx, &sc, call, &results); blocked {
 				continue
 			}
 		}
@@ -901,6 +923,95 @@ func extractFilePathFromCall(call core.ToolCall) string {
 		return ""
 	}
 	return args.FilePath
+}
+
+// normalizeAllowlistPath resolves a path for allowlist membership checks. It
+// reuses the workspace-path normalizer (abs + consistent casing on Windows) so
+// a file declared as "game.js" matches the same absolute key as the tool-call
+// file_path, avoiding case/path-variant false negatives.
+func normalizeAllowlistPath(p, workspaceRoot string) string {
+	return normalizeWorkspacePath(p, workspaceRoot)
+}
+
+// checkWriteAllowlistGate enforces the system-level write boundary for team
+// workers: mutation tools may only create/modify the task's declared outputs
+// (writeAllowlist) plus the exempt dirs. Rejects the tool call BEFORE it runs
+// with an explicit error — this is an internal invariant, not a prompt hint.
+func (a *Agent) checkWriteAllowlistGate(ctx context.Context, sc *streamDispatchContext, call core.ToolCall, results *[]core.ToolResult) bool {
+	if a.writeAllowlist == nil && len(a.writeExemptDirs) == 0 {
+		return false
+	}
+	filePath := extractFilePathFromCall(call)
+	if filePath == "" {
+		return false
+	}
+	absPath := normalizeAllowlistPath(filePath, a.workspaceRoot)
+
+	if a.writeAllowlist[absPath] {
+		return false
+	}
+	if isPathInExemptDirs(absPath, a.writeExemptDirs) {
+		return false
+	}
+
+	if err := appendToolResult(ctx, sc, results, core.ToolResult{
+		ToolCallID: call.ID,
+		Name:       call.Name,
+		ModelText:  fmt.Sprintf("File %q is not one of this task's declared outputs — writing it is forbidden. Only the files you are assigned to produce may be written; other workspace files are read-only references for you. To avoid unexpected writes, produce your deliverable(s) and place any temporary verification script in the system temp dir.", filePath),
+		Outcome:    core.OutcomeFailure,
+		Code:       "write_not_in_allowlist",
+	}); err != nil {
+		return true
+	}
+	return true
+}
+
+// isPathInExemptDirs reports whether absPath is inside any exempt dir.
+func isPathInExemptDirs(absPath string, exemptDirs []string) bool {
+	for _, d := range exemptDirs {
+		if d == "" {
+			continue
+		}
+		if absPath == d || strings.HasPrefix(absPath, filepath.Clean(d)+string(filepath.Separator)) {
+			return true
+		}
+	}
+	return false
+}
+
+// checkShellWriteGate rejects shell_run commands that the classifier does not
+// treat as safe read-only when a write allowlist is active. A shell command
+// may write arbitrary files via redirection/cp/tee, which the target-path gate
+// cannot see, so a non-read-only shell command is presumed to be an out-of-scope
+// write and blocked. Read-only shell (grep/cat/ls/version checks) is allowed.
+func (a *Agent) checkShellWriteGate(ctx context.Context, sc *streamDispatchContext, call core.ToolCall, results *[]core.ToolResult) bool {
+	if a.writeAllowlist == nil && len(a.writeExemptDirs) == 0 {
+		return false
+	}
+	var args struct {
+		Command string `json:"command"`
+	}
+	if err := json.Unmarshal([]byte(call.Input), &args); err != nil {
+		return false
+	}
+	cmd := strings.TrimSpace(args.Command)
+	if cmd == "" {
+		return false
+	}
+	decision := shellrisk.Classify(cmd)
+	if decision.Allow && decision.Level == shellrisk.LevelSafeRead {
+		return false
+	}
+	if err := appendToolResult(ctx, sc, results, core.ToolResult{
+		ToolCallID: call.ID,
+		Name:       call.Name,
+		ModelText:  fmt.Sprintf("Shell command is not a safe read-only operation, and this task restricts writes to its declared outputs. Use the write/edit tools for your assigned deliverable files; use read-only shell (grep/cat/ls/version checks) for inspection. Place any runnable verification script in the system temp dir and invoke it there."),
+		Outcome:    core.OutcomeFailure,
+		Code:       "shell_write_not_allowed",
+	}); err != nil {
+		return true
+	}
+	return true
 }
 
 func (a *Agent) checkReadBeforeEditGate(ctx context.Context, sc *streamDispatchContext, call core.ToolCall, results *[]core.ToolResult) bool {

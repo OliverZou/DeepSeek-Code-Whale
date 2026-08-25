@@ -333,7 +333,13 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 				if e.Loggers != nil {
 					e.Loggers.Engine("task %s worker START role=%s", taskID[:8], task.Role)
 				}
-				result = e.Runner.RunWithContext(taskCtx, prompt, agentWorkdir, toolsStr, taskTimeout, wIters, wCalls, wTokens, liveOutput, onPID, onStdin)
+				// System-level write boundary: the worker may only write its
+				// declared outputs (+ system temp dir for verification scripts).
+				// This prevents a worker overwriting another task's deliverable
+				// in the shared workdir (engine-level invariant, not a hint).
+				allowlist := splitOutputEntries(task.Output)
+				exemptDirs := []string{os.TempDir()}
+				result = e.Runner.RunWithContext(taskCtx, prompt, agentWorkdir, toolsStr, taskTimeout, wIters, wCalls, wTokens, allowlist, exemptDirs, liveOutput, onPID, onStdin)
 			}
 			Log("timing", "task %s worker done in %.1fs (success=%v)", taskID[:8], time.Since(workerStart).Seconds(), result.Success)
 			if e.Loggers != nil {
@@ -670,7 +676,7 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 		// 交付物缺陷：打回 worker 会陷入“verifier 中断→worker 重做→verifier
 		// 又中断”循环（v41: fix 3 次重试 / 2.1M tokens）。挂起保留报告，交
 		// Leader/用户升级（与 isVerificationTask 的“无法验证”处理一致）。
-		if strings.Contains(feedback, "This turn was auto-interrupted") || strings.Contains(feedback, "tool iteration cap") {
+		if isVerifierCapInterrupt(feedback) {
 			_ = e.Store.UpdateTask(taskID, map[string]interface{}{"verdict": "CAP-INTERRUPT"})
 			if err := e.Store.TransitionState(taskID, TaskStateSuspended, "verifier interrupted by tool cap — cannot verify", feedback); err != nil {
 				return false, err
@@ -712,6 +718,11 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 		desc := task.Description
 		// Strip any previous verifier feedback blocks to prevent
 		// prompt bloat across retries (context grows unboundedly).
+		// Feedback itself is carried ONLY in task.VerifierFeedback (the
+		// input.md "上一轮审查反馈" section) — it must not also be appended to
+		// Description, else the same content is injected twice per retry and
+		// tokens balloon (2048 case: identical [VERIFIER FEEDBACK] + re-review
+		// blocks reaching 1.4M tokens).
 		if idx := strings.Index(desc, "\n\n[VERIFIER FEEDBACK"); idx >= 0 {
 			desc = desc[:idx]
 		}
@@ -724,10 +735,9 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 				"complete — no truncated code, all functions implemented, " +
 				"and the deliverable compiles or passes basic checks."
 		}
-		desc += fmt.Sprintf(
-			"\n\n[VERIFIER FEEDBACK - Attempt %d]\n%s",
-			newRetryCount, feedback,
-		)
+		// Tag the feedback with its attempt so the worker still sees how many
+		// rounds elapsed, without duplicating it into the description.
+		feedback = fmt.Sprintf("[Attempt %d]\n%s", newRetryCount, feedback)
 
 		if err := e.Store.UpdateTask(taskID, map[string]interface{}{
 			"retry_count":       newRetryCount,

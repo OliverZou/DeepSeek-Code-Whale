@@ -85,4 +85,18 @@ func TestIsVerifierCapInterrupt(t *testing.T) {
 	if !strings.Contains(verifierPassTemplate, "VERDICT: PASS") {
 		t.Errorf("pass template must carry a real verdict")
 	}
+	// Lock the Chinese/domain wording the LLM verifier actually emits when it
+	// hit a tool-cap but still wrote a report — these must be treated as cap
+	// interruption (suspend, not retry) so a verifier that simply could not
+	// finish does not burn tokens on a worker retry (2048 case: "工具调用上限
+	// 中断" verdict RETRY loop reached 1.4M tokens).
+	if !isVerifierCapInterrupt("METHOD: 上轮被工具调用上限中断 → 本轮限 2 次调用") {
+		t.Errorf("工具调用上限中断 must be recognized as cap interrupt")
+	}
+	if !isVerifierCapInterrupt(`{"id": "cap-limited", "title": "工具调用上限中断：仅静态核验"}`) {
+		t.Errorf("cap-limited must be recognized as cap interrupt")
+	}
+	if !isVerifierCapInterrupt("工具轮数预算将尽，用已有证据落盘报告") {
+		t.Errorf("工具轮数预算 must be recognized as cap interrupt")
+	}
 }

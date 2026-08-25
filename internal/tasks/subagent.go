@@ -36,7 +36,15 @@ type SpawnSubagentRequest struct {
 	// report: >0 caps at that many chars (full text is saved to the session
 	// dir when exceeded), <0 disables the cap entirely (full report always
 	// returned in-place), 0 uses the runner default.
-	ReportCap         int             `json:"report_cap,omitempty"`
+	ReportCap int `json:"report_cap,omitempty"`
+	// WriteAllowlist is the task's declared output files (relative to the
+	// spawn workdir). When non-empty, the spawned subagent may only write these
+	// paths (+ WriteExemptDirs) — a system-level internal invariant that
+	// prevents overwriting another task's deliverable.
+	WriteAllowlist []string `json:"-"`
+	// WriteExemptDirs are dirs always writable regardless of the allowlist
+	// (e.g. system temp dir for verification scripts).
+	WriteExemptDirs   []string        `json:"-"`
 	ParentToolCallID  string          `json:"-"`
 	WorkflowRunID     string          `json:"-"`
 	WorkflowName      string          `json:"-"`
@@ -356,6 +364,11 @@ func (r *Runner) runSubagent(ctx context.Context, req SpawnSubagentRequest, prog
 			agent.WithAutoCompact(r.autoCompact, r.autoCompactThreshold, r.contextWindowForModel(model)),
 			agent.WithProjectMemory(r.memoryEnabled, r.memoryMaxChars, r.memoryFileOrder, workspace.WorkspaceRoot),
 			agent.WithWorktreeContext(workspace.WorktreeRoot, workspace.OriginalWorkspace),
+			// System-level write boundary: when the request carries declared
+			// outputs, the child may only write them (+ exempt dirs). This is an
+			// internal invariant enforced at tool dispatch, not a prompt hint,
+			// and prevents a worker overwriting another task's deliverable.
+			agent.WithWriteAllowlist(req.WriteAllowlist, req.WriteExemptDirs...),
 			agent.WithDisabledSkills(r.skillsDisabled),
 			agent.WithExtraSkills(r.extraSkills),
 			agent.WithUsageLogPath(r.usageLogPath),
