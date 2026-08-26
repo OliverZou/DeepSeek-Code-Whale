@@ -1903,6 +1903,9 @@ func TestSpawnSubagentDerivesAutoCompactWindowFromChildModel(t *testing.T) {
 	if res.Summary != "child done" {
 		t.Fatalf("summary = %q", res.Summary)
 	}
+	// The child auto-compact window derives from the child model; with a large
+	// window and a huge prior history the child must NOT compact prematurely —
+	// it re-sends the history (the un-compacted behavior).
 	if len(histories) != 1 {
 		t.Fatalf("expected child response without premature compact, got %d provider calls", len(histories))
 	}
