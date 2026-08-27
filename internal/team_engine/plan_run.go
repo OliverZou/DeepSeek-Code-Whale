@@ -319,6 +319,7 @@ func (e *TeamEngine) TeamCycle(ctx context.Context, goal, workdir, masterTaskID 
 			}
 			// Apply the Leader's feedback to every not-passed batch and
 			// re-run them in the next Cycle.
+			resetAny := false
 			for _, b := range batches {
 				if b.Status == BatchStatusPassed {
 					continue
@@ -340,15 +341,23 @@ func (e *TeamEngine) TeamCycle(ctx context.Context, goal, workdir, masterTaskID 
 					continue
 				}
 				b.Status = BatchStatusPending
+				resetAny = true
 				for _, t := range b.Tasks {
 					if isVerificationTask(t) {
 						continue // 保留 suspended 与缺陷报告
 					}
 					e.SendFeedback(t.ID, review.Feedback)
+					resetAny = true
 					if !t.State.IsTerminal() && t.State != TaskStateSuspended {
 						_ = e.Store.TransitionState(t.ID, TaskStateAssigned, "", "")
 					}
 				}
+			}
+			// 无可重置任务：重跑无意义，直接升级交用户（缺陷报告保留）。
+			if !resetAny {
+				e.escalateFirstOpenBatch(batches, review)
+				e.logRunSummary(runStart, elabDur, decompDur, batches)
+				return batches, nil
 			}
 			continue
 
@@ -360,6 +369,7 @@ func (e *TeamEngine) TeamCycle(ctx context.Context, goal, workdir, masterTaskID 
 			}
 			// Escalation strategy applied (e.g. model/parameters changed):
 			// retry the same Cycle with failed tasks reset.
+			resetAny := false
 			for _, b := range batches {
 				if b.Status == BatchStatusPassed {
 					continue
@@ -376,17 +386,24 @@ func (e *TeamEngine) TeamCycle(ctx context.Context, goal, workdir, masterTaskID 
 					continue
 				}
 				b.Status = BatchStatusPending
+				resetAny = true
 				for _, t := range b.Tasks {
 					if isVerificationTask(t) {
 						continue // 保留 suspended 与缺陷报告
 					}
 					e.SendFeedback(t.ID, review.Feedback)
+					resetAny = true
 					if t.State == TaskStateFailed || t.State == TaskStateSuspended {
 						_ = e.Store.TransitionState(t.ID, TaskStatePending, "escalated retry", "")
 					} else if !t.State.IsTerminal() {
 						_ = e.Store.TransitionState(t.ID, TaskStateAssigned, "", "")
 					}
 				}
+			}
+			if !resetAny {
+				e.escalateFirstOpenBatch(batches, review)
+				e.logRunSummary(runStart, elabDur, decompDur, batches)
+				return batches, nil
 			}
 			continue
 

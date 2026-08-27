@@ -212,6 +212,7 @@ func (e *TeamEngine) StartPlanRun(ctx context.Context, masterTaskID string) (str
 				break
 			}
 			Log("plan-run", "master %s cycle %d rejected: resetting failed batches", masterTaskID[:8], cycle)
+			resetAny := false
 			for _, b := range batches {
 				if b.Status == BatchStatusPassed {
 					continue
@@ -232,17 +233,27 @@ func (e *TeamEngine) StartPlanRun(ctx context.Context, masterTaskID string) (str
 					continue
 				}
 				b.Status = BatchStatusPending
+				resetAny = true
 				for _, t := range b.Tasks {
 					if isVerificationTask(t) {
 						continue // 保留 suspended 与缺陷报告
 					}
 					e.SendFeedback(t.ID, review.Feedback)
+					resetAny = true
 					if t.State == TaskStateFailed || t.State == TaskStateSuspended {
 						_ = e.Store.TransitionState(t.ID, TaskStatePending, "cycle reject retry", "")
 					} else if !t.State.IsTerminal() {
 						_ = e.Store.TransitionState(t.ID, TaskStateAssigned, "", "")
 					}
 				}
+			}
+			// 无可重置任务(所有未通过 batch 都是验证缺陷):重跑不会改变任何
+			// 状态,继续 review 循环只会空转 LLM 决策轮(v19:kept failed 后
+			// 每轮 review 一次调用直到 maxCycles)。直接结束,缺陷报告保留,
+			// Leader 的最终 review 轮可驱动上游修复。
+			if !resetAny {
+				Log("plan-run", "master %s cycle %d: no resettable tasks (verification defects belong upstream) — stopping review loop", masterTaskID[:8], cycle)
+				break
 			}
 			if err = e.runBatchesToCompletion(
 				execCtx, batches, masterTaskID, workdir,
