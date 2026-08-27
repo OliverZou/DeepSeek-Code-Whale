@@ -260,7 +260,7 @@ func (e *TeamEngine) StartPlanRun(ctx context.Context, masterTaskID string) (str
 		if err != nil {
 			status = "error"
 		}
-		e.writeRunReport(masterTaskID, master.Goal, status, summary, err, runStarted, batches)
+		e.writeRunReport(masterTaskID, master.Goal, status, summary, err, runStarted, batches, 0, 0, 0)
 		// 运行完结事件：leader 收尾叙述（进展桥据此停止后续注入）。
 		e.fireEvent(TaskEvent{Type: EventLeaderLog, MasterID: masterTaskID, Title: "运行已完结（" + status + "）"})
 		cancel()
