@@ -11,7 +11,14 @@ import (
 // teamEngineForGoal builds a TeamEngine bound to this app's workspace, using
 // the native subagent adapter (and SessionOps) wired by the app runtime when
 // present, with the shell spawner as the standalone fallback.
+//
+// 一次 team 任务全程一个 TeamEngine：会话内首次创建后注册为活动执行引擎，
+// leader 的 team_run_plan 工具复用同一实例，而不是每次重建（重建丢配置、
+// 双实例各记各的 token）。后续调用直接复用已注册的引擎。
 func (a *App) teamEngineForGoal() (*team_engine.TeamEngine, error) {
+	if eng := team_engine.DefaultRunEngine(); eng != nil {
+		return eng, nil
+	}
 	dbPath := filepath.Join(a.workspaceRoot, ".whale", "team_engine.db")
 	wbDir := filepath.Join(a.workspaceRoot, ".whale", "team_tasks")
 	var spawner team_engine.SubagentSpawner = team_engine.NewShellSubagentSpawner()
@@ -25,6 +32,7 @@ func (a *App) teamEngineForGoal() (*team_engine.TeamEngine, error) {
 	if ops := team_engine.DefaultSessionOps(); ops != nil {
 		eng.SetSessionOps(ops)
 	}
+	team_engine.SetDefaultRunEngine(eng)
 	return eng, nil
 }
 

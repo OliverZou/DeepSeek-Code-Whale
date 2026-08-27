@@ -77,3 +77,4 @@ opencode.json
 # local artifacts (worktree/IDE)
 .arts/
 .workbuddy/
+.zcode

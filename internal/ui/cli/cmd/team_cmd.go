@@ -300,6 +300,12 @@ Subcommands:
 			if lite := newLiteSpawner("deepseek-v4-flash"); lite != nil {
 				eng.Runner.SetLiteSpawner(lite)
 			}
+			// 一次 team 任务全程一个 TeamEngine：把本会话的引擎注册为活动执行
+			// 引擎，leader 的 team_run_plan 工具复用同一实例执行 batch，而不是
+			// 每次重建（重建会丢 lite/team 配置、双实例各记各的 token）。
+			// 生命周期仍归本会话（defer Close），工具路径不会关闭复用引擎。
+			team_engine.SetDefaultRunEngine(eng)
+			defer team_engine.ClearDefaultRunEngine()
 
 			// --plan-file: reuse an existing decompose (verbatim plan; the
 			// Leader is bootstrapped, no LLM decomposition of the goal).
@@ -1080,6 +1086,11 @@ func ensureTeamEngineSpawnFunc(workdir string) {
 	// falls back to an InMemoryStore and members become unforkable.
 	sessionsDir := store.DefaultSessionsDir(store.DefaultDataDir())
 	msgStore, _ := store.NewJSONLStore(sessionsDir)
+	// Team workers/verifiers run in this dedicated runner: enable low-threshold
+	// auto-compact so long coding loops (TDD 迭代 + 浏览器验证螺旋) don't grow
+	// unbounded histories. v4 的 1M 上下文窗口下 0.02 ≈ 20K 估计 token 触发；
+	// 摘要必须保留任务契约/验收标准，否则压缩会丢上下文（v11 实验的教训）。
+	// 仅 team 会话生效——主 app 的 runner 不受影响。
 	runner := tasks.NewRunner(tasks.RunnerConfig{
 		ProviderFactory:  providerFactory,
 		AgentDefinitions: library,
@@ -1088,6 +1099,10 @@ func ensureTeamEngineSpawnFunc(workdir string) {
 		ParentTools:      parentTools,
 		MessageStore:     msgStore,
 		SessionsDir:      sessionsDir,
+		AutoCompact:      true,
+		AutoCompactThreshold: 0.02,
+		CompactSummaryContext: "你是团队子代理（team worker）。压缩摘要必须逐条保留：任务契约与验收标准、产出文件路径与当前状态、" +
+			"未通过的测试与报错原文、已验证通过的检查点、尚未完成的下一步。丢失契约会导致重试与返工。",
 	})
 	teamRuntime := app.NewTeamRuntime(runner, library, sessionsDir, msgStore)
 	team_engine.SetDefaultSpawnFunc(teamRuntime.SpawnFunc())

@@ -55,7 +55,16 @@ func (b *Toolset) teamEnginePaths() (dbPath, wbDir string) {
 		filepath.Join(b.root, ".whale", "team_tasks")
 }
 
-func (b *Toolset) newTeamEngine() (*team_engine.TeamEngine, error) {
+func (b *Toolset) newTeamEngine() (*team_engine.TeamEngine, bool, error) {
+	// 一次 team 任务全程只能有一个 TeamEngine：CLI/App 会话注册的引擎是
+	// 事实上的执行者，工具路径必须复用它——每次重建会让执行引擎丢失发起
+	// 方配置（lite spawner、team、token 计数器），v13/v14 实测 batch 执行
+	// 引擎没有 lite → tool-cap 重分解走回带工具的 subagent 路径；且发起
+	// 侧与执行侧各记各的 token，run_report 少报一个数量级。复用引擎的
+	// 生命周期由注册方（CLI/App）拥有，工具不得 Close（reused=true）。
+	if eng := team_engine.DefaultRunEngine(); eng != nil {
+		return eng, true, nil
+	}
 	dbPath, wbDir := b.teamEnginePaths()
 	// Prefer the native subagent adapter wired by the app runtime via
 	// SetDefaultSpawnFunc; fall back to the shell spawner in standalone
@@ -69,7 +78,7 @@ func (b *Toolset) newTeamEngine() (*team_engine.TeamEngine, error) {
 	}
 	eng, err := team_engine.New(dbPath, wbDir, "", spawner)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	// Tool-created engines execute team_run/team_run_plan asynchronously; without
 	// a logger the engine logs silently vanish (v45: team_run re-dispatch turned
@@ -84,7 +93,7 @@ func (b *Toolset) newTeamEngine() (*team_engine.TeamEngine, error) {
 	if ops := team_engine.DefaultSessionOps(); ops != nil {
 		eng.SetSessionOps(ops)
 	}
-	return eng, nil
+	return eng, false, nil
 }
 
 func toolResult(text string) core.ToolResult {
@@ -102,13 +111,13 @@ func toolError(format string, args ...interface{}) core.ToolResult {
 // it directly without waiting for a user-initiated team_execute call.
 func (b *Toolset) AutoExecuteMasterTask(masterTaskID string) {
 	go func() {
-		eng, err := b.newTeamEngine()
+		eng, reused, err := b.newTeamEngine()
 		if err != nil {
 			logToFile(filepath.Join(b.root, ".whale", "team_tasks", "logs", "engine.log"),
 				"dashboard-resume: newTeamEngine failed: %v", err)
 			return
 		}
-		defer eng.Close()
+		if !reused { defer eng.Close() }
 
 		mt, err := eng.GetMasterTask(masterTaskID)
 		if err != nil || mt == nil {
@@ -145,13 +154,13 @@ func (b *Toolset) AutoExecuteMasterTask(masterTaskID string) {
 // RunSingleTask executes a single task by ID.
 func (b *Toolset) RunSingleTask(taskID string) {
 	go func() {
-		eng, err := b.newTeamEngine()
+		eng, reused, err := b.newTeamEngine()
 		if err != nil {
 			logToFile(filepath.Join(b.root, ".whale", "team_tasks", "logs", "engine.log"),
 				"run-single-task: newTeamEngine failed: %v", err)
 			return
 		}
-		defer eng.Close()
+		if !reused { defer eng.Close() }
 
 		ctx, cancel := context.WithCancel(context.Background())
 		b.autoExecCancelMu.Lock()
@@ -229,11 +238,11 @@ func (b *Toolset) runTeamPlan(ctx context.Context, call core.ToolCall, progress 
 	if workdir == "" {
 		workdir = b.root
 	}
-	eng, err := b.newTeamEngine()
+	eng, reused, err := b.newTeamEngine()
 	if err != nil {
 		return toolError("init: %v", err), nil
 	}
-	defer eng.Close()
+	if !reused { defer eng.Close() }
 
 	// Load team configuration if specified.
 	if args.Team != "" {
@@ -464,11 +473,11 @@ func (b *Toolset) teamCreateTool() toolFn {
 			if err := json.Unmarshal([]byte(call.Input), &args); err != nil {
 				return toolError("invalid args: %v", err), nil
 			}
-			eng, err := b.newTeamEngine()
+			eng, reused, err := b.newTeamEngine()
 			if err != nil {
 				return toolError("init: %v", err), nil
 			}
-			defer eng.Close()
+			if !reused { defer eng.Close() }
 
 			task, err := eng.CreateTask(args.Title, args.Description, team_engine.AgentRole(args.Role), "", nil, 3, b.root, "", "", "")
 			if err != nil {
@@ -499,11 +508,11 @@ func (b *Toolset) teamRunTool() toolFn {
 			if err := json.Unmarshal([]byte(call.Input), &args); err != nil {
 				return toolError("invalid args: %v", err), nil
 			}
-			eng, err := b.newTeamEngine()
+			eng, reused, err := b.newTeamEngine()
 			if err != nil {
 				return toolError("init: %v", err), nil
 			}
-			defer eng.Close()
+			if !reused { defer eng.Close() }
 
 			ok, err := eng.RunTask(ctx, args.TaskID)
 			if err != nil {
@@ -542,7 +551,7 @@ func (b *Toolset) teamRunPlanTool() toolFn {
 			if err := json.Unmarshal([]byte(call.Input), &args); err != nil {
 				return toolError("invalid args: %v", err), nil
 			}
-			eng, err := b.newTeamEngine()
+			eng, reused, err := b.newTeamEngine()
 			if err != nil {
 				return toolError("init: %v", err), nil
 			}
@@ -551,11 +560,14 @@ func (b *Toolset) teamRunPlanTool() toolFn {
 			// 叙述），leader turn 不再被分解同步阻塞。
 			msg, err := eng.StartPlanRun(ctx, args.MasterTaskID)
 			if err != nil {
-				eng.Close()
+				if !reused {
+					eng.Close()
+				}
 				return toolError("start plan run: %v", err), nil
 			}
 			// Success path: the run owns the engine's lifecycle (closed when it
-			// finishes) — never Close here.
+			// finishes) — never Close here. A reused (registered) engine is
+			// owned by the CLI/App session regardless.
 			return toolResult(msg), nil
 		},
 	}
@@ -582,11 +594,11 @@ func (b *Toolset) teamStatusTool() toolFn {
 			if err := json.Unmarshal([]byte(call.Input), &args); err != nil {
 				return toolError("invalid args: %v", err), nil
 			}
-			eng, err := b.newTeamEngine()
+			eng, reused, err := b.newTeamEngine()
 			if err != nil {
 				return toolError("init: %v", err), nil
 			}
-			defer eng.Close()
+			if !reused { defer eng.Close() }
 
 			task, err := eng.GetTask(args.TaskID)
 			if err != nil || task == nil {
@@ -620,11 +632,11 @@ func (b *Toolset) teamListTool() toolFn {
 		readOnly:    true,
 		parameters:  map[string]any{"type": "object", "properties": map[string]any{}},
 		fn: func(ctx context.Context, call core.ToolCall) (core.ToolResult, error) {
-			eng, err := b.newTeamEngine()
+			eng, reused, err := b.newTeamEngine()
 			if err != nil {
 				return toolError("init: %v", err), nil
 			}
-			defer eng.Close()
+			if !reused { defer eng.Close() }
 
 			tasks, err := eng.ListTasks()
 			if err != nil {
@@ -774,11 +786,11 @@ func (b *Toolset) teamFeedbackTool() toolFn {
 			if err := json.Unmarshal([]byte(call.Input), &args); err != nil {
 				return toolError("invalid args: %v", err), nil
 			}
-			eng, err := b.newTeamEngine()
+			eng, reused, err := b.newTeamEngine()
 			if err != nil {
 				return toolError("init: %v", err), nil
 			}
-			defer eng.Close()
+			if !reused { defer eng.Close() }
 
 			if err := eng.SendFeedback(args.TaskID, args.Message); err != nil {
 				return toolError("feedback: %v", err), nil
@@ -821,11 +833,11 @@ func (b *Toolset) teamHistoryTool() toolFn {
 			if err := json.Unmarshal([]byte(call.Input), &args); err != nil {
 				return toolError("invalid args: %v", err), nil
 			}
-			eng, err := b.newTeamEngine()
+			eng, reused, err := b.newTeamEngine()
 			if err != nil {
 				return toolError("init: %v", err), nil
 			}
-			defer eng.Close()
+			if !reused { defer eng.Close() }
 
 			entries, err := eng.Store.GetTaskHistory(args.TaskID)
 			if err != nil {
@@ -871,11 +883,11 @@ func (b *Toolset) teamExportTool() toolFn {
 			if err := json.Unmarshal([]byte(call.Input), &args); err != nil {
 				return toolError("invalid args: %v", err), nil
 			}
-			eng, err := b.newTeamEngine()
+			eng, reused, err := b.newTeamEngine()
 			if err != nil {
 				return toolError("init: %v", err), nil
 			}
-			defer eng.Close()
+			if !reused { defer eng.Close() }
 
 			jsonStr, err := eng.ExportTaskLogJSON(args.TaskID)
 			if err != nil {
@@ -907,11 +919,11 @@ func (b *Toolset) teamOutputTool() toolFn {
 			if err := json.Unmarshal([]byte(call.Input), &args); err != nil {
 				return toolError("invalid args: %v", err), nil
 			}
-			eng, err := b.newTeamEngine()
+			eng, reused, err := b.newTeamEngine()
 			if err != nil {
 				return toolError("init: %v", err), nil
 			}
-			defer eng.Close()
+			if !reused { defer eng.Close() }
 
 			task, err := eng.GetTask(args.TaskID)
 			if err != nil || task == nil {
@@ -986,11 +998,11 @@ func (b *Toolset) teamResultTool() toolFn {
 			if err := json.Unmarshal([]byte(call.Input), &args); err != nil {
 				return toolError("invalid args: %v", err), nil
 			}
-			eng, err := b.newTeamEngine()
+			eng, reused, err := b.newTeamEngine()
 			if err != nil {
 				return toolError("init: %v", err), nil
 			}
-			defer eng.Close()
+			if !reused { defer eng.Close() }
 
 			mt, err := eng.GetMasterTask(args.MasterTaskID)
 			if err != nil || mt == nil {
@@ -1098,11 +1110,11 @@ func (b *Toolset) teamDeleteTool() toolFn {
 				return toolError("invalid args: %v", err), nil
 			}
 
-			eng, err := b.newTeamEngine()
+			eng, reused, err := b.newTeamEngine()
 			if err != nil {
 				return toolError("init: %v", err), nil
 			}
-			defer eng.Close()
+			if !reused { defer eng.Close() }
 
 			if args.All {
 				// Delete all master tasks first (each cascades to subtasks).
@@ -1177,11 +1189,11 @@ func (b *Toolset) teamPromptTool() toolFn {
 			if err := json.Unmarshal([]byte(call.Input), &args); err != nil {
 				return toolError("invalid args: %v", err), nil
 			}
-			eng, err := b.newTeamEngine()
+			eng, reused, err := b.newTeamEngine()
 			if err != nil {
 				return toolError("init: %v", err), nil
 			}
-			defer eng.Close()
+			if !reused { defer eng.Close() }
 
 			reply, err := eng.Prompt(ctx, team_engine.PromptRequest{
 				ToTaskID: args.TaskID,
@@ -1234,11 +1246,11 @@ func (b *Toolset) teamSpawnTool() toolFn {
 			if args.MaxRetries <= 0 {
 				args.MaxRetries = 3
 			}
-			eng, err := b.newTeamEngine()
+			eng, reused, err := b.newTeamEngine()
 			if err != nil {
 				return toolError("init: %v", err), nil
 			}
-			defer eng.Close()
+			if !reused { defer eng.Close() }
 
 			task, err := eng.Spawn(ctx, team_engine.SpawnRequest{
 				Title:       args.Title,
@@ -1278,11 +1290,11 @@ func (b *Toolset) teamAbortTool() toolFn {
 			if err := json.Unmarshal([]byte(call.Input), &args); err != nil {
 				return toolError("invalid args: %v", err), nil
 			}
-			eng, err := b.newTeamEngine()
+			eng, reused, err := b.newTeamEngine()
 			if err != nil {
 				return toolError("init: %v", err), nil
 			}
-			defer eng.Close()
+			if !reused { defer eng.Close() }
 
 			// master 级停止（用户喊停）：中止整个 run。
 			if strings.TrimSpace(args.MasterTaskID) != "" {
@@ -1321,11 +1333,11 @@ func (b *Toolset) teamKillTool() toolFn {
 			if err := json.Unmarshal([]byte(call.Input), &args); err != nil {
 				return toolError("invalid args: %v", err), nil
 			}
-			eng, err := b.newTeamEngine()
+			eng, reused, err := b.newTeamEngine()
 			if err != nil {
 				return toolError("init: %v", err), nil
 			}
-			defer eng.Close()
+			if !reused { defer eng.Close() }
 
 			if err := eng.Kill(ctx, args.TaskID); err != nil {
 				return toolError("kill: %v", err), nil
@@ -1357,11 +1369,11 @@ func (b *Toolset) teamSummarizeTool() toolFn {
 			if err := json.Unmarshal([]byte(call.Input), &args); err != nil {
 				return toolError("invalid args: %v", err), nil
 			}
-			eng, err := b.newTeamEngine()
+			eng, reused, err := b.newTeamEngine()
 			if err != nil {
 				return toolError("init: %v", err), nil
 			}
-			defer eng.Close()
+			if !reused { defer eng.Close() }
 
 			sessionID := args.SessionID
 			if sessionID == "" {
@@ -1403,11 +1415,11 @@ func (b *Toolset) teamForkTool() toolFn {
 			if err := json.Unmarshal([]byte(call.Input), &args); err != nil {
 				return toolError("invalid args: %v", err), nil
 			}
-			eng, err := b.newTeamEngine()
+			eng, reused, err := b.newTeamEngine()
 			if err != nil {
 				return toolError("init: %v", err), nil
 			}
-			defer eng.Close()
+			if !reused { defer eng.Close() }
 
 			sessionID := args.SessionID
 			if sessionID == "" {
