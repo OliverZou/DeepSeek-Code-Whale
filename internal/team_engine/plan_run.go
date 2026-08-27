@@ -323,8 +323,27 @@ func (e *TeamEngine) TeamCycle(ctx context.Context, goal, workdir, masterTaskID 
 				if b.Status == BatchStatusPassed {
 					continue
 				}
+				// 验证任务不参与自动重置：它 FAIL 的缺陷属于上游实现，重跑
+				// 验证任务只会重复发现同一缺陷（v15：集成验证 FAIL 后 cycle
+				// 重置重跑 batch，白烧 ~300K raw token 且无进展）。保持
+				// suspended 交 Leader 决策——Leader 的 review 轮有
+				// team_run/team_feedback 工具，可直接驱动上游任务修复。
+				hasNonVerification := false
+				for _, t := range b.Tasks {
+					if !isVerificationTask(t) {
+						hasNonVerification = true
+						break
+					}
+				}
+				if !hasNonVerification {
+					Log("plan", "plan: verification batch %s kept failed (defects belong upstream — Leader decides)", b.ID)
+					continue
+				}
 				b.Status = BatchStatusPending
 				for _, t := range b.Tasks {
+					if isVerificationTask(t) {
+						continue // 保留 suspended 与缺陷报告
+					}
 					e.SendFeedback(t.ID, review.Feedback)
 					if !t.State.IsTerminal() && t.State != TaskStateSuspended {
 						_ = e.Store.TransitionState(t.ID, TaskStateAssigned, "", "")
@@ -345,8 +364,22 @@ func (e *TeamEngine) TeamCycle(ctx context.Context, goal, workdir, masterTaskID 
 				if b.Status == BatchStatusPassed {
 					continue
 				}
+				hasNonVerification := false
+				for _, t := range b.Tasks {
+					if !isVerificationTask(t) {
+						hasNonVerification = true
+						break
+					}
+				}
+				if !hasNonVerification {
+					Log("plan", "plan: verification batch %s kept failed (defects belong upstream — Leader decides)", b.ID)
+					continue
+				}
 				b.Status = BatchStatusPending
 				for _, t := range b.Tasks {
+					if isVerificationTask(t) {
+						continue // 保留 suspended 与缺陷报告
+					}
 					e.SendFeedback(t.ID, review.Feedback)
 					if t.State == TaskStateFailed || t.State == TaskStateSuspended {
 						_ = e.Store.TransitionState(t.ID, TaskStatePending, "escalated retry", "")
