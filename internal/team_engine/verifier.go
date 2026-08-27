@@ -29,6 +29,10 @@ type Verifier struct {
 	// most recent Verify run (worker+verifier accounting; 0 when unavailable).
 	LastPromptTokens     int
 	LastCompletionTokens int
+	// Cache split of the last Verify run's prompt tokens (prefix-cache hit vs
+	// full-price miss) — feeds the engine's effective-token accounting.
+	LastPromptCacheHit  int
+	LastPromptCacheMiss int
 	// previousReport is the last verification report when this run is a
 	// re-review (worker retried after a FAIL): the verifier must only re-verify
 	// the items marked failed/unverifiable, not re-verify the whole deliverable.
@@ -209,6 +213,8 @@ func (v *Verifier) Verify(task *Task) (passed bool, retry bool, feedback string,
 	result := v.runner.RunVerifier(prompt, workdir, timeout, vIters, vCalls, vTokens, v.agentName, model)
 	v.LastPromptTokens = result.UsagePrompt
 	v.LastCompletionTokens = result.UsageCompletion
+	v.LastPromptCacheHit = result.UsagePromptCacheHit
+	v.LastPromptCacheMiss = result.UsagePromptCacheMiss
 	v.LastSystemPrompt = result.SystemPrompt
 
 	output := result.Stdout
@@ -222,6 +228,8 @@ func (v *Verifier) Verify(task *Task) (passed bool, retry bool, feedback string,
 		result2 := v.runner.RunVerifier(hardenedPrompt, workdir, timeout, vIters, vCalls, vTokens, v.agentName, model)
 		v.LastPromptTokens += result2.UsagePrompt
 		v.LastCompletionTokens += result2.UsageCompletion
+		v.LastPromptCacheHit += result2.UsagePromptCacheHit
+		v.LastPromptCacheMiss += result2.UsagePromptCacheMiss
 		output = result2.Stdout
 	}
 
@@ -237,6 +245,8 @@ func (v *Verifier) Verify(task *Task) (passed bool, retry bool, feedback string,
 		result2 := v.runner.RunVerifier(minimalPrompt, workdir, timeout, vIters, vCalls, vTokens, v.agentName, model)
 		v.LastPromptTokens += result2.UsagePrompt
 		v.LastCompletionTokens += result2.UsageCompletion
+		v.LastPromptCacheHit += result2.UsagePromptCacheHit
+		v.LastPromptCacheMiss += result2.UsagePromptCacheMiss
 		output = result2.Stdout
 	}
 

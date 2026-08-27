@@ -202,6 +202,46 @@ func SetDefaultSpawnFunc(fn SpawnFunc) {
 	defaultSpawnFunc = fn
 }
 
+// ---------------------------------------------------------------------------
+// Single-run engine ownership
+//
+// 一次 team 任务全程只能有一个 TeamEngine。CLI/App 入口创建自己的引擎后
+// 注册为「活动执行引擎」;team_run_plan 等工具不再每次重建实例,而是复用
+// 注册的引擎——否则工具路径的引擎会丢失发起方配置(lite spawner、team、
+// 计数器),v13/v14 实测:batch 执行引擎没有 lite → tool-cap 重分解走回
+// 带工具的 subagent 路径;执行实例与发起实例各记各的 token,run_report
+// 只有发起侧的一小部分。
+// ---------------------------------------------------------------------------
+
+var (
+	defaultRunEngine   *TeamEngine
+	defaultRunEngineMu sync.RWMutex
+)
+
+// DefaultRunEngine returns the package-level active run engine, or nil when
+// none is registered (standalone tool paths fall back to per-call engines).
+func DefaultRunEngine() *TeamEngine {
+	defaultRunEngineMu.RLock()
+	defer defaultRunEngineMu.RUnlock()
+	return defaultRunEngine
+}
+
+// SetDefaultRunEngine registers the run engine owned by the current
+// CLI/App session. The caller keeps ownership of its lifecycle (Close);
+// tool paths must NOT close a registered engine.
+func SetDefaultRunEngine(e *TeamEngine) {
+	defaultRunEngineMu.Lock()
+	defer defaultRunEngineMu.Unlock()
+	defaultRunEngine = e
+}
+
+// ClearDefaultRunEngine unregisters the run engine (e.g. on session close).
+func ClearDefaultRunEngine() {
+	defaultRunEngineMu.Lock()
+	defer defaultRunEngineMu.Unlock()
+	defaultRunEngine = nil
+}
+
 // =============================================================================
 // Context Isolation Principle
 //
@@ -293,15 +333,15 @@ func newShellSessionID() string {
 // shell-spawned subprocess session.  The child `whale exec` process inherits
 // WHALE_SESSION_ID and writes its per-turn usage to
 // <usageDir>/<sid>.jsonl; read that file back so the parent reports real
-// token usage instead of zeros.  Returns 0,0 when no usage is found.
-func readShellUsage(sid string) (prompt, completion int) {
+// token usage instead of zeros.  Returns zeros when no usage is found.
+func readShellUsage(sid string) (prompt, completion, hit, miss int) {
 	sid = strings.TrimSpace(sid)
 	if sid == "" {
-		return 0, 0
+		return 0, 0, 0, 0
 	}
 	f, err := os.Open(filepath.Join(telemetry.DefaultUsageLogDir(), sid+".jsonl"))
 	if err != nil {
-		return 0, 0
+		return 0, 0, 0, 0
 	}
 	defer f.Close()
 	scanner := bufio.NewScanner(f)
@@ -312,8 +352,10 @@ func readShellUsage(sid string) (prompt, completion int) {
 		}
 		prompt += rec.PromptTokens
 		completion += rec.CompletionTokens
+		hit += rec.PromptCacheHit
+		miss += rec.PromptCacheMiss
 	}
-	return prompt, completion
+	return prompt, completion, hit, miss
 }
 
 func (s *ShellSubagentSpawner) SpawnSubagent(ctx context.Context, req SubagentRequest) (SubagentResponse, error) {
@@ -407,8 +449,8 @@ func (s *ShellSubagentSpawner) SpawnSubagent(ctx context.Context, req SubagentRe
 				exitCode = -1
 			}
 		}
-		usagePrompt, usageCompletion := readShellUsage(sid)
-		return SubagentResponse{SessionID: sid, SpawnerType: "shell", Output: stdout.String(), Diagnostic: stderr.String(), ExitCode: exitCode, Success: waitErr == nil, PID: pid, UsagePrompt: usagePrompt, UsageCompletion: usageCompletion}, nil
+		usagePrompt, usageCompletion, usageHit, usageMiss := readShellUsage(sid)
+		return SubagentResponse{SessionID: sid, SpawnerType: "shell", Output: stdout.String(), Diagnostic: stderr.String(), ExitCode: exitCode, Success: waitErr == nil, PID: pid, UsagePrompt: usagePrompt, UsageCompletion: usageCompletion, UsagePromptCacheHit: usageHit, UsagePromptCacheMiss: usageMiss}, nil
 
 	case <-ctx.Done():
 		cmd.Process.Kill()

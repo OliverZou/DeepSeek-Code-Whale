@@ -294,6 +294,7 @@ type Agent struct {
 	autoCompact            bool
 	compactThresh          float64
 	contextWindow          int
+	compactSummaryContext  string
 	recovery               RecoveryPolicy
 	hooks                  *HookRunner
 	classifier             *Classifier
@@ -730,6 +731,16 @@ func WithAutoCompact(enabled bool, threshold float64, contextWindow int) AgentOp
 		if contextWindow > 0 {
 			a.contextWindow = contextWindow
 		}
+	}
+}
+
+// WithCompactSummaryContext appends fixed guidance to the compact-summary
+// prompt, so callers that compress history can demand domain-specific
+// preservation (e.g. team workers must keep task contracts/acceptance
+// criteria in the summary or the compaction silently drops them).
+func WithCompactSummaryContext(guidance string) AgentOption {
+	return func(a *Agent) {
+		a.compactSummaryContext = strings.TrimSpace(guidance)
 	}
 }
 

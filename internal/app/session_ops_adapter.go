@@ -122,8 +122,10 @@ func (rt *TeamRuntime) Continue(ctx context.Context, sessionID, task string) (te
 		Structured:      resp.StructuredResult,
 		ExitCode:        exitCode,
 		Success:         success,
-		UsagePrompt:     resp.Usage.PromptTokens,
-		UsageCompletion: resp.Usage.CompletionTokens,
+		UsagePrompt:         resp.Usage.PromptTokens,
+		UsageCompletion:     resp.Usage.CompletionTokens,
+		UsagePromptCacheHit: resp.Usage.PromptCacheHitTokens,
+		UsagePromptCacheMiss: resp.Usage.PromptCacheMissTokens,
 		SystemPrompt:    resp.SystemPrompt,
 	}, nil
 }

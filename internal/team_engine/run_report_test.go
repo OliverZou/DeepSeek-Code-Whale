@@ -38,7 +38,7 @@ func TestWriteRunReport(t *testing.T) {
 
 	batches := []*Batch{{ID: "b1", Label: "build", Status: BatchStatusPassed, Tasks: []*Task{t1, t2}}}
 	started := time.Now().Add(-2 * time.Minute)
-	eng.writeRunReport(masterID, "2048 game", "done", "1/1 batches passed, 0 failed", nil, started, batches)
+	eng.writeRunReport(masterID, "2048 game", "done", "1/1 batches passed, 0 failed", nil, started, batches, 0, 0, 0)
 
 	data, err := os.ReadFile(filepath.Join(eng.Whiteboard.MasterDir(masterID), "run_report.json"))
 	if err != nil {

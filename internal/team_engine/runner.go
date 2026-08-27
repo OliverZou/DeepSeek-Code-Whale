@@ -91,6 +91,10 @@ type RunResult struct {
 	Structured      any     `json:"-"` // structured output (when OutputSchema was set)
 	UsagePrompt     int     `json:"-"` // prompt tokens (0 if unavailable)
 	UsageCompletion int     `json:"-"` // completion tokens (0 if unavailable)
+	// Cache split (DeepSeek prefix caching): hit tokens are billed at ~1/31 of
+	// miss tokens, so raw prompt sums massively overstate real cost.
+	UsagePromptCacheHit  int `json:"-"` // prompt tokens served from prefix cache
+	UsagePromptCacheMiss int `json:"-"` // prompt tokens billed at full input price
 	SpawnerType     string  `json:"-"` // "adapter" or "shell" — which spawner was used
 	SystemPrompt    string  `json:"-"` // assembled extra system-prompt content (adapter only; "" for shell)
 	PID             int     `json:"-"` // OS process ID (0 if in-process)
@@ -161,6 +165,9 @@ type SubagentResponse struct {
 	Success         bool
 	UsagePrompt     int    // prompt tokens consumed
 	UsageCompletion int    // completion tokens consumed
+	// Cache split (DeepSeek prefix caching) — see RunResult.
+	UsagePromptCacheHit  int
+	UsagePromptCacheMiss int
 	Diagnostic      string // detailed debug info (tool resolution, status, errors)
 	SystemPrompt    string // assembled extra system-prompt content (adapter only; "" for shell)
 	PID             int    // OS process ID (0 if in-process adapter)
@@ -276,8 +283,10 @@ func (ar *AgentRunner) RunWithContext(ctx context.Context, prompt, workdir, tool
 		DurationSeconds: round(elapsed, 2),
 		Success:         resp.Success,
 		Structured:      resp.Structured,
-		UsagePrompt:     resp.UsagePrompt,
-		UsageCompletion: resp.UsageCompletion,
+		UsagePrompt:         resp.UsagePrompt,
+		UsageCompletion:     resp.UsageCompletion,
+		UsagePromptCacheHit: resp.UsagePromptCacheHit,
+		UsagePromptCacheMiss: resp.UsagePromptCacheMiss,
 		SystemPrompt:    resp.SystemPrompt,
 		PID:             resp.PID,
 	}
@@ -343,8 +352,10 @@ func (ar *AgentRunner) RunVerifier(prompt, workdir string, timeout time.Duration
 		DurationSeconds: round(elapsed, 2),
 		Success:         resp.Success,
 		Structured:      resp.Structured,
-		UsagePrompt:     resp.UsagePrompt,
-		UsageCompletion: resp.UsageCompletion,
+		UsagePrompt:         resp.UsagePrompt,
+		UsageCompletion:     resp.UsageCompletion,
+		UsagePromptCacheHit: resp.UsagePromptCacheHit,
+		UsagePromptCacheMiss: resp.UsagePromptCacheMiss,
 		SystemPrompt:    resp.SystemPrompt,
 		PID:             resp.PID,
 	}
@@ -469,8 +480,10 @@ func (ar *AgentRunner) RunLeaderBootstrap(prompt, workdir string, timeout time.D
 		DurationSeconds: round(elapsed, 2),
 		Success:         resp.Success,
 		Structured:      resp.Structured,
-		UsagePrompt:     resp.UsagePrompt,
-		UsageCompletion: resp.UsageCompletion,
+		UsagePrompt:         resp.UsagePrompt,
+		UsageCompletion:     resp.UsageCompletion,
+		UsagePromptCacheHit: resp.UsagePromptCacheHit,
+		UsagePromptCacheMiss: resp.UsagePromptCacheMiss,
 		SystemPrompt:    resp.SystemPrompt,
 	}
 }
@@ -511,11 +524,26 @@ func (ar *AgentRunner) RunDecomposer(prompt, workdir string, timeout time.Durati
 	}
 	req.MaxTokens = effectiveMaxTokens(0, mdl)
 
+	// Decompose is a pure text→plan-JSON analysis: the lite spawner (no tools,
+	// no subprocess) is the right path — the full subagent resolves a planner
+	// agent definition whose workspace tools tempt the model into an
+	// exploratory list_dir, which burns the one-shot tool budget and gets the
+	// turn force-summarized before the JSON is emitted (v13: first decompose
+	// draw auto-interrupted → retry → plan drifted from 5 tasks to 6 serial
+	// batches). Elaboration already runs through the lite path; decompose
+	// should match. When no lite spawner is wired, fall back to the main
+	// spawner (SessionID is not needed here — BootstrapSession covers the
+	// leader session for drive/review turns).
+	spawner := ar.spawner
+	if ar.liteSpawner != nil {
+		spawner = ar.liteSpawner
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
 	start := time.Now()
-	resp, err := ar.spawner.SpawnSubagent(ctx, req)
+	resp, err := spawner.SpawnSubagent(ctx, req)
 	elapsed := time.Since(start).Seconds()
 
 	if err != nil {
@@ -539,8 +567,10 @@ func (ar *AgentRunner) RunDecomposer(prompt, workdir string, timeout time.Durati
 		DurationSeconds: round(elapsed, 2),
 		Success:         resp.Success,
 		Structured:      resp.Structured,
-		UsagePrompt:     resp.UsagePrompt,
-		UsageCompletion: resp.UsageCompletion,
+		UsagePrompt:         resp.UsagePrompt,
+		UsageCompletion:     resp.UsageCompletion,
+		UsagePromptCacheHit: resp.UsagePromptCacheHit,
+		UsagePromptCacheMiss: resp.UsagePromptCacheMiss,
 		SystemPrompt:    resp.SystemPrompt,
 	}
 }
@@ -606,8 +636,10 @@ func (ar *AgentRunner) RunElaborationStep(prompt, workdir string, timeout time.D
 		DurationSeconds: round(elapsed, 2),
 		Success:         resp.Success,
 		Structured:      resp.Structured,
-		UsagePrompt:     resp.UsagePrompt,
-		UsageCompletion: resp.UsageCompletion,
+		UsagePrompt:         resp.UsagePrompt,
+		UsageCompletion:     resp.UsageCompletion,
+		UsagePromptCacheHit: resp.UsagePromptCacheHit,
+		UsagePromptCacheMiss: resp.UsagePromptCacheMiss,
 		SystemPrompt:    resp.SystemPrompt,
 	}
 }

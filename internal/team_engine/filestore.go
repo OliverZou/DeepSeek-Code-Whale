@@ -122,12 +122,22 @@ type taskMeta struct {
 	VerifierFocus    string   `json:"verifier_focus,omitempty"`
 	VerifierFeedback string   `json:"verifier_feedback,omitempty"`
 	MaxRetries       int      `json:"max_retries,omitempty"`
+	Complexity       string   `json:"complexity,omitempty"`
 	CreatedAt        string   `json:"created_at"`
 	// 运行统计（累计，含重试轮）——事后分析与 run_report 的输出依据。
 	WorkerDuration   float64 `json:"worker_duration_seconds,omitempty"`
 	WorkerTokens     int     `json:"worker_tokens,omitempty"`
 	VerifierDuration float64 `json:"verifier_duration_seconds,omitempty"`
 	VerifierTokens   int     `json:"verifier_tokens,omitempty"`
+	// 缓存分账（DeepSeek 前缀缓存）：hit 以 ~1/31 价计费，run_report 用它
+	// 重建全量真实账单，而不是只有 raw 重放体积。store 是 leader 侧与
+	// execute 侧两个引擎实例共享的唯一事实源。
+	WorkerPromptHit        int `json:"worker_prompt_hit,omitempty"`
+	WorkerPromptMiss       int `json:"worker_prompt_miss,omitempty"`
+	WorkerCompletion       int `json:"worker_completion,omitempty"`
+	VerifierPromptHit      int `json:"verifier_prompt_hit,omitempty"`
+	VerifierPromptMiss     int `json:"verifier_prompt_miss,omitempty"`
+	VerifierCompletion     int `json:"verifier_completion,omitempty"`
 	ToolCalls        int     `json:"tool_calls,omitempty"`
 	TopTools         string  `json:"top_tools,omitempty"`
 	// 事后分析轨迹：验证结论/验证者 cap 次数/工具等待时长（墙钟归因）。
@@ -184,12 +194,19 @@ func (fs *FileTaskStore) taskFromMeta(meta *taskMeta) *Task {
 		VerifierFocus:    meta.VerifierFocus,
 		VerifierFeedback: meta.VerifierFeedback,
 		MaxRetries:       meta.MaxRetries,
+		Complexity:       meta.Complexity,
 		RetryCount:       0, // runtime counter, not persisted
 		CreatedAt:        meta.CreatedAt,
 		WorkerDuration:   meta.WorkerDuration,
 		WorkerTokens:     meta.WorkerTokens,
 		VerifierDuration: meta.VerifierDuration,
 		VerifierTokens:   meta.VerifierTokens,
+		WorkerPromptHit:        meta.WorkerPromptHit,
+		WorkerPromptMiss:       meta.WorkerPromptMiss,
+		WorkerCompletion:       meta.WorkerCompletion,
+		VerifierPromptHit:      meta.VerifierPromptHit,
+		VerifierPromptMiss:     meta.VerifierPromptMiss,
+		VerifierCompletion:     meta.VerifierCompletion,
 		ToolCalls:        meta.ToolCalls,
 		TopTools:         meta.TopTools,
 		Verdict:          meta.Verdict,
@@ -343,7 +360,7 @@ func (fs *FileTaskStore) InsertTask(task *Task) error {
 		ID: task.ID, Title: task.Title, Description: task.Description,
 		Role: string(task.Role), Output: task.Output, Workdir: task.Workdir,
 		ParentIDs: task.ParentIDs, UpstreamBatches: task.UpstreamBatches, BatchID: task.BatchID, MasterTaskID: task.MasterTaskID,
-		VerifierFocus: task.VerifierFocus, MaxRetries: task.MaxRetries,
+		VerifierFocus: task.VerifierFocus, MaxRetries: task.MaxRetries, Complexity: task.Complexity,
 		CreatedAt: time.Now().UTC().Format(time.RFC3339),
 	}
 	if err := fs.writeMeta(dir, meta); err != nil {
@@ -539,6 +556,13 @@ func (fs *FileTaskStore) UpdateTask(id string, fields map[string]interface{}) er
 		meta.MasterTaskID = fmt.Sprint(v)
 		t.MasterTaskID = meta.MasterTaskID
 	}
+	// complexity: leader 的规模判定驱动 worker/verifier 迭代预算（30 轮 vs
+	// 80 轮）。此前只在内存里赋值、从未落盘，任务重读后预算全部回落到
+	// complex 档——42 轮的调试螺旋因此没有任何预算拦截（2048 实测）。
+	if v, ok := fields["complexity"]; ok {
+		meta.Complexity = fmt.Sprint(v)
+		t.Complexity = meta.Complexity
+	}
 	if v, ok := fields["verifier_focus"]; ok {
 		meta.VerifierFocus = fmt.Sprint(v)
 		t.VerifierFocus = meta.VerifierFocus
@@ -603,6 +627,29 @@ func (fs *FileTaskStore) UpdateTask(id string, fields map[string]interface{}) er
 			meta.VerifierTokens += int(n)
 		}
 		t.VerifierTokens = meta.VerifierTokens
+	}
+	// 缓存分账（与 worker_tokens/verifier_tokens 相同的累加语义）：raw 数字
+	// 里 90%+ 是前缀缓存命中（~1/31 价），run_report 需要 hit/miss 分账才能
+	// 算出真实成本，而不是重放体积。
+	for _, f := range []struct {
+		key  string
+		dst  func(v int)
+	}{
+		{"worker_prompt_hit", func(v int) { meta.WorkerPromptHit += v; t.WorkerPromptHit = meta.WorkerPromptHit }},
+		{"worker_prompt_miss", func(v int) { meta.WorkerPromptMiss += v; t.WorkerPromptMiss = meta.WorkerPromptMiss }},
+		{"worker_completion", func(v int) { meta.WorkerCompletion += v; t.WorkerCompletion = meta.WorkerCompletion }},
+		{"verifier_prompt_hit", func(v int) { meta.VerifierPromptHit += v; t.VerifierPromptHit = meta.VerifierPromptHit }},
+		{"verifier_prompt_miss", func(v int) { meta.VerifierPromptMiss += v; t.VerifierPromptMiss = meta.VerifierPromptMiss }},
+		{"verifier_completion", func(v int) { meta.VerifierCompletion += v; t.VerifierCompletion = meta.VerifierCompletion }},
+	} {
+		if v, ok := fields[f.key]; ok {
+			switch n := v.(type) {
+			case int:
+				f.dst(n)
+			case float64:
+				f.dst(int(n))
+			}
+		}
 	}
 	// 工具探针：tool_calls 累加（多轮 worker 都要计入）；top_tools 覆写
 	// （run_task 侧已聚合为累计直方图 Top2）。

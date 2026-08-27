@@ -66,6 +66,10 @@ type RunnerConfig struct {
 	ExtraSkills                []*skills.Skill
 	AutoCompact                bool
 	AutoCompactThreshold       float64
+	// CompactSummaryContext appends preservation requirements to the compact
+	// summary prompt (e.g. team workers must keep task contracts/acceptance
+	// criteria when history is compressed).
+	CompactSummaryContext      string
 	DefaultModel               string
 	DefaultMaxTokens           int
 	DefaultMaxToolIters        int
@@ -98,6 +102,7 @@ type Runner struct {
 	extraSkills                []*skills.Skill
 	autoCompact                bool
 	autoCompactThreshold       float64
+	compactSummaryContext      string
 	defaultModel               string
 	defaultMaxTokens           int
 	defaultMaxToolIters        int
@@ -159,6 +164,7 @@ func NewRunner(cfg RunnerConfig) *Runner {
 		extraSkills:                append([]*skills.Skill(nil), cfg.ExtraSkills...),
 		autoCompact:                cfg.AutoCompact,
 		autoCompactThreshold:       cfg.AutoCompactThreshold,
+		compactSummaryContext:      strings.TrimSpace(cfg.CompactSummaryContext),
 		defaultModel:               model,
 		defaultMaxTokens:           maxTokens,
 		defaultMaxToolIters:        maxToolIters,

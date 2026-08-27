@@ -157,7 +157,7 @@ func (e *TeamEngine) RunLeaderDriven(ctx context.Context, goal, workdir, masterT
 	// The submit turn is part of the orchestration cost — fold its usage into
 	// the engine totals so the run summary reflects the whole Leader-driven
 	// run, not only the worker/verifier batches.
-	e.addTokens(res.UsagePrompt, res.UsageCompletion)
+	e.addTokens(res.UsagePrompt, res.UsageCompletion, res.UsagePromptCacheHit, res.UsagePromptCacheMiss)
 	if defaultTeamLog != nil {
 		Log("leader", "leader-driven submit DONE master=%s success=%v session=%s", masterTaskID, res.Success, leaderSessionID)
 	}
@@ -184,7 +184,7 @@ func (e *TeamEngine) RunLeaderDriven(ctx context.Context, goal, workdir, masterT
 	// it verifies the tasks, redispatches failures (team_run is synchronous —
 	// the result comes back in the call) and writes the final report.
 	res, err = ops.Continue(execCtx, leaderSessionID, leaderDriveReviewPrompt(goal, workdir, masterTaskID, reviewResultForMaster(view, settled, waitErr)))
-	e.addTokens(res.UsagePrompt, res.UsageCompletion)
+	e.addTokens(res.UsagePrompt, res.UsageCompletion, res.UsagePromptCacheHit, res.UsagePromptCacheMiss)
 	if defaultTeamLog != nil {
 		Log("leader", "leader-driven DONE master=%s success=%v report=%d chars session=%s", masterTaskID, res.Success, len(res.Output), leaderSessionID)
 	}
@@ -582,6 +582,7 @@ func (e *TeamEngine) createBatchesFromPlan(planTasks []PlanTask, goal, workdir, 
 				"batch_id":       bid,
 				"master_task_id": masterTaskID,
 				"output":         pt.Output,
+				"complexity":     complexity,
 			})
 			batch.Tasks = append(batch.Tasks, task)
 		}
@@ -762,21 +763,6 @@ func (e *TeamEngine) runBatchesToCompletion(ctx context.Context, batches []*Batc
 				return
 			}
 
-			// Pick up self-split children for the next cycle.
-			stateMu.Lock()
-			for _, t := range batch.Tasks {
-				children, err := e.Store.ListTasksByParent(t.ID)
-				if err == nil && len(children) > 0 {
-					for _, child := range children {
-						if child.State == TaskStatePending || child.State == TaskStateAssigned {
-							_ = e.Store.UpdateTask(child.ID, map[string]interface{}{"batch_id": batch.ID, "master_task_id": t.MasterTaskID})
-							batch.Tasks = append(batch.Tasks, child)
-						}
-					}
-				}
-			}
-			stateMu.Unlock()
-
 			// Log suspended tasks (retries exhausted) for user attention.
 			escalator.LogSuspendedTasks(batch, func(id string) (*Task, error) { return e.Store.GetTask(id) })
 
@@ -792,6 +778,10 @@ func (e *TeamEngine) runBatchesToCompletion(ctx context.Context, batches []*Batc
 			}
 
 			// Check for self-split children before declaring batch done.
+			// 注意：children 拾取只有这一处——曾经在 cycle 顶部还有一个重复的
+			// 拾取块，同一 cycle 内会把同一个子任务 append 两次，下一个 cycle
+			// 并发启动同一任务两次（v15 实测：tool-cap 自拆出的 game-dom 子任务
+			// 被并发执行 2 次，多烧 ~1M raw token，verifier 也跑了两遍）。
 			anyNew := false
 			stateMu.Lock()
 			for _, t := range batch.Tasks {

@@ -24,6 +24,13 @@ type runReport struct {
 	FinishedAt   time.Time `json:"finished_at"`
 	WallSeconds  float64   `json:"wall_seconds"`
 	TotalTokens  int       `json:"total_tokens"`
+	// Token split by DeepSeek prefix-cache billing: hit tokens replay at ~1/31
+	// of miss price, so effective_tokens (= miss + completion + hit/31) tracks
+	// real API cost while total_tokens counts raw replay volume.
+	PromptCacheHitTokens  int `json:"prompt_cache_hit_tokens"`
+	PromptCacheMissTokens int `json:"prompt_cache_miss_tokens"`
+	CompletionTokens      int `json:"completion_tokens"`
+	EffectiveTokens       int `json:"effective_tokens"`
 	// 事后分析定位：leader 会话、运行引擎版本、leader 轮 token。
 	LeaderSessionID string      `json:"leader_session_id,omitempty"`
 	EngineCommit    string      `json:"engine_commit,omitempty"`
@@ -60,19 +67,53 @@ type taskStat struct {
 
 // writeRunReport writes the run_report.json into the master's whiteboard dir.
 // Best-effort: failures are logged, never fatal — the run is already over.
-func (e *TeamEngine) writeRunReport(masterTaskID, goal, status, summary string, execErr error, started time.Time, batches []*Batch) {
+//
+// 全量账单从 store 的 per-task 持久字段聚合 + leader 分账（leaderHit/
+// leaderMiss/leaderCompletion 由调用方传入本实例累计的 leader 轮用量）。
+// worker/verifier 的执行可能发生在另一个引擎实例（leader-driven 双实例）：
+// v12 实测 execute 侧累计 311K，而 leader 侧实例本地只有 33.8K——直接取
+// 本地计数器会把真实成本少报一个数量级。store 无分账字段（旧数据）时
+// 回退到本实例计数器（与旧行为一致）。
+func (e *TeamEngine) writeRunReport(masterTaskID, goal, status, summary string, execErr error, started time.Time, batches []*Batch, leaderHit, leaderMiss, leaderCompletion int) {
+	hit, miss, completion := leaderHit, leaderMiss, leaderCompletion
+	storeRaw := 0
+	for _, bch := range batches {
+		for _, t := range bch.Tasks {
+			cur, err := e.Store.GetTask(t.ID)
+			if err != nil || cur == nil {
+				continue
+			}
+			hit += cur.WorkerPromptHit + cur.VerifierPromptHit
+			miss += cur.WorkerPromptMiss + cur.VerifierPromptMiss
+			completion += cur.WorkerCompletion + cur.VerifierCompletion
+			storeRaw += cur.WorkerTokens + cur.VerifierTokens
+		}
+	}
+	leaderRaw := leaderHit + leaderMiss + leaderCompletion
+	total := storeRaw + leaderRaw
+	if total <= 0 {
+		total = e.tokenTotal()
+	}
+	effective := miss + completion + hit/31
+	if effective <= 0 {
+		effective = total
+	}
 	report := runReport{
-		MasterTaskID:    masterTaskID,
-		Goal:            goal,
-		Status:          status,
-		Summary:         summary,
-		StartedAt:       started,
-		FinishedAt:      time.Now(),
-		WallSeconds:     time.Since(started).Seconds(),
-		TotalTokens:     e.tokenTotal(),
-		LeaderSessionID: e.leaderSessionIDForReport(masterTaskID),
-		EngineCommit:    buildRevision(),
-		LeaderTokens:    e.leaderRunTokens,
+		MasterTaskID:          masterTaskID,
+		Goal:                  goal,
+		Status:                status,
+		Summary:               summary,
+		StartedAt:             started,
+		FinishedAt:            time.Now(),
+		WallSeconds:           time.Since(started).Seconds(),
+		TotalTokens:           total,
+		PromptCacheHitTokens:  hit,
+		PromptCacheMissTokens: miss,
+		CompletionTokens:      completion,
+		EffectiveTokens:       effective,
+		LeaderSessionID:       e.leaderSessionIDForReport(masterTaskID),
+		EngineCommit:          buildRevision(),
+		LeaderTokens:          e.leaderRunTokens,
 	}
 	if execErr != nil {
 		report.Error = execErr.Error()
@@ -119,8 +160,8 @@ func (e *TeamEngine) writeRunReport(masterTaskID, goal, status, summary string, 
 		Log("report", "write run report: %v", err)
 		return
 	}
-	Log("report", "written run_report.json for %s (wall=%.1fs tokens=%d batches=%d tasks=%d)",
-		masterTaskID[:8], report.WallSeconds, report.TotalTokens, len(report.Batches), countReportTasks(report.Batches))
+	Log("report", "written run_report.json for %s (wall=%.1fs raw=%d eff=%d hit=%d miss=%d comp=%d batches=%d tasks=%d)",
+		masterTaskID[:8], report.WallSeconds, report.TotalTokens, report.EffectiveTokens, report.PromptCacheHitTokens, report.PromptCacheMissTokens, report.CompletionTokens, len(report.Batches), countReportTasks(report.Batches))
 }
 
 // leaderSessionIDForReport resolves the Leader subagent session ID for a
@@ -203,5 +244,6 @@ func (e *TeamEngine) refreshRunReportAfterLeaderReview(masterTaskID, goal string
 	}
 	summary := fmt.Sprintf("%d/%d batches passed, %d failed", len(batches)-failedBatches, len(batches), failedBatches)
 	e.leaderRunTokens = leaderTokens
-	e.writeRunReport(masterTaskID, goal, status, summary, nil, started, batches)
+	leaderHit, leaderMiss, leaderCompletion := e.usageSplit()
+	e.writeRunReport(masterTaskID, goal, status, summary, nil, started, batches, leaderHit, leaderMiss, leaderCompletion)
 }

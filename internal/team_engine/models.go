@@ -115,6 +115,14 @@ type Task struct {
 	WorkerTokens     int     `json:"worker_tokens,omitempty"`
 	VerifierDuration float64 `json:"verifier_duration_seconds,omitempty"`
 	VerifierTokens   int     `json:"verifier_tokens,omitempty"`
+	// 缓存分账（DeepSeek 前缀缓存，hit ≈ 1/31 价）：run_report 从 store 重建
+	// 全量账单的持久字段（leader 侧与 execute 侧共享的事实源）。
+	WorkerPromptHit    int `json:"worker_prompt_hit,omitempty"`
+	WorkerPromptMiss   int `json:"worker_prompt_miss,omitempty"`
+	WorkerCompletion   int `json:"worker_completion,omitempty"`
+	VerifierPromptHit  int `json:"verifier_prompt_hit,omitempty"`
+	VerifierPromptMiss int `json:"verifier_prompt_miss,omitempty"`
+	VerifierCompletion int `json:"verifier_completion,omitempty"`
 	// 工具探针：worker 会话的进度事件计数与最重工具 Top2（如 "bash:18,read:9"），
 	// 让事后分析直接看出「哪个任务在烧轮数/卡在哪个工具」。
 	ToolCalls int    `json:"tool_calls,omitempty"`

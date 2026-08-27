@@ -112,6 +112,9 @@ Do not call tools. Output only the summary.`)
 	if strings.TrimSpace(hookContext) != "" {
 		prompt += "\n\nAdditional context from PreCompact hooks:\n" + strings.TrimSpace(hookContext)
 	}
+	if a.compactSummaryContext != "" {
+		prompt += "\n\nAdditional preservation requirements:\n" + a.compactSummaryContext
+	}
 	tmpHistory := buildSummaryProviderHistory(sessionID, reqCtx, history, prompt)
 	var toolList []core.Tool
 	ch := a.provider.StreamResponse(ctx, tmpHistory, toolList)

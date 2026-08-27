@@ -237,8 +237,10 @@ func teamEngineSpawnAdapter(runner *tasks.Runner, library *tasks.AgentDefinition
 			Structured:      resp.StructuredResult,
 			ExitCode:        exitCode,
 			Success:         success,
-			UsagePrompt:     resp.Usage.PromptTokens,
-			UsageCompletion: resp.Usage.CompletionTokens,
+			UsagePrompt:         resp.Usage.PromptTokens,
+			UsageCompletion:     resp.Usage.CompletionTokens,
+			UsagePromptCacheHit: resp.Usage.PromptCacheHitTokens,
+			UsagePromptCacheMiss: resp.Usage.PromptCacheMissTokens,
 			Diagnostic:      diag,
 			SystemPrompt:    resp.SystemPrompt,
 		}, nil

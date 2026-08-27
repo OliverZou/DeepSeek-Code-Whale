@@ -88,8 +88,13 @@ type TeamEngine struct {
 
 	// totalTokens accumulates real prompt+completion tokens across worker and
 	// verifier spawns, so batch cost is reported from usage rather than the
-	// rough (RetryCount+1)*10k estimate.
-	totalTokens int
+	// rough (RetryCount+1)*10k estimate. The hit/miss split breaks the prompt
+	// side down by DeepSeek prefix-cache billing (hit ≈ 1/31 of miss price),
+	// so reports can show effective cost instead of raw replay volume.
+	totalTokens         int
+	totalPromptCacheHit int
+	totalPromptCacheMiss int
+	totalCompletion     int
 
 	// eventCallbacks — 订阅者列表，状态变化时主动推送
 	eventCallbacks []TaskEventCallback
@@ -152,15 +157,40 @@ func (e *TeamEngine) Team() *TeamConfig {
 	return e.team
 }
 
-// addTokens accumulates real prompt+completion tokens from a worker/verifier
-// spawn.  Safe for concurrent use from the batch's task goroutines.
-func (e *TeamEngine) addTokens(prompt, completion int) {
+// addTokens accumulates real prompt+completion tokens (plus the prompt
+// cache-hit/miss split) from a worker/verifier/leader spawn.  Safe for
+// concurrent use from the batch's task goroutines.
+func (e *TeamEngine) addTokens(prompt, completion, hit, miss int) {
 	if prompt <= 0 && completion <= 0 {
 		return
 	}
 	e.mu.Lock()
 	e.totalTokens += prompt + completion
+	e.totalPromptCacheHit += hit
+	e.totalPromptCacheMiss += miss
+	e.totalCompletion += completion
 	e.mu.Unlock()
+}
+
+// usageSplit returns the accumulated (cacheHit, cacheMiss, completion) triple.
+// Safe for concurrent use.
+func (e *TeamEngine) usageSplit() (hit, miss, completion int) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.totalPromptCacheHit, e.totalPromptCacheMiss, e.totalCompletion
+}
+
+// effectiveTokens reports the run's billed-equivalent token volume: full-price
+// cache-miss prompt + completion plus cache-hit prompt at DeepSeek's ~1/31 hit
+// price. This is the number that tracks real API cost — raw prompt sums are
+// dominated by cached history replay and massively overstate it. Falls back to
+// the raw total when no cache split was recorded.
+func (e *TeamEngine) effectiveTokens() int {
+	hit, miss, completion := e.usageSplit()
+	if hit == 0 && miss == 0 {
+		return e.tokenTotal()
+	}
+	return miss + completion + hit/31
 }
 
 // tokenTotal returns the accumulated token total.  Safe for concurrent use.
@@ -251,6 +281,12 @@ func (e *TeamEngine) Close() error {
 		_ = e.Loggers.Close()
 	}
 
+	// 单运行引擎所有权：关闭的引擎必须从包级注册中注销，否则后续工具调用
+	// 会复用已关闭的实例（CLI/App 会话结束后再触发的 team_run 等）。
+	if DefaultRunEngine() == e {
+		ClearDefaultRunEngine()
+	}
+
 	return e.Store.Close()
 }
 
@@ -287,7 +323,7 @@ func (e *TeamEngine) StopRun(masterTaskID string) bool {
 	// v47：中止也留痕——写最小 run_report（已完成任务的统计可追溯）。
 	if mt, merr := e.GetMasterTask(masterTaskID); merr == nil && mt != nil && mt.WorkspacePath != "" {
 		if batches, berr := e.recoverMasterBatches(masterTaskID, mt.Goal, mt.WorkspacePath); berr == nil && len(batches) > 0 {
-			e.writeRunReport(masterTaskID, mt.Goal, "cancelled", summarizeBatches(batches)+fmt.Sprintf(" (中止，未统计完整时长)"), nil, time.Now().Add(-time.Minute), batches)
+			e.writeRunReport(masterTaskID, mt.Goal, "cancelled", summarizeBatches(batches)+fmt.Sprintf(" (中止，未统计完整时长)"), nil, time.Now().Add(-time.Minute), batches, 0, 0, 0)
 		}
 	}
 	e.fireEvent(TaskEvent{Type: EventLeaderLog, MasterID: masterTaskID, Title: "运行已停止（你叫我停的）"})

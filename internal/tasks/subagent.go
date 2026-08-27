@@ -362,6 +362,7 @@ func (r *Runner) runSubagent(ctx context.Context, req SpawnSubagentRequest, prog
 			}),
 			agent.WithSessionsDir(r.sessionsDir),
 			agent.WithAutoCompact(r.autoCompact, r.autoCompactThreshold, r.contextWindowForModel(model)),
+			agent.WithCompactSummaryContext(r.compactSummaryContext),
 			agent.WithProjectMemory(r.memoryEnabled, r.memoryMaxChars, r.memoryFileOrder, workspace.WorkspaceRoot),
 			agent.WithWorktreeContext(workspace.WorktreeRoot, workspace.OriginalWorkspace),
 			// System-level write boundary: when the request carries declared
