@@ -489,6 +489,16 @@ func (e *TeamEngine) decomposePlan(goal, workdir, masterTaskID string, leader *L
 		}
 	}
 
+	// 编排机械约束（两个分支统一施加）：测试任务补依赖实现 batch、集成验证
+	// 任务补依赖所有上游 batch。Leader 正确编排时全部 no-op；错误编排（测试
+	// 与实现并行、验证先于实现）被修正，避免测试 worker 空转/验证半成品。
+	if fixed, changed := enforcePlanTaskDependencies(planTasks); changed {
+		if defaultTeamLog != nil {
+			Log("plan", "plan: enforced dependency edges (test→impl / verification→all upstream)")
+		}
+		planTasks = fixed
+	}
+
 	// 最终计划（可能被 splitOverloadedPlanTasks 替换过任务/标题）才是 Task 记录
 	// 的同源：createBatchesFromPlan 与恢复执行（recoverMasterBatches）都以它为准。
 	// 必须在 split 之后写——否则 plan.json 与磁盘 Task 记录脱节，team_run_plan
