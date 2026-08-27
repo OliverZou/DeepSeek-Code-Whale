@@ -216,8 +216,26 @@ func (e *TeamEngine) StartPlanRun(ctx context.Context, masterTaskID string) (str
 				if b.Status == BatchStatusPassed {
 					continue
 				}
+				// 验证任务不参与自动重置:FAIL 的缺陷属于上游实现,重跑验证
+				// 任务只会重复发现同一缺陷(v15/v16/v17:集成验证 FAIL 后
+				// cycle 重置重跑,白烧 ~300K raw token)。保持 suspended 与
+				// 缺陷报告,交 Leader 决策(其 review 轮可驱动上游修复)。
+				hasNonVerification := false
+				for _, t := range b.Tasks {
+					if !isVerificationTask(t) {
+						hasNonVerification = true
+						break
+					}
+				}
+				if !hasNonVerification {
+					Log("plan-run", "master %s verification batch %s kept failed (defects belong upstream — Leader decides)", masterTaskID[:8], b.ID)
+					continue
+				}
 				b.Status = BatchStatusPending
 				for _, t := range b.Tasks {
+					if isVerificationTask(t) {
+						continue // 保留 suspended 与缺陷报告
+					}
 					e.SendFeedback(t.ID, review.Feedback)
 					if t.State == TaskStateFailed || t.State == TaskStateSuspended {
 						_ = e.Store.TransitionState(t.ID, TaskStatePending, "cycle reject retry", "")
