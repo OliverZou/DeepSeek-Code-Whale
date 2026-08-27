@@ -1361,6 +1361,13 @@ func (e *TeamEngine) RunBatch(ctx context.Context, batch *Batch) error {
 				return ctx.Err()
 			default:
 			}
+			// Suspended 任务不自动执行:验证任务 FAIL(缺陷属上游)或重试耗尽的
+			// 挂起,都应交 Leader/用户决策——RunTask 会把 suspended 自动
+			// resume 重新验证,导致「不重置却仍被重跑」的假象且遇 API 挂起
+			// 长时间空转(v18:04a193ef resume 后卡 8+ 分钟)。
+			if st := e.Store.TaskState(task.ID); st == TaskStateSuspended {
+				continue
+			}
 			sem <- struct{}{} // acquire semaphore (blocks if at limit)
 			go func(t *Task) {
 				defer func() { <-sem }() // release semaphore
