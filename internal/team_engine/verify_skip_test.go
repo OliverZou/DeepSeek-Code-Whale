@@ -15,7 +15,7 @@ func TestOutDeliverables(t *testing.T) {
 			t.Fatal(err)
 		}
 		// Baseline taken before the worker ran, with no game.js in it → purely new.
-		count, touches, err := outDeliverables(workdir, map[string]time.Time{})
+		count, touches, err := outDeliverables(workdir, map[string]time.Time{}, nil)
 		if err != nil {
 			t.Fatalf("outDeliverables: %v", err)
 		}
@@ -34,7 +34,7 @@ func TestOutDeliverables(t *testing.T) {
 		}
 		// Baseline records an older modtime for the same file → modified, not new.
 		baseline := map[string]time.Time{"game.js": time.Now().Add(-time.Hour)}
-		count, touches, err := outDeliverables(workdir, baseline)
+		count, touches, err := outDeliverables(workdir, baseline, nil)
 		if err != nil {
 			t.Fatalf("outDeliverables: %v", err)
 		}
@@ -48,7 +48,7 @@ func TestOutDeliverables(t *testing.T) {
 
 	t.Run("empty out", func(t *testing.T) {
 		workdir := t.TempDir()
-		count, touches, err := outDeliverables(workdir, map[string]time.Time{})
+		count, touches, err := outDeliverables(workdir, map[string]time.Time{}, nil)
 		if err != nil {
 			t.Fatalf("outDeliverables: %v", err)
 		}
@@ -60,8 +60,29 @@ func TestOutDeliverables(t *testing.T) {
 		}
 	})
 
-	t.Run("ignores .whale metadata", func(t *testing.T) {
+	t.Run("scoped to declared outputs", func(t *testing.T) {
 		workdir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(workdir, "game.js"), []byte("// x"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		// 并发 sibling 的写入（style.css）不归本任务：scoped 统计只数声明文件，
+		// 也不把它算成回归触碰。
+		if err := os.WriteFile(filepath.Join(workdir, "style.css"), []byte("// y"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		count, touches, err := outDeliverables(workdir, map[string]time.Time{}, []string{"game.js"})
+		if err != nil {
+			t.Fatalf("outDeliverables: %v", err)
+		}
+		if count != 1 {
+			t.Fatalf("expected 1 declared deliverable, got %d", count)
+		}
+		if touches {
+			t.Fatal("sibling file must not count as a touch")
+		}
+	})
+
+	t.Run("ignores .whale metadata", func(t *testing.T) {		workdir := t.TempDir()
 		// whale writes metadata into .whale under the workspace; that path overlap
 		// must not be treated as a regression touch — .whale is tool metadata,
 		// not a deliverable.
@@ -75,7 +96,7 @@ func TestOutDeliverables(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(workdir, "game.js"), []byte("// x"), 0644); err != nil {
 			t.Fatal(err)
 		}
-		count, touches, err := outDeliverables(workdir, map[string]time.Time{})
+		count, touches, err := outDeliverables(workdir, map[string]time.Time{}, nil)
 		if err != nil {
 			t.Fatalf("outDeliverables: %v", err)
 		}
@@ -98,12 +119,14 @@ func TestVerifyDepth(t *testing.T) {
 			t.Fatal(err)
 		}
 		// An automated test must be present for the mechanical gate to be
-		// non-vacuous; otherwise mechanical depth is forbidden.
+		// non-vacuous; otherwise mechanical depth is forbidden. The test file
+		// must be THIS task's declared output — a sibling task's test file is
+		// not this task's objective gate.
 		if err := os.WriteFile(filepath.Join(workdir, "game.test.js"), []byte("// test"), 0644); err != nil {
 			t.Fatal(err)
 		}
 		// Pre-worker baseline: nothing existed → all deliverables new.
-		task := &Task{ID: "t1", Workdir: workdir}
+		task := &Task{ID: "t1", Output: "game.js, game.test.js", Workdir: workdir}
 		if got := eng.verifyDepth(task, workdir, map[string]time.Time{}); got != "mechanical" {
 			t.Fatalf("expected mechanical depth for pure-new deliverable, got %q", got)
 		}
@@ -208,7 +231,7 @@ func TestVerifyDepth(t *testing.T) {
 	})
 
 	t.Run("declared output present mechanical", func(t *testing.T) {
-		// Declared deliverable exists + test gate present + pure-new → mechanical.
+		// Declared deliverable + declared test gate exist + pure-new → mechanical.
 		workdir := t.TempDir()
 		if err := os.WriteFile(filepath.Join(workdir, "game.js"), []byte("// x"), 0644); err != nil {
 			t.Fatal(err)
@@ -216,9 +239,26 @@ func TestVerifyDepth(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(workdir, "game.test.js"), []byte("// test"), 0644); err != nil {
 			t.Fatal(err)
 		}
-		task := &Task{ID: "t1e", Output: "game.js", Workdir: workdir}
+		task := &Task{ID: "t1e", Output: "game.js, game.test.js", Workdir: workdir}
 		if got := eng.verifyDepth(task, workdir, map[string]time.Time{}); got != "mechanical" {
 			t.Fatalf("expected mechanical when declared deliverable exists, got %q", got)
+		}
+	})
+
+	t.Run("sibling test file is not the task's gate", func(t *testing.T) {
+		// 任务只声明 game.js；工作区里的 game.test.js 属于另一个并发任务。
+		// 它不是本任务的客观门——机械门必须属于本任务，否则会拿别家半成品
+		// 测试制造假失败和注定失败的 retry（2048 v10 的 2.35M 教训）。
+		workdir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(workdir, "game.js"), []byte("// x"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(workdir, "game.test.js"), []byte("// test"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		task := &Task{ID: "t1f", Output: "game.js", Workdir: workdir}
+		if got := eng.verifyDepth(task, workdir, map[string]time.Time{}); got != "semantic" {
+			t.Fatalf("expected semantic when only a sibling's test file exists, got %q", got)
 		}
 	})
 }

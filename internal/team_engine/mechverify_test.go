@@ -67,25 +67,52 @@ func TestDetectTestCommand(t *testing.T) {
 func TestRunMechanicalVerify(t *testing.T) {
 	t.Run("no tests -> pass", func(t *testing.T) {
 		dir := t.TempDir()
-		ok, _ := runMechanicalVerify(dir, dir)
+		ok, _ := runMechanicalVerify(dir, dir, nil)
 		if !ok {
 			t.Fatal("expected pass when no automated tests detected")
 		}
 	})
 
-	t.Run("failing node test -> fail with detail", func(t *testing.T) {
+	t.Run("failing declared node test -> fail with detail", func(t *testing.T) {
 		if _, err := exec.LookPath("node"); err != nil {
 			t.Skip("node not available")
 		}
 		dir := t.TempDir()
 		os.MkdirAll(filepath.Join(dir, "test"), 0755)
 		os.WriteFile(filepath.Join(dir, "test", "fail.test.js"), []byte("process.exit(1)\n"), 0644)
-		ok, detail := runMechanicalVerify(dir, dir)
+		ok, detail := runMechanicalVerify(dir, dir, []string{"test/fail.test.js"})
 		if ok {
-			t.Fatal("expected fail for a failing test")
+			t.Fatal("expected fail for a failing declared test")
 		}
 		if detail == "" {
 			t.Fatal("expected non-empty failure detail")
+		}
+	})
+
+	t.Run("passing declared node test -> pass", func(t *testing.T) {
+		if _, err := exec.LookPath("node"); err != nil {
+			t.Skip("node not available")
+		}
+		dir := t.TempDir()
+		os.WriteFile(filepath.Join(dir, "ok.test.js"), []byte("require('node:test');\n"), 0644)
+		ok, _ := runMechanicalVerify(dir, dir, []string{"ok.test.js"})
+		if !ok {
+			t.Fatal("expected pass for a passing declared test")
+		}
+	})
+
+	t.Run("undeclared failing test ignored -> pass", func(t *testing.T) {
+		if _, err := exec.LookPath("node"); err != nil {
+			t.Skip("node not available")
+		}
+		dir := t.TempDir()
+		os.MkdirAll(filepath.Join(dir, "test"), 0755)
+		os.WriteFile(filepath.Join(dir, "test", "fail.test.js"), []byte("process.exit(1)\n"), 0644)
+		// 任务只声明了 index.html：别的任务的测试文件不能构成本任务的客观门
+		// （跨任务误伤会制造注定失败的 retry 循环）。
+		ok, _ := runMechanicalVerify(dir, dir, []string{"index.html"})
+		if !ok {
+			t.Fatal("expected pass when the only tests belong to other tasks")
 		}
 	})
 }
@@ -165,7 +192,7 @@ func TestRunMechanicalVerify_ModuleScoped(t *testing.T) {
 			os.WriteFile(filepath.Join(mod, "ok_test.go"), []byte("package go2048\nimport \"testing\"\nfunc TestOK(t *testing.T) {}\n"), 0644)
 		}
 
-		ok, detail := runMechanicalVerify(work, out)
+		ok, detail := runMechanicalVerify(work, out, nil)
 		if !ok {
 			t.Fatalf("standalone module deliverable must pass regardless of root failures:\n%s", detail)
 		}
@@ -176,7 +203,7 @@ func TestRunMechanicalVerify_ModuleScoped(t *testing.T) {
 		out := t.TempDir()
 		os.WriteFile(filepath.Join(work, "go.mod"), []byte("module workmod\n"), 0644)
 		os.WriteFile(filepath.Join(work, "fail_test.go"), []byte("package workmod\nimport \"testing\"\nfunc TestBoom(t *testing.T) { t.Fatal(\"break\") }\n"), 0644)
-		ok, _ := runMechanicalVerify(work, out)
+		ok, _ := runMechanicalVerify(work, out, nil)
 		if ok {
 			t.Fatal("expected fail when the deliverable IS the root module and it fails")
 		}

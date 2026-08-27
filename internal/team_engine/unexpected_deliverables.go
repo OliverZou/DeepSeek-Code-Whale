@@ -5,21 +5,23 @@ import (
 	"strings"
 )
 
-// unexpectedDeliverables returns the delivered files (relative) that are NOT
-// declared in the task Output — the worker touched files owned by another
-// task (parallel overwrite hazard) or produced undeclared artifacts.
-func unexpectedDeliverables(task *Task, workdir string, changed []string) []string {
+// unexpectedDeliverablesExcluding is unexpectedDeliverables with an extra
+// exclusion set (normalized relative paths): files declared by sibling tasks
+// in the same master run are their concurrent writes misattributed to this
+// task by the per-task baseline snapshot — not ownership anomalies.
+func unexpectedDeliverablesExcluding(task *Task, workdir string, changed []string, exclude map[string]bool) []string {
 	declared := map[string]bool{}
 	for _, o := range strings.Split(strings.TrimSpace(task.Output), ",") {
 		o = strings.TrimSpace(o)
 		if o == "" {
 			continue
 		}
-		declared[filepath.Clean(o)] = true
+		declared[strings.ToLower(filepath.ToSlash(filepath.Clean(o)))] = true
 	}
 	var out []string
 	for _, f := range changed {
-		if !declared[filepath.Clean(f)] {
+		key := strings.ToLower(filepath.ToSlash(filepath.Clean(f)))
+		if !declared[key] && !exclude[key] {
 			out = append(out, f)
 		}
 	}
