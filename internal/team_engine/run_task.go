@@ -191,7 +191,7 @@ func (e *TeamEngine) RunTask(ctx context.Context, taskID string) (bool, error) {
 			// 446s（61%）耗在 4 个「重装/启动浏览器+逐条验」的 shell 等待轮；一次
 			// 脚本覆盖全部验收点、复用系统已装环境，可把轮数与墙钟同时砍半以上。
 			if e2eTitleMarked(task.Title) {
-				prompt += "\n\n【端到端验收规范】用浏览器/运行时验收时：\n1. 写一个**小型**临时脚本（Node + Playwright 或等价，≤120 行）一次运行，逐项输出 PASS/FAIL 与证据；脚本调试最多 2 轮，仍不通过就降级：改用最小可行验证（加载无错误 + 键盘移动 + 分数/持久化这三个核心点），或直接以已有证据完成判定并如实标注未验证项。\n2. 本机已安装 Playwright 与 Chrome/Chromium（用户目录 ms-playwright 缓存与 Google Chrome），直接复用并优先 channel:'chrome'；**禁止重新下载或安装浏览器/包**。\n3. **交付物先写后调**：每完成一个阶段就把已有证据写入产出文件（如 AUDIT_FINDINGS_*.md）；工具轮数预算将尽时，用已有证据落盘报告，**绝不允许以'计划文本/设计文档'作为产出**。\n4. 报告即证据：引用命令输出/断言结果原文；不要输出超长设计叙述。\n5. 脚本放系统临时目录；禁止逐条交互式重验。"
+				prompt += fmt.Sprintf("\n\n【端到端验收规范】用浏览器/运行时验收时：\n1. 写一个**小型**临时脚本（Node + Playwright 或等价，≤120 行）一次运行，逐项输出 PASS/FAIL 与证据；脚本调试最多 2 轮，仍不通过就降级：改用最小可行验证（加载无错误 + 键盘移动 + 分数/持久化这三个核心点），或直接以已有证据完成判定并如实标注未验证项。\n2. 本机已安装 Playwright 与 Chrome/Chromium（用户目录 ms-playwright 缓存与 Google Chrome），直接复用并优先 channel:'chrome'；**禁止重新下载或安装浏览器/包**。\n3. **DOM 验证脚手架（预置）**：系统已提供标准 DOM shim——`%s`（纯 Node 无依赖，require 后提供 document/window/el/classList/事件派发/内存 localStorage）。浏览器不可用时直接用它对交付物做 DOM 行为验证（渲染、事件路由、分数更新、持久化）；**禁止从头手搓 DOM mock**（易错且把内联脚本留在历史里反复重放）。\n4. **交付物先写后调**：每完成一个阶段就把已有证据写入产出文件（如 AUDIT_FINDINGS_*.md）；工具轮数预算将尽时，用已有证据落盘报告，**绝不允许以'计划文本/设计文档'作为产出**。\n5. 报告即证据：引用命令输出/断言结果原文；不要输出超长设计叙述。\n6. 脚本放系统临时目录；禁止逐条交互式重验。", e.Whiteboard.VerifyToolkitPath())
 			}
 
 			// Baseline snapshot for regression-risk assessment: compare workspace
