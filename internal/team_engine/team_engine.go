@@ -172,32 +172,48 @@ func (e *TeamEngine) addTokens(prompt, completion, hit, miss int) {
 	e.mu.Unlock()
 }
 
-// usageSplit returns the accumulated (cacheHit, cacheMiss, completion) triple.
-// Safe for concurrent use.
-func (e *TeamEngine) usageSplit() (hit, miss, completion int) {
+// UsageSplit returns the accumulated (cacheHit, cacheMiss, completion) triple.
+// Safe for concurrent use. Exported for CLI/TUI cost display.
+func (e *TeamEngine) UsageSplit() (hit, miss, completion int) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	return e.totalPromptCacheHit, e.totalPromptCacheMiss, e.totalCompletion
 }
 
-// effectiveTokens reports the run's billed-equivalent token volume: full-price
+// usageSplit is the internal alias kept for in-package callers.
+func (e *TeamEngine) usageSplit() (hit, miss, completion int) {
+	return e.UsageSplit()
+}
+
+// EffectiveTokens reports the run's billed-equivalent token volume: full-price
 // cache-miss prompt + completion plus cache-hit prompt at DeepSeek's ~1/31 hit
 // price. This is the number that tracks real API cost — raw prompt sums are
 // dominated by cached history replay and massively overstate it. Falls back to
-// the raw total when no cache split was recorded.
-func (e *TeamEngine) effectiveTokens() int {
-	hit, miss, completion := e.usageSplit()
+// the raw total when no cache split was recorded. Exported for CLI/TUI display.
+func (e *TeamEngine) EffectiveTokens() int {
+	hit, miss, completion := e.UsageSplit()
 	if hit == 0 && miss == 0 {
-		return e.tokenTotal()
+		return e.TokenTotal()
 	}
 	return miss + completion + hit/31
 }
 
-// tokenTotal returns the accumulated token total.  Safe for concurrent use.
-func (e *TeamEngine) tokenTotal() int {
+// effectiveTokens is the internal alias kept for in-package callers.
+func (e *TeamEngine) effectiveTokens() int {
+	return e.EffectiveTokens()
+}
+
+// TokenTotal returns the accumulated raw token total. Safe for concurrent use.
+// Exported for CLI/TUI display.
+func (e *TeamEngine) TokenTotal() int {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	return e.totalTokens
+}
+
+// tokenTotal is the internal alias kept for in-package callers.
+func (e *TeamEngine) tokenTotal() int {
+	return e.TokenTotal()
 }
 
 // New creates a TeamEngine with the given dependencies.
@@ -212,6 +228,9 @@ func New(_, whiteboardDir, configPath string, spawner SubagentSpawner) (*TeamEng
 	if err != nil {
 		return nil, fmt.Errorf("init whiteboard: %w", err)
 	}
+	// 预置 DOM 验证脚手架(幂等),DOM/交互 worker 直接引用,
+	// 不再手搓假 DOM shim(v11/v15 交互 worker token 的最大单一来源)。
+	_ = wb.EnsureVerifyToolkit()
 
 	cfg, err := Load(configPath)
 	if err != nil {

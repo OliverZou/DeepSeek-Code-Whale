@@ -389,6 +389,18 @@ Subcommands:
 				return fmt.Errorf("plan and run: %w", err)
 			}
 
+			// Token 汇总:raw 是重放体积,effective(= miss + completion + hit/31,
+			// DeepSeek 峰时价)才是真实账单量级;命中率说明重放占比。
+			if hit, miss, completion := eng.UsageSplit(); hit+miss+completion > 0 {
+				eff := eng.EffectiveTokens()
+				hitRate := 0.0
+				if hit+miss > 0 {
+					hitRate = 100 * float64(hit) / float64(hit+miss)
+				}
+				fmt.Printf("\n⚡ Token: raw=%d (hit=%d miss=%d completion=%d, 缓存命中 %.0f%%) · effective≈%d\n",
+					eng.TokenTotal(), hit, miss, completion, hitRate, eff)
+			}
+
 			fmt.Printf("\n📊 Final report:\n%s\n", report)
 			return nil
 		},
